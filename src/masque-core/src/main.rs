@@ -7,7 +7,7 @@ use rustls::{
 };
 use rustls_pemfile::{certs, private_key};
 use serde::Deserialize;
-use snow::{params::NoiseParams, Builder as NoiseBuilder};
+use snow::{params::NoiseParams, Builder as NoiseBuilder, Keypair};
 use std::{fs, fs::File, io::BufReader, net::SocketAddr, path::PathBuf, sync::Arc};
 use tokio::{
     io::AsyncReadExt,
@@ -18,6 +18,7 @@ use tokio_rustls::{server::TlsStream, TlsAcceptor};
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
+use masque_core::noise_keys::load_keypair;
 use masque_core::tunnel::{read_connect_request, read_frame, write_frame, Proto};
 
 #[derive(Parser, Debug)]
@@ -30,6 +31,8 @@ struct Args {
     key: Option<PathBuf>,
     #[arg(long)]
     config: Option<PathBuf>,
+    #[arg(long, required = true)]
+    noise_key: PathBuf,
 }
 
 #[derive(Debug, Deserialize)]
@@ -37,6 +40,7 @@ struct FileConfig {
     bind: Option<SocketAddr>,
     cert: Option<PathBuf>,
     key: Option<PathBuf>,
+    noise_key: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -60,7 +64,13 @@ async fn main() -> Result<()> {
         .as_ref()
         .or_else(|| file_cfg.as_ref().and_then(|c| c.key.as_ref()));
 
+    let noise_key = file_cfg
+        .as_ref()
+        .and_then(|c| c.noise_key.clone())
+        .unwrap_or_else(|| args.noise_key.clone());
+
     let tls_config = build_tls_config(cert_path, key_path)?;
+    let noise_kp = Arc::new(load_keypair(&noise_key)?);
     let acceptor = TlsAcceptor::from(Arc::new(tls_config));
 
     let listener = TcpListener::bind(bind).await?;
@@ -69,10 +79,11 @@ async fn main() -> Result<()> {
     loop {
         let (stream, addr) = listener.accept().await?;
         let acceptor = acceptor.clone();
+        let kp = noise_kp.clone();
         tokio::spawn(async move {
             match acceptor.accept(stream).await {
                 Ok(tls_stream) => {
-                    if let Err(err) = handle_connection(tls_stream).await {
+                    if let Err(err) = handle_connection(tls_stream, kp).await {
                         error!(?addr, %err, "connection error");
                     }
                 }
@@ -207,10 +218,12 @@ async fn handle_udp_proxy(
     Ok(())
 }
 
-async fn handle_connection(mut stream: TlsStream<TcpStream>) -> Result<()> {
+async fn handle_connection(mut stream: TlsStream<TcpStream>, kp: Arc<Keypair>) -> Result<()> {
     info!("TLS connection established");
-    let params: NoiseParams = "Noise_NN_25519_ChaChaPoly_BLAKE2s".parse()?;
-    let mut noise = NoiseBuilder::new(params).build_responder()?;
+    let params: NoiseParams = "Noise_IK_25519_ChaChaPoly_BLAKE2s".parse()?;
+    let mut noise = NoiseBuilder::new(params)
+        .local_private_key(&kp.private)
+        .build_responder()?;
 
     let client_msg = read_frame(&mut stream).await?;
     let mut buf = vec![0u8; client_msg.len() + 256];

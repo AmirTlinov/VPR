@@ -1,0 +1,4 @@
+bind = "0.0.0.0:4433"
+#cert = "/etc/vpr/masque.crt"
+#key = "/etc/vpr/masque.key"
+#noise_key = "secrets/server.key"

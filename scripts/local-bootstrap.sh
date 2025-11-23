@@ -6,6 +6,11 @@ BIN="${ROOT}/target/debug"
 
 mkdir -p "${ROOT}/secrets" "${ROOT}/logs"
 
+# Noise keys (IK)
+if [[ ! -f "${ROOT}/secrets/server.key" ]]; then
+  "${ROOT}/scripts/gen-noise-keys.sh" "${ROOT}/secrets"
+fi
+
 # Generate cert/key for DoQ if absent
 CRT="${ROOT}/secrets/doq.crt"
 KEY="${ROOT}/secrets/doq.key"
@@ -34,7 +39,7 @@ echo "[+] starting doh-gateway"
 DOH_PID=$!
 
 echo "[+] starting masque-core"
-"${BIN}/masque-core" --config "${ROOT}/config/masque.toml.sample" \
+"${BIN}/masque-core" --config "${ROOT}/config/masque.toml.sample" --noise-key "${ROOT}/secrets/server.key" \
   >"${ROOT}/logs/masque-core.log" 2>&1 &
 MASQUE_PID=$!
 
@@ -51,4 +56,3 @@ echo "[+] running health-harness"
 
 echo "[+] stopping services"
 kill ${DOH_PID} ${MASQUE_PID}
-

@@ -17,18 +17,21 @@
 
 ```sh
 cargo build --release
+# Noise статические ключи (IK):
+scripts/gen-noise-keys.sh secrets   # создаст secrets/server.key|.pub и client.key|.pub
+
 # Серверы (быстро):
 scripts/local-bootstrap.sh   # сгенерит cert/odoh_seed, поднимет оба сервиса, прогонит health-harness
 
 # Ручной запуск серверов:
-target/release/masque-core --config config/masque.toml.sample
+target/release/masque-core --config config/masque.toml.sample --noise-key secrets/server.key
 target/release/doh-gateway --config config/doh.toml.sample --odoh-enable --odoh-seed secrets/odoh_seed.bin --doq-cert secrets/doq.crt --doq-key secrets/doq.key
 
 # Тестовый клиент Noise/TLS (TCP):
-echo -e "GET / HTTP/1.1\r\nHost: example.com\r\n\r\n" | target/release/client --addr 127.0.0.1:4433 --server-name localhost --target example.com:80 --proto tcp
+echo -e "GET / HTTP/1.1\r\nHost: example.com\r\n\r\n" | target/release/client --addr 127.0.0.1:4433 --server-name localhost --target example.com:80 --proto tcp --noise-key secrets/client.key --noise-peer-pub secrets/server.pub
 
 # Тест UDP (DNS): локальный UDP слушатель 9053
-target/release/client --addr 127.0.0.1:4433 --server-name localhost --target 1.1.1.1:53 --proto udp --udp-listen 127.0.0.1:9053
+target/release/client --addr 127.0.0.1:4433 --server-name localhost --target 1.1.1.1:53 --proto udp --udp-listen 127.0.0.1:9053 --noise-key secrets/client.key --noise-peer-pub secrets/server.pub
 dig @127.0.0.1 -p 9053 example.com
 
 # Health harness (локально проверяет DoH/DoQ/ODoH):

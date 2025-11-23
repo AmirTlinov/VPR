@@ -5,7 +5,7 @@ use rustls::client::ClientConfig;
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{DigitallySignedStruct, SignatureScheme};
 use snow::{params::NoiseParams, Builder as NoiseBuilder};
-use std::{net::SocketAddr, str::FromStr, sync::Arc};
+use std::{net::SocketAddr, path::Path, path::PathBuf, str::FromStr, sync::Arc};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::sync::Mutex;
@@ -14,6 +14,7 @@ use tokio_rustls::TlsConnector;
 use tracing::{info, Level};
 use tracing_subscriber::FmtSubscriber;
 
+use masque_core::noise_keys::{load_keypair, load_public};
 use masque_core::tunnel::{
     build_connect_frame, read_frame, write_frame, ConnectRequest, Proto, MAX_FRAME,
 };
@@ -30,6 +31,10 @@ struct Args {
     proto: Proto,
     #[arg(long, default_value = "127.0.0.1:9053")]
     udp_listen: String,
+    #[arg(long, required = true)]
+    noise_key: PathBuf,
+    #[arg(long, required = true)]
+    noise_peer_pub: PathBuf,
 }
 
 #[tokio::main]
@@ -51,7 +56,7 @@ async fn main() -> Result<()> {
         .await
         .context("tls connect failed")?;
 
-    perform_noise_handshake(&mut stream).await?;
+    perform_noise_handshake(&mut stream, &args.noise_key, &args.noise_peer_pub).await?;
 
     let target = Target::from_str(&args.target)?;
     send_connect(&mut stream, &target, args.proto).await?;
@@ -110,9 +115,18 @@ fn build_connector() -> TlsConnector {
     TlsConnector::from(Arc::new(config))
 }
 
-async fn perform_noise_handshake(stream: &mut TlsStream<TcpStream>) -> Result<()> {
-    let params: NoiseParams = "Noise_NN_25519_ChaChaPoly_BLAKE2s".parse()?;
-    let mut noise = NoiseBuilder::new(params).build_initiator()?;
+async fn perform_noise_handshake(
+    stream: &mut TlsStream<TcpStream>,
+    priv_path: &Path,
+    peer_pub_path: &Path,
+) -> Result<()> {
+    let kp = load_keypair(priv_path)?;
+    let peer_pub = load_public(peer_pub_path)?;
+    let params: NoiseParams = "Noise_IK_25519_ChaChaPoly_BLAKE2s".parse()?;
+    let mut noise = NoiseBuilder::new(params)
+        .local_private_key(&kp.private)
+        .remote_public_key(&peer_pub)
+        .build_initiator()?;
 
     let mut msg = vec![0u8; 256];
     let len = noise.write_message(&[], &mut msg)?;
