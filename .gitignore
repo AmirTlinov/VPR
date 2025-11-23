@@ -1,0 +1,20 @@
+# Build artifacts
+/target/
+**/target/
+Cargo.lock
+/dist/
+/build/
+/__pycache__/
+*.pyc
+
+# Secrets & configs
+secrets/**
+!secrets/README.md
+config/*.yaml
+!config/vpr.yaml.sample
+
+# State & logs
+*.log
+.vscode/
+.idea/
+.vpr/

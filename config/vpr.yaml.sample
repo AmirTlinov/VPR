@@ -1,0 +1,17 @@
+# Sample configuration for VPR
+profiles:
+  stealth:
+    node: vps-primary
+    masq_domain: stealth.example.com
+    doh_domains:
+      - doh1.example.com
+    tls_fp_policy: chrome-stable
+  performance:
+    node: vps-primary
+    enable_dpdk: false
+  portable:
+    node: home-mini
+    masq_domain: home.example.lan
+
+secrets_path: ../secrets
+state_file: ~/.vpr/state.json

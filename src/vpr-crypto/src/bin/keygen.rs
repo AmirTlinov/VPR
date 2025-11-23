@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use vpr_crypto::{keys, pki, seal};

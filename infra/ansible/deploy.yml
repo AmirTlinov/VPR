@@ -1,0 +1,10 @@
+---
+- hosts: vps
+  become: yes
+  vars:
+    masque_core_binary: ../../target/release/masque-core
+    doh_gateway_binary: ../../target/release/doh-gateway
+    masque_config: ../../config/masque.toml.sample
+    doh_config: ../../config/doh.toml.sample
+  roles:
+    - vpr

@@ -4,7 +4,6 @@ members = [
   "src/masque-core",
   "src/doh-gateway",
   "src/health-harness",
-  "src/vpr-tui",
   "src/vpr-app",
   "src/vpr-crypto"
 ]

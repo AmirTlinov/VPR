@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>VPR</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app">
+    <!-- Header -->
+    <header class="header">
+      <span class="logo">VPR</span>
+      <button class="icon-btn" id="settings-btn" title="Settings">
+        <span>[=]</span>
+      </button>
+    </header>
+
+    <!-- Main View -->
+    <main class="main" id="main-view">
+      <div class="status-box">
+        <pre class="ascii-shield" id="shield">
+   .---.
+  /     \
+ |   o   |
+ |       |
+  \     /
+   '---'
+        </pre>
+        <div class="status-info">
+          <span class="status-label" id="status-label">DISCONNECTED</span>
+          <span class="status-server" id="status-server">-</span>
+        </div>
+      </div>
+
+      <div class="quick-connect">
+        <button class="btn btn-main" id="connect-btn">
+          [ CONNECT ]
+        </button>
+      </div>
+
+      <div class="stats" id="stats">
+        <div class="stat">
+          <span class="stat-label">Session</span>
+          <span class="stat-value" id="stat-time">--:--:--</span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">Up</span>
+          <span class="stat-value" id="stat-up">-</span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">Down</span>
+          <span class="stat-value" id="stat-down">-</span>
+        </div>
+      </div>
+    </main>
+
+    <!-- Settings View -->
+    <main class="main hidden" id="settings-view">
+      <div class="settings-section">
+        <div class="section-title">+ Connection</div>
+        <div class="field">
+          <label>Server</label>
+          <input type="text" id="cfg-server" placeholder="vpn.example.com">
+        </div>
+        <div class="field">
+          <label>Port</label>
+          <input type="text" id="cfg-port" placeholder="443">
+        </div>
+        <div class="field">
+          <label>Username</label>
+          <input type="text" id="cfg-username" placeholder="username">
+        </div>
+        <div class="field">
+          <label>Password</label>
+          <input type="password" id="cfg-password" placeholder="password">
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <div class="section-title">+ Protocol</div>
+        <div class="field">
+          <label>Mode</label>
+          <select id="cfg-mode">
+            <option value="masque">MASQUE (stealth)</option>
+            <option value="quic">QUIC direct</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>DoH Endpoint</label>
+          <input type="text" id="cfg-doh" placeholder="/dns-query">
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <div class="section-title">+ Advanced</div>
+        <div class="field checkbox-field">
+          <input type="checkbox" id="cfg-autoconnect">
+          <label for="cfg-autoconnect">Auto-connect on start</label>
+        </div>
+        <div class="field checkbox-field">
+          <input type="checkbox" id="cfg-killswitch">
+          <label for="cfg-killswitch">Kill switch</label>
+        </div>
+      </div>
+
+      <div class="settings-actions">
+        <button class="btn" id="save-btn">[ SAVE ]</button>
+        <button class="btn btn-secondary" id="back-btn">[ BACK ]</button>
+      </div>
+    </main>
+
+    <!-- Footer -->
+    <footer class="footer">
+      <span class="error hidden" id="error"></span>
+      <span class="version">v0.1.0</span>
+    </footer>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>

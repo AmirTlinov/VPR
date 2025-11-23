@@ -1,0 +1,98 @@
+{
+  "version": 2,
+  "nodes": {
+    "chunk:project://VPR/freeform": {
+      "kind": "chunk",
+      "label": "project://VPR/freeform",
+      "latest_memory": "019a5111-c911-7f91-b3d4-ebbf6e53dc3e",
+      "memory_ids": [
+        "019a50a3-be2c-7b51-88a7-19ed7f05ca70",
+        "019a50a5-9097-7b12-b72e-67c9fe055d28",
+        "019a50aa-4df7-7371-a202-8273933aee47",
+        "019a50b3-5d3e-72f2-8022-3ed7f23aadd3",
+        "019a50ca-e7b7-70f0-99e5-d6352264657c",
+        "019a50dd-4704-7f82-ab1a-66ca487d54af",
+        "019a50e6-2ba8-7292-bcb6-75257dc653bf",
+        "019a50f2-1343-7db3-8270-fcbe18c10f17",
+        "019a50fa-038b-7243-9b1b-b656a114f781",
+        "019a5111-c911-7f91-b3d4-ebbf6e53dc3e"
+      ],
+      "neighbors": [
+        "tag:apply_memory",
+        "tag:freeform",
+        "tag:note",
+        "tag:project:VPR"
+      ],
+      "edge_weights": {
+        "tag:apply_memory": {
+          "weight": 1.0,
+          "updated_at": 1762296712
+        },
+        "tag:freeform": {
+          "weight": 1.0,
+          "updated_at": 1762296712
+        },
+        "tag:note": {
+          "weight": 1.0,
+          "updated_at": 1762296712
+        },
+        "tag:project:VPR": {
+          "weight": 1.0,
+          "updated_at": 1762296712
+        }
+      }
+    },
+    "tag:apply_memory": {
+      "kind": "tag",
+      "label": "apply_memory",
+      "neighbors": [
+        "chunk:project://VPR/freeform"
+      ],
+      "edge_weights": {
+        "chunk:project://VPR/freeform": {
+          "weight": 1.0,
+          "updated_at": 1762296712
+        }
+      }
+    },
+    "tag:freeform": {
+      "kind": "tag",
+      "label": "freeform",
+      "neighbors": [
+        "chunk:project://VPR/freeform"
+      ],
+      "edge_weights": {
+        "chunk:project://VPR/freeform": {
+          "weight": 1.0,
+          "updated_at": 1762296712
+        }
+      }
+    },
+    "tag:note": {
+      "kind": "tag",
+      "label": "note",
+      "neighbors": [
+        "chunk:project://VPR/freeform"
+      ],
+      "edge_weights": {
+        "chunk:project://VPR/freeform": {
+          "weight": 1.0,
+          "updated_at": 1762296712
+        }
+      }
+    },
+    "tag:project:VPR": {
+      "kind": "tag",
+      "label": "project:VPR",
+      "neighbors": [
+        "chunk:project://VPR/freeform"
+      ],
+      "edge_weights": {
+        "chunk:project://VPR/freeform": {
+          "weight": 1.0,
+          "updated_at": 1762296712
+        }
+      }
+    }
+  }
+}

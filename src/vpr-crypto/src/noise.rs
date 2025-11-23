@@ -282,7 +282,9 @@ impl NoiseResponder {
         const HYBRID_PUB_LEN: usize = 32 + 1184; // X25519 + ML-KEM768
 
         if message.len() < HYBRID_PUB_LEN {
-            return Err(CryptoError::Noise("message too short for hybrid public".into()));
+            return Err(CryptoError::Noise(
+                "message too short for hybrid public".into(),
+            ));
         }
 
         let noise_len = message.len() - HYBRID_PUB_LEN;
@@ -314,7 +316,8 @@ impl NoiseResponder {
         buf.extend_from_slice(&our_hybrid.to_bytes());
 
         // Encapsulate to peer's hybrid public using our ephemeral X25519
-        let (mlkem_ct, hybrid_secret) = peer_hybrid.encapsulate(&self.hybrid_keypair.x25519_secret)?;
+        let (mlkem_ct, hybrid_secret) =
+            peer_hybrid.encapsulate(&self.hybrid_keypair.x25519_secret)?;
         buf.extend_from_slice(&mlkem_ct);
 
         Ok((buf, hybrid_secret))

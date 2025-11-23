@@ -1,0 +1,168 @@
+# Stealth Hyper-Performance Tunnel Architecture
+
+## 1. Threat Model & Mission Criteria
+- **Adversaries**: state-run censors with AI-driven DPI, TLS/JA3 fingerprinting, active probing, and ability to coerce last-mile ISPs. Assume selective MITM, QUIC/TCP resets, BGP poisoning, and rapid rule updates (<5 min).
+- **Availability targets**: ≥99.95% session survival per 24h even under targeted blocking campaigns like TSPU/Pearl, using multi-cloud POPs + covert relays.
+- **Performance targets**: single tunnel goodput ≥5 Gbps on 25G NICs, <70 ms added RTT over continental links, <2 s bootstrap even behind captive portals.
+- **UX**: "One button" means a single CLI subcommand or Terraform target that provisions infra, distributes cert/KEM material, verifies health, and emits client bundles.
+- **Scope**: решение предназначено для личного использования (1‑3 собственных узла), поэтому весь стек, включая DNS/DoH и автоматику, разворачивается владельцем без внешних партнёров.
+
+## 2. Constraints & Resource Baseline
+| Слой | Цель | Доступные ресурсы / инварианты |
+| --- | --- | --- |
+| Узлы | 1 VPS (основной) + опциональный домашний miniPC как portable node | Белый IPv4 обязателен только на VPS; домашний узел может находиться за NAT (WebRTC bootstrap). |
+| Сеть | ≥500 Мбит/с uplink на каждом узле | Аппаратные ускорители не требуются; io_uring достаточно, DPDK — только если уже имеется NIC. |
+| Оператор | 1 владелец | Инструменты — Ansible/ssh, git, age; максимум 2 ч в неделю на обслуживание. |
+| Бюджет | ≤$200/мес | Домены/сертификаты через бесплатный ACME, VPS среднего класса. |
+| Безопасность | Zero-trust к ISP/хостеру | Все артефакты подписаны локальным корнем, секреты лежат оффлайн/age. |
+
+## 3. Invariants & Success Metrics
+1. **Stealth**: JA3/JA4 уникальность <0.2 %; suspicion score <0.35; все fingerprint-пакеты подтверждены подписью и применяются через канарейку.  
+2. **Availability**: ≥99.2 % соединений завершается успешно за 24 ч; bootstrap <3 с через основной VPS.  
+3. **Integrity**: Любой артефакт проходит цепочку root→intermediate→service; клиенты проверяют подписи и версию manifest.  
+4. **Performance**: Минимум 800 Мбит/с goodput на каждом узле; при наличии DPDK — цель 5 Гбит/с, но компонент опционален.  
+5. **Recovery**: Массовый блок → перенастройка DNS на portable node (домашний) ≤15 мин, ≤1 % сессий обрывается; после разблокировки VPS возвращается в строй.  
+6. **Secrets**: Root CA остаётся оффлайн; intermediate и Noise seeds ротируются каждые 14 дней (или раньше при инциденте).
+
+## 4. Trust Chains
+### 4.1 Bootstrap Chain
+1. `operator-root` (офлайн) подписывает bootstrap manifest.  
+2. Manifest публикуется через self-hosted ODoH/DoH и stego RSS; клиент валидирует подпись и сверяет версию.  
+3. Клиент выбирает профиль (Stealth/Performance/Portable) и получает MASQUE endpoint + trust anchors.  
+4. Noise handshake стартует только после верификации ECH cert + manifest hash → предотвращает MITM.  
+5. При подмене манифеста клиент откатывается на cached версию и сигнализирует оператору.
+
+### 4.2 Cryptographic Chain
+1. Root CA (offline) -> Intermediate CA (per node) -> Service cert (MASQUE, DoH, WebRTC).  
+2. NoiseIK/NK использует гибрид ML-KEM768 × X25519; PQ seeds появляются только на узле, шифруются через `age`.  
+3. Session tickets подписываются ключом, derivable из hybrid secret; срок жизни ≤60 с или 1 ГБ.  
+4. `tls-fp-sync` подписывает обновлённые fingerprint bundles; клиенты сравнивают подпись + version nonce.  
+5. Revocation: оператор удаляет скомпрометированный intermediate, публикует CRL + новый manifest.
+
+### 4.3 DNS Chain
+1. Hidden master генерирует зоны, подписывает DNSSEC (ZSK weekly, KSK monthly).  
+2. Edge secondaries получают IXFR по WireGuard/Noise-SSH, проверяют подпись; только после этого обслуживают трафик.  
+3. Клиентские резолверы (DoQ/DoH/ODoH) хардкодят DS и root trust anchor → отравление upstream игнорируется.  
+4. Moving-target DoH списки подписаны оператором и распространяются через manifest.  
+5. При подозрении на компрометацию зона переносится на shadow домены с уже загруженными DS.
+
+## 5. Capability Map (Personal VPN Scope)
+| Dimension | Цель | Механизм |
+| --- | --- | --- |
+| Transport obfuscation | Выглядеть как обычный HTTPS/HTTP3 с минимальным числом точек | MASQUE over QUIC с ECH за self-hosted origin, опциональный WebRTC relay |
+| Cryptography | PQ-ready форвард-секрси | NoiseIK/NK с ML-KEM768 × X25519, частая ротация ключей |
+| Performance | ≥1 Гбит/с на домашних/арендованных серверах | io_uring + userspace QUIC; DPDK включаем только при наличии подходящего железа |
+| Resilience | Быстрый фэйловер между 1‑3 личными узлами | Self-hosted cover CDN + moving-target DNS/DoH, portable edge node шаблон |
+| Automation | «Одна кнопка» для владельца | Nix/OCI сборка + Terraform/Ansible, управляемые через Python GUI `vpr Studio`; секреты через age |
+
+## 6. Domain-Driven Skeleton
+- **Domain layer**: aggregates Policy (jurisdictional rules), TunnelProfile (bandwidth/latency budgets), TransportBudget (allowed disguises), and ThreatPosture (DPI score). No I/O here.
+- **Application layer (Ports)**: ControlPlanePort (provision + config dist), TelemetryPort (privacy-preserving metrics), TransportOrchestratorPort (selects covert path), CryptoPort (handles KEM/key rotation), ValidationPort (fuzz/chaos hooks).
+- **Infrastructure Adapters**: MASQUEAdapter, WebRTCRelayAdapter, DoHBootstrapAdapter, DataPlaneAdapter (DPDK/io_uring), PKIAdapter (HSM/KMS), IaCAdapter (Terraform Provider), ObservabilityAdapter (Prometheus/OpenTelemetry with redaction).
+
+## 7. Covert Bootstrap Pipeline
+1. **Discovery**: Clients fetch bootstrap blob via ODoH or steganographic RSS feed. Blob lists MASQUE front domains, WebRTC broker URLs, and PQ trust anchors.
+2. **Primary bootstrap**: MASQUE CONNECT-UDP over QUIC with ECH to hide SNI; клиенты подключаются к ближайшему из двух HTTPS фронтов (Round‑Robin/GeoDNS), поэтому трафик смешивается с обычными запросами к нашему сайту.
+3. **Fallbacks**:
+   - **Self-hosted cover CDN**: основной VPS одновременно играет роль HTTPS фронта и MASQUE origin. Для разнообразия доменов можно использовать несколько поддоменов, однако всё размещено на одном сервере; `Rotate Fronts` просто меняет виртуальные хосты и сертификаты на этом VPS.
+   - **WebRTC Snowflake-mode**: ephemeral browser relays auto-provisioned; broker chooses peers with low suspicion score.
+   - **DoH-to-H3 pivot**: If MASQUE handshake fails, encapsulate Noise handshake inside DoH POSTs until QUIC allowed, then upgrade.
+4. **Active probe defense**: challenge/response using short-lived PQ tokens + timing obfuscation; drop when probe fails to echo encrypted padding schedule.
+
+## 8. Core Tunnel Handshake & Crypto Plane
+- Utilize **NoiseIK** for known servers, **NoiseNK** when server anonymity needed; DH payload = (X25519 || ML-KEM768) hybrid with concatenated shared secrets.
+- Session tickets sealed with ML-KEM seeds to allow 0-RTT resumption without exposing identity.
+- Packet framing: length-hiding via adaptive padding buckets (32, 64, 256, 1024 bytes) tuned by DPI feedback loop.
+- Key rotation every 60 s or 1 GB, whichever first; rotation frames piggyback on data channel to avoid renegotiation RTT.
+
+## 9. Traffic Shaping & Performance Plane
+- **Server ingress**: по умолчанию — kernel networking с eBPF/XDP-фильтрами; если доступен 25G NIC, можно включить DPDK модуль (опционально).
+- **Client egress**: io_uring + userspace QUIC (quinn/neqo) для низких накладных расходов.
+- **Congestion control**: Dual-path—primary uses L4S-compatible SCReAM/BBRv3; secondary path uses LEDBAT++ for background replicas.
+- **Multipath orchestration**: Split flows across Wi-Fi + cellular or multi-ISP; MASQUE Control DATAGRAM IDs map to subflows with forward-error correction stripes (RaptorQ) for 1–3% loss resilience.
+- **Cover traffic**: Trace-driven pattern engine replays real HTTPS/WebRTC workloads (captured from our CDN) with jittered pacing to stay within accepted fingerprints without ML-heavy control loops.
+
+## 10. Operational & Automation Stack (Personal)
+- **Provisioning**: В Python GUI (`vpr Studio`) во вкладке Deploy вводим login/IP/password (или SSH key) VPS и жмём `Setup Node`; приложение автоматически выполняет: (1) проверку доступа, (2) установку зависимостей (Nix shell, Rust toolchain, Caddy/nginx), (3) развертывание Terraform/Ansible ролей, (4) sanity-тесты. Никакого ручного SSH/CLI не требуется.
+- **Secrets**: Root CA и PQ KEM материалы генерируются локально и шифруются через `age`; storage — оффлайн ключ + резервная копия на зашифрованном токене. HSM необязателен.
+- **One-button workflow**: Каждая операция в `vpr Studio` (Deploy, Rotate, Swap, Health) запускает фиксированную последовательность: (1) сборка/доставка бинарей, (2) `tls-fp-sync` с канареечной проверкой, (3) тест MASQUE/DoH/DoQ, (4) выпуск клиентских конфигов (desktop/mobile/router) в локальную директорию.
+- **GUI interface**: `vpr Studio` (PySide6/Qt) содержит вкладки: `Deploy`, `Rotate`, `Failover`, `Health`, `Logs`. Кнопки: `Deploy Node`, `Rotate Fronts`, `Rotate DoH`, `Swap Node`, `Sync Content`, `Health Check`, `Cleanup`. Каждый action логируется и требует подтверждения, поэтому оператору не нужно помнить CLI команды.
+- **Observability**: GUI показывает suspicion score, RTT, долю блокировок и DNS-ошибок в виде графиков; при желании включает Prometheus-экспорт (только локальный доступ). Все тесты запускаются в отдельном network namespace/внутреннем контейнере, поэтому текущий VPN на ПК не прерывается.
+
+### 10.1 GUI Workflow Details
+1. **State store**: `~/.vpr/state.json` хранит список узлов, профилей, доменов и последнего успешного развёртывания; `vpr Studio` подписывает изменения `age`-ключом и отображает историю.
+2. **Deploy Node**: GUI запрашивает профиль (stealth/perf/portable) и учётные данные VPS (login/IP/password или SSH key). После нажатия `Setup Node` автоматически выполняются Terraform/Ansible шаги (установка зависимостей, загрузка образов, старт сервисов), затем тесты (Noise handshake, throughput, DNS) и обновление manifest.
+3. **Rotate Fronts / Rotate DoH**: запускают ACME выдачу, обновляют Caddy/nginx, публикуют manifest, перезапускают `tls-fp-sync`; прогресс виден в GUI.
+4. **Swap Node**: выполняет failover (DNS + manifest) и переводит VPS в drain mode, показывая таймер и список активных сессий.
+5. **Health Check**: собирает suspicion score, RTT, DoH/DoQ статус и отображает в GUI; при аномалиях предлагает кнопки «Fix» (перезапуск сервиса) или «Swap Node». Проверки выполняются в изолированном namespace, чтобы не выключать активный VPN.
+
+## 11. Validation & Continuous Hardening
+- **DPI Lab**: integrate adversarial pre-padding research to continuously train evasion profiles against transformer/graph DPI models.
+- **Active probing harness**: emulate dMAP-style fingerprinting to ensure handshake diversity.
+- **Chaos & performance**: run multipath failover drills, packet loss bursts, NIC resets; вся тестовая нагрузка выполняется в отдельном namespace/VM, чтобы действующий VPN на рабочем ПК оставался включён; требование — zero customer-visible downtime.
+- **Crypto assurance**: KATs for Noise transcripts + PQ KEM test vectors; recurring side-channel audits on PQ code.
+
+## 12. Rollout Phases (Personal)
+1. **Prototype**: один сервер + MASQUE/Noise гибрид, проверка на локальном DPI тестере, целевая скорость ≥500 Мбит/с.
+2. **Hardening**: добавить self-hosted cover CDN, tls-fp-sync, ODoH bootstrap и тест WebRTC fallback.
+3. **Multi-node**: развернуть Portable Edge Node как резерв + включить moving-target DoH/DoQ; при возможности активировать DPDK.
+4. **Routine ops**: ежемесячные mass-block учения, автоматические сертификат/NS ротации, обновление PQ-алгоритмов.
+
+## 13. Lean Architecture Modes
+### 13.1 Stealth Core
+- **Resource footprint**: 1 основной узел (>=8 vCPU, 16 GB RAM, 1G uplink), 1 shadow-домен, собственный TLS/ECH набор.  
+- **Mechanics**: MASQUE Obfuscation за self-hosted origin, uTLS/uConfig с автообновлением `tls-fp-sync`, библиотека HTTP/3/WebRTC паттернов.  
+- **KPIs**: suspicion score <0.3, JA3 уникальность <0.1 %, bootstrap <2 с, DNS failure rate <0.5 %.  
+- **Procedures**: GUI `vpr Studio → Deploy Node (Stealth)`; `tls-fp-sync` раз в 6 ч (канарейка 5 % клиентов); ротация доменов/сертификатов каждые 6 ч через кнопку `Rotate Fronts`; еженедельный Noise transcript audit; ежемесячный DPI regression test.  
+
+### 13.2 Performance Edge
+- **Resource footprint**: 1 узел с 25G NIC, NUMA pinning, поддержкой DPDK 24.07 и, при необходимости, TDX/SEV-SNP.  
+- **Mechanics**: DPDK ingress + io_uring egress, multipath QUIC (SCReAM для основного потока, LEDBAT++ для копий), inline FEC (RaptorQ).  
+- **KPIs**: ≥8 Гбит/с goodput, latency overhead <10 мс, packet loss <1 % пост-FEC, CPU <70 %.  
+- **Procedures**: GUI `vpr Studio → Deploy Node (Perf)`; ежедневный iperf/masque throughput тест (`Health Check`); enclave attestation перед релизом; eBPF trace экспорт автоматически прикладывается к отчёту.  
+
+### 13.3 Portable Edge Node
+- **Resource footprint**: miniPC/NUC/VPS (4 vCPU, 8 GB RAM, 500 Мбит/с uplink) и локальное хранилище 128 GB.  
+- **Mechanics**: один процесс (Caddy + MASQUE gateway) обслуживает и веб-крышу, и туннель; локальный ODoH resolver работает поверх systemd-resolved + Stubby; статический контент генерируется Nix’ом.  
+- **KPIs**: локальный bootstrap <1 с, resolver hit ratio >70 %, доступность >98 %, время восстановления после блока <3 мин.  
+- **Procedures**: GUI `vpr Studio → Deploy Node (Portable)`; ежедневная синхронизация DNS zone/cover контента через `Sync Content`; еженедельный failover тест (`Health Check → Portable`); health-beacon отправляет JSON в manifest.
+
+## 14. DNS & Naming Strategy
+- **Authoritative tiers**: скрытый master (домашний узел) и один публичный authoritative/recursive сервер на основном VPS. Portable node может принимать AXFR/IXFR по требованию, но по умолчанию служит резервом. Зоны подписаны DNSSEC (ZSK weekly, KSK monthly).  
+- **QNAME minimisation & privacy**: резолверы выполняют RFC 9156 (адаптивный режим, ограничения MAX\_MINIMISE\_COUNT=10 и MINIMISE\_ONE\_LAB=4) для минимизации утечек имён. Это уменьшает видимость запросов даже если трафик временно уходит на классический UDP.citeturn1search0  
+- **Encrypted clients**: на стороне клиента поддерживаем DoH/DoH3, ODoH (через наш MASQUE-прокси как ODoH proxy) и DoQ (RFC 9250) — переключение на DoQ активируется, когда трасса позволяет QUIC, поскольку это даёт меньшую задержку и встроенное шифрование.citeturn2search0turn0search0  
+- **Recursive fabric**: каждый профиль имеет встроенный рекурсивный резолвер с DNSSEC-валидацией, aggressive NSEC caching и qname minimisation. Резолвер слушает тот же IP/порт, что и веб-контент, поэтому внешне запросы ничем не отличаются от обычного HTTPS.  
+- **Moving-target DoH endpoints**: каждые 6 ч через меню `Rotate DoH` выбирается новый поддомен из пула, выпускается ACME-сертификат и публикуется обновление в подписанном manifest (Git). Клиенты тянут manifest через ODoH/HTTPS и обновляют список без ручного вмешательства.citeturn3academia12  
+- **Censorship-aware fallbacks**: когда QUIC блокируется (как показали исследования GFW), клиенты автоматически снижаются до ODoH-over-MASQUE или классического DoH-зеркала на порту 443 с теми же сертификатами; контрольный план мониторит блокировки и перепривязывает зоны/NS к «здоровым» POP.citeturn1search1  
+- **Telemetry & incident loop**: suspicion score учитывает NXDOMAIN spikes, SERVFAIL и процент отклонённых DoQ подключений, чтобы выявлять пофамильно заблокированные fingerprints и отдавать команду ControlPlanePort на перевыпуск сертификатов/NS в течение <5 минут.
+
+## 15. Decision Matrix (Efficiency vs. Stealth)
+| Track | Stealth score | Throughput | Complexity | Key differentiators | Key KPIs |
+| --- | --- | --- | --- | --- | --- |
+| Stealth Core | ★★★★★ | ★★★ | Medium | MASQUE Obfuscation behind own origins, uTLS mimicry, dual-KEM Noise | suspicion <0.3, JA3 uniq <0.1 %, bootstrap <2 с |
+| Performance Edge | ★★☆ | ★★★★★ | High | DPDK ingress + multipath QUIC, optional enclaves | goodput ≥8 Гбит/с, latency overhead <10 мс, CPU <70 % |
+| Portable Edge Node | ★★★★ | ★★☆ | Low | Single-box PoP + local ODoH bootstrap | bootstrap <1 с, resolver hit >70 %, failover <3 мин |
+
+Scoring rubric: stealth measured against AI-DPI and active probes; throughput assumes 25G NIC baseline; complexity equals engineering + operational lift.
+
+## 16. Integration Guidance
+1. **Profile policy**: В сложных регионах поднимаем Stealth Core, а Portable Edge Node держим как горячий резерв рядом с пользователями; Performance Edge активируем точечно для точек с высокими нагрузками.  
+2. **Adaptive automation**: `vpr Studio` предлагает профили (stealth/perf/portable) и автоматически подключает нужные Terraform/Nix модули без ручных правок.  
+3. **Testing cadence**: Stealth Core проверяем в DPI-лабе, Performance Edge — нагрузочными/packet-loss сценариями, Portable Node — регулярными failover и bootstrap-дрілами (ручное отключение основного узла + проверка переключения).  
+4. **Upgrade discipline**: Enforce synchronized PQ cipher rollouts; mixed binaries trigger alerts referencing Kubernetes downgrade incident.  
+5. **Roadmap**: Short term—собрать Stealth Core MVP; medium—прикрутить Performance Edge; long term—масштабировать сеть Portable Edge Node по регионам.
+
+## 17. Autonomous Deployment Path
+1. **Own the network perimeter**: используем VPS/домашние IP, но весь трафик идёт через WireGuard/MASQUE; никакого BGP/ASN не требуется, достаточно управлять своими DNS-записями.  
+2. **Cover CDN**: лёгкий Caddy/nginx обслуживает статический контент + MASQUE endpoint; обновления контента автоматизируются через Nix build + rsync.  
+3. **TLS camouflage**: uTLS/uConfig + `tls-fp-sync` (канареечные группы, автоподпись, откат при подозрениях).  
+4. **Bootstrap independence**: manifest распространяется через stego RSS/Matrix-канал + ODoH на наших же VPS; резерв — локальный Portable Node, к которому можно подключиться напрямую.  
+5. **One-button orchestration**: `vpr Studio` готовит образ, выкатывает его через ssh/Ansible, запускает self-tests и кладёт клиентские бандлы в локальную директорию (или приватный git). Никаких BGP/облачных API не нужно.
+
+## 18. Mass-Blocking Countermeasures
+1. **Detection pipeline**: ObservabilityPort объединяет DNS/transport телеметрию (NXDOMAIN/SERVFAIL всплески, QUIC reset долю, JA3 блокировки). Каждому событию присваивается «severity score»; когда показатель превышает порог, запускается автоматическая процедура переезда (playbook ControlPlanePort). citeturn1search1  
+2. **Rapid renumbering**: пункт меню `Swap Node` в `vpr` за <5 мин переключает DNS A/AAAA-записи на portable node (домашний miniPC), обновляет bootstrap manifest и переводит VPS в режим drain (только cover-контент), пока цензор не снимет блок.  
+3. **Multi-namespace strategy**: Для критичных регионов держим минимум три раздельных набора доменов/сертификатов (primary, shadow, sleeper). При блоке primary клиенты автоматически переключаются на shadow, а sleeper остаётся нетронутым. DS-записи и TLS/ECH конфиги публикуются заранее, чтобы смена проходила без ожидания кэшей.  
+4. **Stacked resolvers**: Portable Edge Node включает локальный рекурсивный кеш + statically mirrored root (RFC 7706), так что даже при глобальной блокировке корня клиенты продолжают разрешать имена через наши POP.  
+5. **Protocol fallback ladder**: Клиенты имеют строгий порядок: DoQ → DoH3 → DoH → ODoH-over-MASQUE → внутритуннельный «resolver capsule». Каждое понижение протоколируется, чтобы ControlPlanePort видел масштаб блокировок и заранее готовил новые IP/доменные варианты.  
+6. **Operational drills**: Каждые 30 дней проводим учения «mass-block chaos» — искусственно объявляем часть POP заблокированными, проверяем, что detection → renumber → client migration происходит автоматически и вписывается в SLA (≤5 минут на переключение, ≤0.1% сессий прерываются).

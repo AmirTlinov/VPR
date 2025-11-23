@@ -1,7 +1,7 @@
 use crate::{CryptoError, Result};
 use rcgen::{
-    BasicConstraints, Certificate, CertificateParams, CertifiedKey, DnType,
-    ExtendedKeyUsagePurpose, IsCa, KeyPair, KeyUsagePurpose, SanType,
+    BasicConstraints, Certificate, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa,
+    KeyPair, KeyUsagePurpose, SanType,
 };
 use serde::{Deserialize, Serialize};
 use std::path::Path;

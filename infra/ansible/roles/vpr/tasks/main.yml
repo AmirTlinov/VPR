@@ -1,0 +1,76 @@
+---
+- name: Ensure base packages
+  apt:
+    name:
+      - curl
+      - git
+      - python3
+      - jq
+    state: present
+    update_cache: yes
+
+- name: Create vpr directory
+  file:
+    path: /opt/vpr
+    state: directory
+    mode: "0755"
+
+- name: Upload binaries
+  copy:
+    src: "{{ item.src }}"
+    dest: "/opt/vpr/{{ item.dest }}"
+    mode: "0755"
+  loop:
+    - { src: "{{ masque_core_binary }}", dest: "masque-core" }
+    - { src: "{{ doh_gateway_binary }}", dest: "doh-gateway" }
+
+- name: Upload configs
+  copy:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    mode: "0644"
+  loop:
+    - { src: "{{ masque_config }}", dest: "/etc/vpr/masque.toml" }
+    - { src: "{{ doh_config }}", dest: "/etc/vpr/doh.toml" }
+
+- name: Deploy systemd unit (masque-core)
+  copy:
+    dest: /etc/systemd/system/masque-core.service
+    content: |
+      [Unit]
+      Description=VPR MASQUE Core
+      After=network.target
+
+      [Service]
+      ExecStart=/opt/vpr/masque-core --config /etc/vpr/masque.toml
+      Restart=on-failure
+
+      [Install]
+      WantedBy=multi-user.target
+
+- name: Deploy systemd unit (doh-gateway)
+  copy:
+    dest: /etc/systemd/system/doh-gateway.service
+    content: |
+      [Unit]
+      Description=VPR DoH Gateway
+      After=network.target
+
+      [Service]
+      ExecStart=/opt/vpr/doh-gateway --config /etc/vpr/doh.toml
+      Restart=on-failure
+
+      [Install]
+      WantedBy=multi-user.target
+
+- name: Reload systemd
+  command: systemctl daemon-reload
+
+- name: Enable & start services
+  systemd:
+    name: "{{ item }}"
+    state: started
+    enabled: yes
+  loop:
+    - masque-core.service
+    - doh-gateway.service
