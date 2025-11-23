@@ -6,8 +6,8 @@ mkdir -p "$OUT"
 
 gen_pair() {
   local name="$1"
-  local sk="$OUT/${name}.key"
-  local pk="$OUT/${name}.pub"
+  local sk="$OUT/${name}.noise.key"
+  local pk="$OUT/${name}.noise.pub"
   head -c 32 /dev/urandom > "$sk"
   # derive pub via curve25519 basepoint mult using python
   python - <<'PY' "$sk" "$pk"

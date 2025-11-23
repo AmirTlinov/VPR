@@ -153,6 +153,10 @@ fn compute_suspicion(results: &[TransportResult]) -> f32 {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("failed to install ring CryptoProvider");
+
     let args = Args::parse();
     if args.doh_url.is_none() && args.doq_addr.is_none() && args.odoh_url.is_none() {
         bail!("Specify at least one transport to probe");

@@ -7,11 +7,11 @@ id: TASK-001
 parent: ROOT
 phase: null
 priority: MEDIUM
-progress: 33
-status: WARN
+progress: 100
+status: OK
 tags: []
 title: Запустить VPR на VPS
-updated: 2025-11-24 02:27
+updated: 2025-11-24 02:55
 ---
 
 # Запустить VPR на VPS
@@ -28,18 +28,22 @@ updated: 2025-11-24 02:27
   - Отметки критериев: Собрал перечень недостающих компонентов и настроек для запуска VPR на VPS; зафиксировал в ответе
   - Отметки тестов: cargo build --workspace --release и python -m unittest discover tests прошли
   - Отметки блокеров: Работаем на Ubuntu 25.04 локально, доступ к сети есть
-- [ ] Подготовить минимально рабочий стенд на данном VPS/ПК
+- [x] Подготовить минимально рабочий стенд на данном VPS/ПК
   - Критерии: Собраны бинарники masque-core, doh-gateway, health-harness в target/release; Сгенерированы самоподписанные cert/key и odoh_seed, размещены в /etc/vpr или secrets; Службы masque-core и doh-gateway подняты локально, health-harness даёт HEALTH_REPORT ok ≤1.5s
   - Тесты: target/release/masque-core --config config/masque.toml.sample; target/release/doh-gateway --config config/doh.toml.sample; target/release/health-harness --doh-url http://127.0.0.1:8053/dns-query --doq-addr 127.0.0.1:8853 --insecure-tls --samples=3
   - Блокеры: Нужен открытый порт 4433/8053/8853 на VPS; SELinux/ufw могут блокировать трафик
-  - Чекпоинты: Критерии=OK; Тесты=OK; Блокеры=TODO
-  - Отметки критериев: Добавлен рабочий TCP/UDP прокси через TLS+Noise, bootstrap-скрипт запускает оба сервиса
-  - Отметки тестов: Запуск скрипта local-bootstrap + health-harness готов, Noise переведён на статический IK
-- [ ] Зафиксировать недостающие фичи до полноценного VPN
+  - Чекпоинты: Критерии=OK; Тесты=OK; Блокеры=OK
+  - Отметки критериев: Добавлен рабочий TCP/UDP прокси через TLS+Noise, bootstrap-скрипт запускает оба сервиса; Бинарники собраны в target/release, сервисы подняты, health-harness даёт ok
+  - Отметки тестов: Запуск скрипта local-bootstrap + health-harness готов, Noise переведён на статический IK; DoH/ODoH работают, suspicion=0.0, latency <100ms
+  - Отметки блокеров: Порты открыты локально, фаервол не блокирует
+- [x] Зафиксировать недостающие фичи до полноценного VPN
   - Критерии: Список фич с приоритетами p0/p1 и оценкой работ сформирован; Отдельно отмечены критические: MASQUE CONNECT-UDP+HTTP/3, TUN/TAP интеграция, auth/keys, трафик-shaping
   - Тесты: Документ содержит ≥8 пунктов и владельцев/ETA (можно TBD)
   - Блокеры: Нет текущей дорожной карты — заполняем сами
-  - Чекпоинты: Критерии=TODO; Тесты=TODO; Блокеры=TODO
+  - Чекпоинты: Критерии=OK; Тесты=OK; Блокеры=OK
+  - Отметки критериев: Список фич с приоритетами P0-P3 и оценками создан в docs/ROADMAP.md
+  - Отметки тестов: Документ содержит 17 пунктов с владельцами TBD и ETA
+  - Отметки блокеров: Roadmap создан на основе анализа кодовой базы
 
 ## Критерии успеха
 - cargo build --workspace --release
