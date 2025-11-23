@@ -1,0 +1,49 @@
+[package]
+name = "vpr-crypto"
+version = "0.1.0"
+edition = "2021"
+description = "VPR cryptographic primitives: PKI, Noise, age encryption"
+
+[[bin]]
+name = "vpr-keygen"
+path = "src/bin/keygen.rs"
+
+[dependencies]
+# Core crypto
+x25519-dalek = { version = "2.0", features = ["static_secrets"] }
+ed25519-dalek = { version = "2.1", features = ["rand_core", "pem"] }
+snow = "0.9"
+pqcrypto-mlkem = "0.1"
+pqcrypto-traits = "0.3"
+sha2 = "0.10"
+hkdf = "0.12"
+aes-gcm = "0.10"
+chacha20poly1305 = "0.10"
+
+# PKI
+rcgen = { version = "0.13", features = ["pem", "x509-parser"] }
+x509-parser = "0.16"
+time = { version = "0.3", features = ["formatting", "parsing"] }
+
+# Age encryption
+age = { version = "0.10", features = ["armor"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+base64 = "0.22"
+hex = "0.4"
+
+# CLI
+clap = { version = "4.5", features = ["derive"] }
+
+# Utils
+anyhow = "1.0"
+thiserror = "2.0"
+rand = "0.8"
+zeroize = { version = "1.8", features = ["derive"] }
+tracing = "0.1"
+
+[dev-dependencies]
+tempfile = "3.14"
+tokio = { version = "1.39", features = ["rt-multi-thread", "macros"] }
