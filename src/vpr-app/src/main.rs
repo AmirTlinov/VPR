@@ -235,6 +235,9 @@ async fn connect(
     // Построить конфигурацию VPN клиента
     let port_num: u16 = port.parse().map_err(|e| format!("Invalid port: {}", e))?;
 
+    // Enable insecure mode for localhost/127.0.0.1 (self-signed certs)
+    let is_localhost = server == "localhost" || server == "127.0.0.1" || server.starts_with("127.");
+
     let vpn_config = VpnClientConfig {
         server: server.clone(),
         server_name: server.clone(),
@@ -247,7 +250,7 @@ async fn connect(
         dns_protection: true,
         dns_servers: vec![],
         tls_profile: "chrome".to_string(),
-        insecure: false,
+        insecure: is_localhost,
         killswitch: config.killswitch,
     };
 
@@ -508,6 +511,9 @@ fn main() {
                 .unwrap_or_else(|| PathBuf::from("."))
                 .join("secrets");
 
+            // Enable insecure mode for localhost/127.0.0.1 (self-signed certs)
+            let is_localhost = config.server == "localhost" || config.server == "127.0.0.1" || config.server.starts_with("127.");
+
             let vpn_config = VpnClientConfig {
                 server: config.server.clone(),
                 server_name: config.server.clone(),
@@ -520,7 +526,7 @@ fn main() {
                 dns_protection: true,
                 dns_servers: vec![],
                 tls_profile: "chrome".to_string(),
-                insecure: false,
+                insecure: is_localhost,
                 killswitch: config.killswitch,
             };
 
