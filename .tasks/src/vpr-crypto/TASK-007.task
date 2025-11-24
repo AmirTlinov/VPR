@@ -11,7 +11,7 @@ progress: 0
 status: FAIL
 tags: []
 title: 'CRIT-001..002: crypto hygiene'
-updated: 2025-11-24 04:21
+updated: 2025-11-24 04:26
 ---
 
 # CRIT-001..002: crypto hygiene
@@ -24,7 +24,10 @@ updated: 2025-11-24 04:21
   - Критерии: Генерация X25519/Noise использует только rand::rngs::OsRng; Нет вызовов rand::random()/thread_rng в prod-коде модуля; cargo test -p vpr-crypto проходит без флапов
   - Тесты: cargo test -p vpr-crypto --lib; rg "thread_rng\|rand::random" src/vpr-crypto -g'*.rs' --quiet && false || true
   - Блокеры: Убедиться в совместимости API OsRng с существующими вызовами; Проверить влияние на deterministic тесты
-  - Чекпоинты: Критерии=TODO; Тесты=TODO; Блокеры=TODO
+  - Чекпоинты: Критерии=OK; Тесты=OK; Блокеры=OK
+  - Отметки критериев: OsRng централизован через rng::secure_rng; thread_rng/rand::random отсутствуют
+  - Отметки тестов: cargo test -p vpr-crypto --lib passed
+  - Отметки блокеров: OsRng совместим с генерацией ключей; детерминированных тестов нет
 - [ ] CRIT-002: Zeroize/Drop для ML-KEM секрета в HybridKeypair и проверка очистки
   - Критерии: HybridKeypair очищает PQ секреты через zeroize при Drop; Юнит тест подтверждает очистку буфера после drop; Покрытие ≥85% по затронутым файлам
   - Тесты: cargo test -p vpr-crypto --lib -- --nocapture; cargo llvm-cov -p vpr-crypto

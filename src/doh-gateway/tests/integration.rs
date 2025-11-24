@@ -44,7 +44,7 @@ fn build_dns_response(id: u16) -> Vec<u8> {
     r.extend_from_slice(&1u16.to_be_bytes()); // ANCOUNT
     r.extend_from_slice(&0u16.to_be_bytes()); // NS
     r.extend_from_slice(&0u16.to_be_bytes()); // AR
-    // question (same as query)
+                                              // question (same as query)
     r.extend_from_slice(&[7, 101, 120, 97, 109, 112, 108, 101]);
     r.extend_from_slice(&[3, 99, 111, 109, 0]);
     r.extend_from_slice(&0x0001u16.to_be_bytes());

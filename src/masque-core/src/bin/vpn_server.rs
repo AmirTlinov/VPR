@@ -171,7 +171,8 @@ impl ServerState {
     fn restore_session(&mut self, session_id: &str, client_pubkey: &[u8; 32]) -> Option<Ipv4Addr> {
         if let Some(session) = self.sessions.get(session_id) {
             // Verify client identity and session freshness
-            if &session.client_pubkey == client_pubkey && session.last_seen.elapsed() < SESSION_TIMEOUT
+            if &session.client_pubkey == client_pubkey
+                && session.last_seen.elapsed() < SESSION_TIMEOUT
             {
                 return Some(session.allocated_ip);
             }
@@ -224,10 +225,11 @@ impl ServerState {
 /// Generate cryptographically secure session ID
 fn generate_session_id() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
+    // Use 0 as fallback if system time is before UNIX epoch (should never happen)
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
     use rand::rngs::OsRng;
     use rand::RngCore;
     let random: u64 = OsRng.next_u64();
@@ -390,9 +392,8 @@ async fn handle_vpn_client_with_config(
         .context("hybrid noise handshake")?;
 
     // Extract client's public key from handshake for session binding
-    let client_pubkey: [u8; 32] = hybrid_secret.combined[..32]
-        .try_into()
-        .expect("combined secret has at least 32 bytes");
+    // HybridSecret.combined is [u8; 32], so this is always valid
+    let client_pubkey: [u8; 32] = hybrid_secret.combined;
 
     info!(
         %remote,

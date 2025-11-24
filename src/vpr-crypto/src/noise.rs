@@ -1,4 +1,4 @@
-use crate::{CryptoError, Result};
+use crate::{rng, CryptoError, Result};
 use hkdf::Hkdf;
 use pqcrypto_mlkem::mlkem768;
 use pqcrypto_traits::kem::{Ciphertext, PublicKey, SharedSecret};
@@ -22,10 +22,8 @@ pub struct HybridKeypair {
 impl HybridKeypair {
     /// Generate new hybrid keypair
     pub fn generate() -> Self {
-        use rand::rngs::OsRng;
-        use rand::RngCore;
         let mut x25519_secret = [0u8; 32];
-        OsRng.fill_bytes(&mut x25519_secret);
+        rng::fill(&mut x25519_secret);
         let x25519_public =
             x25519_dalek::x25519(x25519_secret, x25519_dalek::X25519_BASEPOINT_BYTES);
 
@@ -384,13 +382,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn hybrid_keypair_generation_hits_osrng() {
+        crate::rng::reset_osrng_calls();
+        let _ = HybridKeypair::generate();
+        assert!(
+            crate::rng::osrng_call_count() >= 1,
+            "Hybrid key generation must draw from OsRng"
+        );
+    }
+
+    #[test]
     fn hybrid_keypair_encap_decap() {
         let kp = HybridKeypair::generate();
         let public = kp.public_bundle();
 
         // Generate ephemeral for encapsulation
         let mut eph_secret = [0u8; 32];
-        rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut eph_secret);
+        rng::fill(&mut eph_secret);
         let eph_public = x25519_dalek::x25519(eph_secret, x25519_dalek::X25519_BASEPOINT_BYTES);
 
         let (ct, secret1) = public.encapsulate(&eph_secret).unwrap();
@@ -403,12 +411,12 @@ mod tests {
     fn noise_ik_handshake() {
         // Generate static keys
         let mut server_static = [0u8; 32];
-        rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut server_static);
+        rng::fill(&mut server_static);
         let server_public =
             x25519_dalek::x25519(server_static, x25519_dalek::X25519_BASEPOINT_BYTES);
 
         let mut client_static = [0u8; 32];
-        rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut client_static);
+        rng::fill(&mut client_static);
 
         // Handshake
         let mut initiator = NoiseInitiator::new_ik(&client_static, &server_public).unwrap();

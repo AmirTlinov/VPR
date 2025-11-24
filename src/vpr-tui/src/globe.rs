@@ -74,7 +74,11 @@ fn shade_char(intensity: f32, is_land: bool, tick: u64) -> char {
 
     if is_land && glyph == ' ' {
         // Occasional glitch effect for water
-        if tick % 17 == 0 { '.' } else { ' ' }
+        if tick % 17 == 0 {
+            '.'
+        } else {
+            ' '
+        }
     } else {
         glyph
     }
@@ -82,7 +86,7 @@ fn shade_char(intensity: f32, is_land: bool, tick: u64) -> char {
 
 fn shade_color(is_land: bool, intensity: f32, tick: u64) -> Color {
     // Matrix/Watch Dogs palette: Black background, Cyan/Green foreground
-    
+
     let t = intensity.clamp(0.0, 1.0);
 
     if is_land {
@@ -94,14 +98,14 @@ fn shade_color(is_land: bool, intensity: f32, tick: u64) -> Color {
     } else {
         // Water is Dark Blue/Green or Empty
         if t < 0.2 {
-             Color::Rgb(0, 20, 40)
+            Color::Rgb(0, 20, 40)
         } else {
-             // Glitchy water
-             if tick % 9 == 0 {
-                 Color::Rgb(0, 100, 0)
-             } else {
-                 Color::Rgb(0, 50, 100)
-             }
+            // Glitchy water
+            if tick % 9 == 0 {
+                Color::Rgb(0, 100, 0)
+            } else {
+                Color::Rgb(0, 50, 100)
+            }
         }
     }
 }

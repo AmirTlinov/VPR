@@ -56,7 +56,7 @@ pub fn secure_rng() -> impl RngCore + CryptoRng {
     }
     #[cfg(not(test))]
     {
-        SecureRng
+        OsRng
     }
 }
 
@@ -74,4 +74,21 @@ pub fn reset_osrng_calls() {
 #[cfg(test)]
 pub fn osrng_call_count() -> u64 {
     OSRNG_CALLS.load(Ordering::SeqCst)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fill_tracks_osrng_usage() {
+        reset_osrng_calls();
+        let mut buf = [0u8; 32];
+        fill(&mut buf);
+        assert!(osrng_call_count() >= 1, "OsRng must be invoked during fill");
+        assert!(
+            buf.iter().any(|&b| b != 0),
+            "fill must mutate provided buffer"
+        );
+    }
 }

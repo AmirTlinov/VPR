@@ -4,7 +4,7 @@
 //! forwarding IP packets through encrypted QUIC datagrams.
 
 use crate::masque::UdpCapsule;
-use crate::tun::{TunConfig, TunDevice, TunReader, TunWriter};
+use crate::tun::{IpPacketInfo, TunConfig, TunReader, TunWriter};
 use anyhow::{Context, Result};
 use bytes::Bytes;
 use std::net::Ipv4Addr;
@@ -103,6 +103,23 @@ pub async fn tun_to_channel(mut tun_reader: TunReader, tx: mpsc::Sender<Bytes>) 
     loop {
         match tun_reader.read_packet().await {
             Ok(packet) => {
+                // Validate packet structure before forwarding
+                match IpPacketInfo::parse(&packet) {
+                    Ok(info) => {
+                        debug!(
+                            src = %info.src_addr,
+                            dst = %info.dst_addr,
+                            proto = info.protocol_name(),
+                            len = info.total_len,
+                            "TUN packet"
+                        );
+                    }
+                    Err(e) => {
+                        warn!(%e, packet_len = packet.len(), "Invalid IP packet from TUN, dropping");
+                        continue; // Drop invalid packets
+                    }
+                }
+
                 if tx.send(packet).await.is_err() {
                     debug!("TUN reader: channel closed");
                     break;

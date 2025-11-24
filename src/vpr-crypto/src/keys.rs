@@ -1,6 +1,5 @@
-use crate::{CryptoError, Result};
+use crate::{rng, CryptoError, Result};
 use ed25519_dalek::{SigningKey, VerifyingKey};
-use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use x25519_dalek::{PublicKey as X25519Public, StaticSecret as X25519Secret};
@@ -15,7 +14,7 @@ pub struct NoiseKeypair {
 
 impl NoiseKeypair {
     pub fn generate() -> Self {
-        let secret = X25519Secret::random_from_rng(OsRng);
+        let secret = X25519Secret::random_from_rng(rng::secure_rng());
         let public = X25519Public::from(&secret);
         Self { secret, public }
     }
@@ -78,7 +77,8 @@ pub struct SigningKeypair {
 
 impl SigningKeypair {
     pub fn generate() -> Self {
-        let signing = SigningKey::generate(&mut OsRng);
+        let mut rng = rng::secure_rng();
+        let signing = SigningKey::generate(&mut rng);
         let verifying = signing.verifying_key();
         Self { signing, verifying }
     }
@@ -208,6 +208,26 @@ impl SecretBytes {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn noise_keypair_generation_uses_osrng() {
+        rng::reset_osrng_calls();
+        let _ = NoiseKeypair::generate();
+        assert!(
+            rng::osrng_call_count() >= 1,
+            "NoiseKeypair must draw from OsRng"
+        );
+    }
+
+    #[test]
+    fn signing_keypair_generation_uses_osrng() {
+        rng::reset_osrng_calls();
+        let _ = SigningKeypair::generate();
+        assert!(
+            rng::osrng_call_count() >= 1,
+            "SigningKeypair must draw from OsRng"
+        );
+    }
 
     #[test]
     fn noise_keypair_roundtrip() {
