@@ -31,6 +31,7 @@ rand = "0.8"
 sha2 = "0.10"
 md5 = "0.7"
 libc = "0.2"
+async-trait = "0.1"
 
 # VPR crypto with hybrid PQ Noise
 vpr-crypto = { path = "../vpr-crypto" }
