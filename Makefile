@@ -12,8 +12,15 @@ tui-frame:
 
 # Build and run VPN client
 vpn:
-	@cd src/vpr-app && cargo tauri build 2>&1 | grep -E "(Compiling|Finished|Built|Error)" || true
-	@./target/release/vpr-app &
+	@if [ ! -f ./target/release/vpr-app ]; then \
+		echo "Building VPR app..."; \
+		cd src/vpr-app && cargo tauri build 2>&1 | grep -E "(Compiling|Finished|Built|Error)" || true; \
+	else \
+		echo "VPR app already built (use 'make build' to rebuild)"; \
+	fi
+	@echo "Starting VPR..."
+	@./target/release/vpr-app 2>/dev/null &
+	@sleep 1 && pgrep -x vpr-app > /dev/null && echo "✓ VPR running (PID: $$(pgrep -x vpr-app))" || echo "✗ Failed to start"
 
 # Run VPN app in development mode
 dev:
