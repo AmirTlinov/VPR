@@ -8,13 +8,13 @@ use clap::Parser;
 use quinn::{ClientConfig as QuinnClientConfig, Endpoint, TransportConfig};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
-use rustls::{version, DigitallySignedStruct, SignatureScheme};
+use rustls::{DigitallySignedStruct, SignatureScheme};
 use sha2::Sha256;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 use tokio::sync::{broadcast, mpsc};
 use tracing::{error, info, Level};
 use tracing_subscriber::FmtSubscriber;
@@ -26,7 +26,9 @@ use masque_core::key_rotation::{
 };
 use masque_core::padding::{Padder, PaddingConfig, PaddingStrategy};
 use masque_core::quic_stream::QuicBiStream;
-use masque_core::tls_fingerprint::{GreaseMode, Ja3Fingerprint, Ja3sFingerprint, Ja4Fingerprint, TlsProfile};
+use masque_core::tls_fingerprint::{
+    GreaseMode, Ja3Fingerprint, Ja3sFingerprint, Ja4Fingerprint, TlsProfile,
+};
 use masque_core::tun::{setup_routing, DnsProtection, TunConfig, TunDevice};
 use masque_core::vpn_config::{ConfigAck, VpnConfig};
 use masque_core::vpn_tunnel::{
@@ -109,14 +111,6 @@ struct Args {
     /// TLS fingerprint profile to mimic (chrome, firefox, safari, random)
     #[arg(long, default_value = "chrome")]
     tls_profile: String,
-
-    /// GREASE mode: random|deterministic
-    #[arg(long, default_value = "random")]
-    tls_grease_mode: String,
-
-    /// GREASE seed when deterministic mode is selected
-    #[arg(long, default_value_t = 0)]
-    tls_grease_seed: u64,
 
     /// GREASE mode: random|deterministic
     #[arg(long, default_value = "random")]
@@ -512,14 +506,31 @@ fn build_quic_config(
     let mut transport_config = TransportConfig::default();
     transport_config.max_idle_timeout(Some(Duration::from_secs(idle_timeout).try_into()?));
 
-    tracing::info!(profile = %tls_profile, "Client TLS profile configured");
-
     // Enable QUIC datagrams for VPN traffic
     transport_config.datagram_receive_buffer_size(Some(65536));
     transport_config.datagram_send_buffer_size(65536);
 
+    // Apply TLS profile cipher suites and key exchange groups
+    let cipher_suites = tls_profile.rustls_cipher_suites();
+    let kx_groups = tls_profile.rustls_kx_groups();
+
+    tracing::info!(
+        profile = %tls_profile,
+        cipher_count = cipher_suites.len(),
+        kx_count = kx_groups.len(),
+        "Applying TLS profile cipher suites"
+    );
+
+    // Build custom crypto provider with profile-specific ciphers
+    let provider = rustls::crypto::CryptoProvider {
+        cipher_suites,
+        kx_groups,
+        ..rustls::crypto::ring::default_provider()
+    };
+
     let mut crypto_config = if insecure {
-        rustls::ClientConfig::builder()
+        rustls::ClientConfig::builder_with_provider(Arc::new(provider))
+            .with_protocol_versions(&[&rustls::version::TLS13])?
             .dangerous()
             .with_custom_certificate_verifier(Arc::new(InsecureVerifier))
             .with_no_client_auth()
@@ -527,14 +538,12 @@ fn build_quic_config(
         let mut roots = rustls::RootCertStore::empty();
         roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
 
-        rustls::ClientConfig::builder()
+        rustls::ClientConfig::builder_with_provider(Arc::new(provider))
+            .with_protocol_versions(&[&rustls::version::TLS13])?
             .with_root_certificates(roots)
             .with_no_client_auth()
     };
 
-    crypto_config.cipher_suites = tls_profile.rustls_cipher_suites();
-    crypto_config.kx_groups = tls_profile.rustls_kx_groups();
-    crypto_config.versions = vec![&rustls::version::TLS13];
     crypto_config.alpn_protocols = vec![b"h3".to_vec(), b"masque".to_vec()];
 
     let mut client_config = QuinnClientConfig::new(Arc::new(
@@ -651,7 +660,7 @@ fn solve_pow(nonce: &[u8; 32], difficulty: u8) -> [u8; 32] {
         let mut hasher = Sha256::new();
         use sha2::Digest;
         hasher.update(nonce);
-        hasher.update(&candidate);
+        hasher.update(candidate);
         let hash = hasher.finalize();
         let mut ok = true;
         for i in 0..difficulty as usize {
