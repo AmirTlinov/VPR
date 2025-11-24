@@ -10,7 +10,7 @@
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
-use std::net::Ipv4Addr;
+use std::net::{IpAddr, Ipv4Addr};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 /// Maximum config message size (64KB)
@@ -27,7 +27,7 @@ pub struct VpnConfig {
     pub gateway: Ipv4Addr,
     /// DNS servers to use (optional)
     #[serde(default)]
-    pub dns_servers: Vec<Ipv4Addr>,
+    pub dns_servers: Vec<IpAddr>,
     /// Routes to push to client (CIDR notation)
     #[serde(default)]
     pub routes: Vec<String>,
@@ -77,7 +77,7 @@ impl VpnConfig {
     }
 
     /// Add DNS server
-    pub fn with_dns(mut self, dns: Ipv4Addr) -> Self {
+    pub fn with_dns(mut self, dns: IpAddr) -> Self {
         self.dns_servers.push(dns);
         self
     }
@@ -244,10 +244,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_vpn_config_roundtrip() {
+    fn dns_config_propagation_roundtrip() {
         let config = VpnConfig::new(Ipv4Addr::new(10, 8, 0, 5), Ipv4Addr::new(10, 8, 0, 1))
-            .with_dns(Ipv4Addr::new(8, 8, 8, 8))
-            .with_dns(Ipv4Addr::new(1, 1, 1, 1))
+            .with_dns(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)))
+            .with_dns(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)))
             .with_route("0.0.0.0/0")
             .with_mtu(1400);
 
@@ -257,6 +257,7 @@ mod tests {
         assert_eq!(parsed.client_ip, config.client_ip);
         assert_eq!(parsed.gateway, config.gateway);
         assert_eq!(parsed.dns_servers.len(), 2);
+        assert_eq!(parsed.dns_servers[0], IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)));
         assert_eq!(parsed.routes.len(), 1);
         assert_eq!(parsed.mtu, 1400);
     }
@@ -294,6 +295,23 @@ mod tests {
 
         assert_eq!(parsed.session_rekey_secs, Some(42));
         assert_eq!(parsed.session_rekey_bytes, Some(2048));
+    }
+
+    #[test]
+    fn test_vpn_config_dns_ipv6_roundtrip() {
+        let config = VpnConfig::new(Ipv4Addr::new(10, 8, 0, 2), Ipv4Addr::new(10, 8, 0, 1))
+            .with_dns(IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9)))
+            .with_dns(IpAddr::V6("2001:4860:4860::8888".parse().unwrap()));
+
+        let bytes = config.to_bytes().unwrap();
+        let parsed = VpnConfig::from_bytes(&bytes).unwrap();
+
+        assert_eq!(parsed.dns_servers.len(), 2);
+        assert_eq!(parsed.dns_servers[0], IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9)));
+        assert_eq!(
+            parsed.dns_servers[1],
+            IpAddr::V6("2001:4860:4860::8888".parse().unwrap())
+        );
     }
 
     #[tokio::test]

@@ -3,7 +3,7 @@
 //! Wraps vpr-crypto's hybrid Noise (X25519 + ML-KEM768) for use in MASQUE server.
 //! Provides both server (responder) and client (initiator) handshake flows.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use std::path::Path;
 use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -248,8 +248,8 @@ impl HybridClient {
 pub struct EncryptedStream<S> {
     inner: S,
     transport: NoiseTransport,
-    read_buf: Vec<u8>,
-    read_pos: usize,
+    _read_buf: Vec<u8>,
+    _read_pos: usize,
 }
 
 impl<S: AsyncRead + AsyncWrite + Unpin> EncryptedStream<S> {
@@ -257,8 +257,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin> EncryptedStream<S> {
         Self {
             inner: stream,
             transport,
-            read_buf: Vec::new(),
-            read_pos: 0,
+            _read_buf: Vec::new(),
+            _read_pos: 0,
         }
     }
 
@@ -355,8 +355,8 @@ mod tests {
         let client_result = client.handshake_ik(&mut client_stream).await;
         let server_result = server_handle.await.unwrap();
 
-        let (client_transport, client_hybrid) = client_result.unwrap();
-        let (server_transport, server_hybrid) = server_result.unwrap();
+        let (_client_transport, client_hybrid) = client_result.unwrap();
+        let (_server_transport, server_hybrid) = server_result.unwrap();
 
         // Hybrid secrets should match
         assert_eq!(client_hybrid.combined, server_hybrid.combined);
@@ -396,7 +396,7 @@ mod tests {
     #[tokio::test]
     async fn replay_protection_blocks_duplicate() {
         let server_kp = NoiseKeypair::generate();
-        let client_kp = NoiseKeypair::generate();
+        let _client_kp = NoiseKeypair::generate();
 
         let replay_cache = Arc::new(NonceCache::new());
         let server = HybridServer::from_secret(&server_kp.secret_bytes())

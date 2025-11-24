@@ -21,6 +21,7 @@ impl SealIdentity {
     }
 
     /// Load from secret key string (age secret key format)
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Result<Self> {
         let identity = s
             .parse::<x25519::Identity>()
@@ -36,6 +37,7 @@ impl SealIdentity {
     }
 
     /// Export secret key in age format
+    #[allow(clippy::inherent_to_string)]
     pub fn to_string(&self) -> String {
         self.identity.to_string().expose_secret().to_string()
     }
@@ -88,6 +90,7 @@ pub struct SealRecipient {
 
 impl SealRecipient {
     /// Parse from public key string
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Result<Self> {
         let recipient = s
             .parse::<x25519::Recipient>()
@@ -96,6 +99,7 @@ impl SealRecipient {
     }
 
     /// Export public key in age format
+    #[allow(clippy::inherent_to_string)]
     pub fn to_string(&self) -> String {
         self.recipient.to_string()
     }
@@ -160,7 +164,7 @@ pub fn seal_secrets_dir(
     for entry in std::fs::read_dir(secrets_dir)? {
         let entry = entry?;
         let path = entry.path();
-        if path.is_file() && !path.extension().is_some_and(|e| e == "age") {
+        if path.is_file() && path.extension().is_none_or(|e| e != "age") {
             let name = path.file_name().unwrap().to_string_lossy();
             let output_path = output_dir.join(format!("{name}.age"));
             seal_file(&path, &output_path, recipient)?;

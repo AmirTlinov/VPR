@@ -4,7 +4,7 @@
 
 use anyhow::{bail, Context, Result};
 use bytes::Bytes;
-use std::net::Ipv4Addr;
+use std::net::{IpAddr, Ipv4Addr};
 use std::process::Command;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf};
 use tokio_tun::{Tun, TunBuilder};
@@ -171,6 +171,7 @@ impl TunWriter {
 }
 
 /// Configure TUN device IP address using ip command
+#[allow(dead_code)]
 fn configure_tun_address(name: &str, config: &TunConfig) -> Result<()> {
     // Set IP address
     let addr_cidr = format!("{}/{}", config.address, netmask_to_cidr(&config.netmask));
@@ -208,6 +209,7 @@ fn configure_tun_address(name: &str, config: &TunConfig) -> Result<()> {
 }
 
 /// Convert netmask to CIDR prefix length
+#[allow(dead_code)]
 fn netmask_to_cidr(netmask: &Ipv4Addr) -> u8 {
     let bits = u32::from_be_bytes(netmask.octets());
     bits.count_ones() as u8
@@ -384,7 +386,7 @@ impl DnsProtection {
     }
 
     /// Enable DNS leak protection with specified DNS servers
-    pub fn enable(&mut self, dns_servers: &[Ipv4Addr]) -> Result<()> {
+    pub fn enable(&mut self, dns_servers: &[IpAddr]) -> Result<()> {
         if self.active {
             return Ok(());
         }

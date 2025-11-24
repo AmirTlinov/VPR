@@ -47,6 +47,9 @@ scripts/gen-noise-keys.sh secrets
 target/release/masque-core --config config/masque.toml.sample --noise-key secrets/server.key
 target/release/doh-gateway --config config/doh.toml.sample --odoh-enable
 
+### DNS
+- По умолчанию сервер пушит 8.8.8.8 и 1.1.1.1. Передайте `--dns-servers 9.9.9.9,1.0.0.1,2001:4860:4860::8888` чтобы задать свои IPv4/IPv6 DNS.
+
 # Health check
 target/release/health-harness --doh-url http://127.0.0.1:8053/dns-query --samples=3
 ```

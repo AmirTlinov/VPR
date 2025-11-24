@@ -255,7 +255,8 @@ impl DomainFronter {
 /// Request builder for domain-fronted connections
 pub struct FrontedRequest {
     front: FrontConfig,
-    method: String,
+    #[allow(dead_code)]
+    method: String, // kept for future methods; currently unused
     path: String,
     headers: HashMap<String, String>,
     body: Option<Vec<u8>>,

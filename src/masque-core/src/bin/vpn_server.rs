@@ -12,7 +12,7 @@ use rustls_pemfile::{certs, private_key};
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::BufReader;
-use std::net::{Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -32,8 +32,10 @@ use masque_core::padding::{Padder, PaddingConfig, PaddingStrategy};
 use masque_core::probe_protection::{ProbeDetection, ProbeProtectionConfig, ProbeProtector};
 use masque_core::quic_stream::QuicBiStream;
 use masque_core::replay_protection::NonceCache;
-use masque_core::tls_fingerprint::TlsProfile;
 use masque_core::rng;
+use masque_core::tls_fingerprint::{
+    GreaseMode, Ja3Fingerprint, Ja3sFingerprint, Ja4Fingerprint, TlsProfile,
+};
 use masque_core::tun::{enable_ip_forwarding, setup_nat, TunConfig, TunDevice};
 use masque_core::vpn_config::{ConfigAck, VpnConfig};
 use masque_core::vpn_tunnel::PacketEncapsulator;
@@ -58,6 +60,10 @@ struct Args {
     /// TUN netmask
     #[arg(long, default_value = "255.255.255.0")]
     tun_netmask: Ipv4Addr,
+
+    /// DNS servers to push to clients (comma-separated). Defaults to public resolvers if empty.
+    #[arg(long, value_delimiter = ',')]
+    dns_servers: Vec<IpAddr>,
 
     /// MTU for TUN device
     #[arg(long, default_value = "1400")]
@@ -159,20 +165,21 @@ struct Args {
     #[arg(long, default_value = "1073741824")]
     session_rekey_bytes: u64,
 
-    /// TLS fingerprint profile to mimic (unused placeholder)
-    #[allow(dead_code)]
+    /// TLS fingerprint profile to mimic (chrome, firefox, safari, random)
     #[arg(long, default_value = "chrome")]
     tls_profile: String,
 
-    /// GREASE mode: random|deterministic (unused placeholder)
-    #[allow(dead_code)]
+    /// GREASE mode: random|deterministic
     #[arg(long, default_value = "random")]
     tls_grease_mode: String,
 
-    /// GREASE seed used when deterministic mode is selected (unused placeholder)
-    #[allow(dead_code)]
+    /// GREASE seed used when deterministic mode is selected
     #[arg(long, default_value_t = 0)]
     tls_grease_seed: u64,
+
+    /// Export JA3/JA3S/JA4 metrics to Prometheus text file
+    #[arg(long)]
+    tls_fp_metrics_path: Option<PathBuf>,
 }
 
 /// Client session with allocated IP and connection
@@ -240,6 +247,12 @@ struct SessionInfo {
 
 /// Session timeout for reconnection (5 minutes)
 const SESSION_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// Default DNS servers pushed to clients when none specified
+const DEFAULT_DNS_SERVERS: [IpAddr; 2] = [
+    IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)),
+    IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)),
+];
 
 /// Shared server state
 struct ServerState {
@@ -363,6 +376,8 @@ async fn run_vpn_server(args: Args) -> Result<()> {
     let padding_max_jitter_us = args.padding_max_jitter_us;
     let padding_min_size = args.padding_min_size;
     let padding_mtu = args.padding_mtu.unwrap_or(args.mtu);
+    let dns_servers = Arc::new(resolve_dns_servers(&args));
+    debug!(dns_servers = ?dns_servers, "DNS servers configured");
 
     let probe_protector = Arc::new(build_probe_protector(&args));
 
@@ -398,10 +413,7 @@ async fn run_vpn_server(args: Args) -> Result<()> {
     let certs = load_certs(&args.cert)?;
     let key = load_key(&args.key)?;
 
-    let tls_profile: TlsProfile = args
-        .tls_profile
-        .parse()
-        .unwrap_or(TlsProfile::Chrome);
+    let tls_profile: TlsProfile = args.tls_profile.parse().unwrap_or(TlsProfile::Chrome);
     info!(profile = %tls_profile, "TLS profile configured (server)");
 
     // Create TUN device
@@ -434,11 +446,37 @@ async fn run_vpn_server(args: Args) -> Result<()> {
     }
 
     // TLS fingerprint profile
-    let tls_profile: TlsProfile = args
-        .tls_profile
-        .parse()
-        .unwrap_or_else(|_| TlsProfile::Chrome);
-    info!(profile = %tls_profile, "TLS server fingerprint configured");
+    let tls_profile: TlsProfile = args.tls_profile.parse().unwrap_or(TlsProfile::Chrome);
+    let grease_mode = parse_grease_mode(&args.tls_grease_mode, args.tls_grease_seed);
+    let (ja3, ja3s, ja4, selected_cipher) = build_tls_fingerprint(&tls_profile, grease_mode);
+    let ja3_hash = ja3.to_ja3_hash();
+    let ja3s_hash = ja3s.to_ja3s_hash();
+    let ja4_hash = ja4.to_hash();
+    info!(
+        profile = %tls_profile,
+        grease = ?grease_mode,
+        ja3 = %ja3_hash,
+        ja3s = %ja3s_hash,
+        ja4 = %ja4_hash,
+        selected_cipher = format!("0x{selected_cipher:04x}"),
+        "TLS server fingerprint configured"
+    );
+
+    if let Some(path) = &args.tls_fp_metrics_path {
+        let content = format!(
+            "# HELP tls_fp_info TLS fingerprint JA3/JA3S/JA4\\n\
+             # TYPE tls_fp_info gauge\\n\
+             tls_fp_info{{type=\"ja3\",hash=\"{ja3}\"}} 1\\n\
+             tls_fp_info{{type=\"ja3s\",hash=\"{ja3s}\"}} 1\\n\
+             tls_fp_info{{type=\"ja4\",hash=\"{ja4}\"}} 1\\n",
+            ja3 = ja3_hash,
+            ja3s = ja3s_hash,
+            ja4 = ja4_hash
+        );
+        if let Err(e) = fs::write(path, content.as_bytes()) {
+            warn!(?e, ?path, "Failed to write tls_fp metrics");
+        }
+    }
 
     // Build QUIC server config
     let server_config = build_server_config(certs, key, args.idle_timeout, tls_profile)?;
@@ -484,6 +522,7 @@ async fn run_vpn_server(args: Args) -> Result<()> {
         let cover_pattern = args.cover_traffic_pattern.clone();
         let session_rekey_seconds = args.session_rekey_seconds;
         let session_rekey_bytes = args.session_rekey_bytes;
+        let dns_servers = dns_servers.clone();
 
         tokio::spawn(async move {
             match incoming.await {
@@ -510,6 +549,7 @@ async fn run_vpn_server(args: Args) -> Result<()> {
                         cover_pattern,
                         session_rekey_seconds,
                         session_rekey_bytes,
+                        dns_servers,
                     )
                     .await
                     {
@@ -554,6 +594,7 @@ async fn handle_vpn_client_with_config(
     cover_pattern: String,
     session_rekey_seconds: u64,
     session_rekey_bytes: u64,
+    dns_servers: Arc<Vec<IpAddr>>,
 ) -> Result<()> {
     let remote = connection.remote_address();
     let remote_ip = remote.ip();
@@ -692,7 +733,7 @@ async fn handle_vpn_client_with_config(
     info!(%remote, client_ip = %client_ip, session_id = %session_id, "Session created");
 
     // Send VPN configuration to client with session_id for reconnect
-    let vpn_config = VpnConfig::new(client_ip, gateway_ip)
+    let mut vpn_config = VpnConfig::new(client_ip, gateway_ip)
         .with_mtu(mtu)
         .with_padding(
             padding_strategy,
@@ -701,10 +742,12 @@ async fn handle_vpn_client_with_config(
             padding_mtu,
         )
         .with_rotation(session_rekey_seconds, session_rekey_bytes)
-        .with_dns(Ipv4Addr::new(8, 8, 8, 8))
-        .with_dns(Ipv4Addr::new(1, 1, 1, 1))
         .with_route("0.0.0.0/0") // Full tunnel mode
         .with_session_id(&session_id);
+
+    for dns in dns_servers.iter() {
+        vpn_config = vpn_config.with_dns(*dns);
+    }
 
     if let Err(e) = vpn_config.send(&mut stream).await {
         probe.record_failure(remote_ip);
@@ -919,6 +962,32 @@ async fn tun_reader_task(
     debug!("TUN reader task ended");
 }
 
+fn parse_grease_mode(mode: &str, seed: u64) -> GreaseMode {
+    match mode.to_ascii_lowercase().as_str() {
+        "deterministic" | "det" | "fixed" => GreaseMode::Deterministic(seed),
+        _ => GreaseMode::Random,
+    }
+}
+
+fn preferred_tls13_cipher(profile: &TlsProfile) -> u16 {
+    profile
+        .cipher_suites()
+        .into_iter()
+        .find(|c| (*c & 0xff00) == 0x1300)
+        .unwrap_or(0x1301)
+}
+
+fn build_tls_fingerprint(
+    profile: &TlsProfile,
+    grease_mode: GreaseMode,
+) -> (Ja3Fingerprint, Ja3sFingerprint, Ja4Fingerprint, u16) {
+    let ja3 = Ja3Fingerprint::from_profile_with_grease(profile, grease_mode);
+    let selected_cipher = preferred_tls13_cipher(profile);
+    let ja3s = Ja3sFingerprint::from_profile_with_grease(profile, selected_cipher, grease_mode);
+    let ja4 = Ja4Fingerprint::from_profile(profile);
+    (ja3, ja3s, ja4, selected_cipher)
+}
+
 fn build_server_config(
     certs: Vec<CertificateDer<'static>>,
     key: PrivateKeyDer<'static>,
@@ -1042,6 +1111,14 @@ fn build_probe_protector(args: &Args) -> ProbeProtector {
     ProbeProtector::new(config)
 }
 
+fn resolve_dns_servers(args: &Args) -> Vec<IpAddr> {
+    if args.dns_servers.is_empty() {
+        DEFAULT_DNS_SERVERS.to_vec()
+    } else {
+        args.dns_servers.clone()
+    }
+}
+
 async fn probe_metrics_task(protector: Arc<ProbeProtector>, path: PathBuf, interval_secs: u64) {
     let mut ticker = interval(Duration::from_secs(interval_secs.max(1)));
     loop {
@@ -1056,7 +1133,7 @@ async fn probe_metrics_task(protector: Arc<ProbeProtector>, path: PathBuf, inter
             Ok::<(), std::io::Error>(())
         })
         .await
-        .unwrap_or_else(|e| Err(std::io::Error::new(std::io::ErrorKind::Other, e)))
+        .unwrap_or_else(|e| Err(std::io::Error::other(e)))
         {
             warn!(%e, "Failed to persist probe metrics");
         }
@@ -1094,5 +1171,33 @@ mod tests {
         );
         // Ensure formatting produced non-empty hex string
         assert!(id.len() >= 24);
+    }
+
+    #[test]
+    fn dns_flag_parsing_defaults_to_public_resolvers() {
+        let args = Args::parse_from(["test", "--cert", "/tmp/cert", "--key", "/tmp/key"]);
+        let dns = resolve_dns_servers(&args);
+        assert_eq!(dns, DEFAULT_DNS_SERVERS.to_vec());
+    }
+
+    #[test]
+    fn dns_flag_parsing_accepts_ipv4_and_ipv6() {
+        let args = Args::parse_from([
+            "test",
+            "--cert",
+            "/tmp/cert",
+            "--key",
+            "/tmp/key",
+            "--dns-servers",
+            "9.9.9.9,2001:4860:4860::8844",
+        ]);
+        let dns = resolve_dns_servers(&args);
+        assert_eq!(
+            dns,
+            vec![
+                IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9)),
+                IpAddr::V6("2001:4860:4860::8844".parse().unwrap())
+            ]
+        );
     }
 }

@@ -464,9 +464,7 @@ impl tokio::io::AsyncWrite for QuicBiStream {
     ) -> std::task::Poll<std::io::Result<usize>> {
         match std::pin::Pin::new(&mut self.send).poll_write(cx, buf) {
             std::task::Poll::Ready(Ok(n)) => std::task::Poll::Ready(Ok(n)),
-            std::task::Poll::Ready(Err(e)) => {
-                std::task::Poll::Ready(Err(std::io::Error::new(std::io::ErrorKind::Other, e)))
-            }
+            std::task::Poll::Ready(Err(e)) => std::task::Poll::Ready(Err(std::io::Error::other(e))),
             std::task::Poll::Pending => std::task::Poll::Pending,
         }
     }
@@ -477,9 +475,7 @@ impl tokio::io::AsyncWrite for QuicBiStream {
     ) -> std::task::Poll<std::io::Result<()>> {
         match std::pin::Pin::new(&mut self.send).poll_flush(cx) {
             std::task::Poll::Ready(Ok(())) => std::task::Poll::Ready(Ok(())),
-            std::task::Poll::Ready(Err(e)) => {
-                std::task::Poll::Ready(Err(std::io::Error::new(std::io::ErrorKind::Other, e)))
-            }
+            std::task::Poll::Ready(Err(e)) => std::task::Poll::Ready(Err(std::io::Error::other(e))),
             std::task::Poll::Pending => std::task::Poll::Pending,
         }
     }
@@ -490,9 +486,7 @@ impl tokio::io::AsyncWrite for QuicBiStream {
     ) -> std::task::Poll<std::io::Result<()>> {
         match std::pin::Pin::new(&mut self.send).poll_shutdown(cx) {
             std::task::Poll::Ready(Ok(())) => std::task::Poll::Ready(Ok(())),
-            std::task::Poll::Ready(Err(e)) => {
-                std::task::Poll::Ready(Err(std::io::Error::new(std::io::ErrorKind::Other, e)))
-            }
+            std::task::Poll::Ready(Err(e)) => std::task::Poll::Ready(Err(std::io::Error::other(e))),
             std::task::Poll::Pending => std::task::Poll::Pending,
         }
     }

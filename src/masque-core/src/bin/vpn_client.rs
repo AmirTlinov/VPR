@@ -10,7 +10,8 @@ use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, Server
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{DigitallySignedStruct, SignatureScheme};
 use sha2::Sha256;
-use std::net::{Ipv4Addr, SocketAddr};
+use std::fs;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -103,14 +104,18 @@ struct Args {
     #[arg(long)]
     dns_protection: bool,
 
-    /// Custom DNS servers to use with DNS protection (comma-separated)
+    /// Custom DNS servers to use with DNS protection (IPv4/IPv6, comma-separated)
     /// If not specified, uses DNS servers from VPN config
     #[arg(long, value_delimiter = ',')]
-    dns_servers: Vec<Ipv4Addr>,
+    dns_servers: Vec<IpAddr>,
 
     /// TLS fingerprint profile to mimic (chrome, firefox, safari, random)
     #[arg(long, default_value = "chrome")]
     tls_profile: String,
+
+    /// Export JA3/JA3S/JA4 metrics to Prometheus text file
+    #[arg(long)]
+    tls_fp_metrics_path: Option<PathBuf>,
 
     /// GREASE mode: random|deterministic
     #[arg(long, default_value = "random")]
@@ -213,6 +218,21 @@ async fn run_vpn_client(args: Args) -> Result<()> {
         grease_mode,
     );
     let ja4 = Ja4Fingerprint::from_profile(&tls_profile);
+    if let Some(path) = &args.tls_fp_metrics_path {
+        let content = format!(
+            "# HELP tls_fp_info TLS fingerprint JA3/JA3S/JA4 (client)\n\
+             # TYPE tls_fp_info gauge\n\
+             tls_fp_info{{role=\"client\",type=\"ja3\",hash=\"{}\"}} 1\n\
+             tls_fp_info{{role=\"client\",type=\"ja3s\",hash=\"{}\"}} 1\n\
+             tls_fp_info{{role=\"client\",type=\"ja4\",hash=\"{}\"}} 1\n",
+            ja3.to_ja3_hash(),
+            ja3s.to_ja3s_hash(),
+            ja4.to_hash()
+        );
+        if let Err(e) = fs::write(path, content.as_bytes()) {
+            tracing::warn!(?e, ?path, "Failed to write client tls_fp metrics");
+        }
+    }
     info!(
         profile = %tls_profile,
         grease = ?grease_mode,

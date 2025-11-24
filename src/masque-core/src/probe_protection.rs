@@ -72,7 +72,7 @@ struct IpEntry {
     failed_attempts: u32,
     last_attempt: Instant,
     banned_until: Option<Instant>,
-    challenges_issued: u32,
+    _challenges_issued: u32,
 }
 
 impl Default for IpEntry {
@@ -81,7 +81,7 @@ impl Default for IpEntry {
             failed_attempts: 0,
             last_attempt: Instant::now(),
             banned_until: None,
-            challenges_issued: 0,
+            _challenges_issued: 0,
         }
     }
 }
@@ -113,6 +113,26 @@ impl ProbeMetrics {
             challenges_passed: self.challenges_passed.load(Ordering::Relaxed),
             banned_ips: self.banned_ips.load(Ordering::Relaxed),
         }
+    }
+
+    /// Export metrics in Prometheus text format with the given namespace.
+    pub fn to_prometheus(&self, namespace: &str) -> String {
+        let snap = self.snapshot();
+        format!(
+            "# TYPE {ns}_connections_checked counter\n{ns}_connections_checked {}\n\
+             # TYPE {ns}_probes_blocked counter\n{ns}_probes_blocked {}\n\
+             # TYPE {ns}_suspicious_detected counter\n{ns}_suspicious_detected {}\n\
+             # TYPE {ns}_challenges_issued counter\n{ns}_challenges_issued {}\n\
+             # TYPE {ns}_challenges_passed counter\n{ns}_challenges_passed {}\n\
+             # TYPE {ns}_banned_ips gauge\n{ns}_banned_ips {}\n",
+            snap.connections_checked,
+            snap.probes_blocked,
+            snap.suspicious_detected,
+            snap.challenges_issued,
+            snap.challenges_passed,
+            snap.banned_ips,
+            ns = namespace
+        )
     }
 }
 
@@ -163,7 +183,7 @@ impl Challenge {
 
         // Compute hash of nonce + response
         let mut hasher = Sha256::new();
-        hasher.update(&self.nonce);
+        hasher.update(self.nonce);
         hasher.update(response);
         let hash = hasher.finalize();
 

@@ -439,9 +439,7 @@ impl tokio::io::AsyncWrite for QuicBiStream {
     ) -> std::task::Poll<std::io::Result<usize>> {
         match std::pin::Pin::new(&mut self.send).poll_write(cx, buf) {
             std::task::Poll::Ready(Ok(n)) => std::task::Poll::Ready(Ok(n)),
-            std::task::Poll::Ready(Err(e)) => {
-                std::task::Poll::Ready(Err(std::io::Error::new(std::io::ErrorKind::Other, e)))
-            }
+            std::task::Poll::Ready(Err(e)) => std::task::Poll::Ready(Err(std::io::Error::other(e))),
             std::task::Poll::Pending => std::task::Poll::Pending,
         }
     }
@@ -452,9 +450,7 @@ impl tokio::io::AsyncWrite for QuicBiStream {
     ) -> std::task::Poll<std::io::Result<()>> {
         match std::pin::Pin::new(&mut self.send).poll_flush(cx) {
             std::task::Poll::Ready(Ok(())) => std::task::Poll::Ready(Ok(())),
-            std::task::Poll::Ready(Err(e)) => {
-                std::task::Poll::Ready(Err(std::io::Error::new(std::io::ErrorKind::Other, e)))
-            }
+            std::task::Poll::Ready(Err(e)) => std::task::Poll::Ready(Err(std::io::Error::other(e))),
             std::task::Poll::Pending => std::task::Poll::Pending,
         }
     }
@@ -465,9 +461,7 @@ impl tokio::io::AsyncWrite for QuicBiStream {
     ) -> std::task::Poll<std::io::Result<()>> {
         match std::pin::Pin::new(&mut self.send).poll_shutdown(cx) {
             std::task::Poll::Ready(Ok(())) => std::task::Poll::Ready(Ok(())),
-            std::task::Poll::Ready(Err(e)) => {
-                std::task::Poll::Ready(Err(std::io::Error::new(std::io::ErrorKind::Other, e)))
-            }
+            std::task::Poll::Ready(Err(e)) => std::task::Poll::Ready(Err(std::io::Error::other(e))),
             std::task::Poll::Pending => std::task::Poll::Pending,
         }
     }
@@ -576,7 +570,7 @@ fn load_or_generate_cert(
     } else {
         let generated = generate_simple_self_signed(["localhost".into()])?;
         let key = PrivateKeyDer::from(PrivatePkcs8KeyDer::from(generated.key_pair.serialize_der()));
-        let cert = CertificateDer::from(generated.cert.der().clone());
+        let cert = generated.cert.der().clone();
         Ok((vec![cert], key))
     }
 }
@@ -596,7 +590,7 @@ fn load_key(path: &PathBuf) -> Result<PrivateKeyDer<'static>> {
     let file = File::open(path).with_context(|| format!("reading key {path:?}"))?;
     let mut reader = BufReader::new(file);
     match private_key(&mut reader).context("parsing key")? {
-        Some(k) => Ok(PrivateKeyDer::from(k)),
+        Some(k) => Ok(k),
         None => bail!("no private key in {path:?}"),
     }
 }
