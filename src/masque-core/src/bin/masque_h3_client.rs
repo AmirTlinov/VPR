@@ -66,7 +66,7 @@ async fn run(args: Args) -> Result<()> {
 
     info!(remote = %conn.remote_address(), "quic established");
 
-    let (mut h3, mut sender): (
+    let (_h3, mut sender): (
         h3::client::Connection<_, Bytes>,
         h3::client::SendRequest<_, Bytes>,
     ) = h3::client::builder()
@@ -75,13 +75,20 @@ async fn run(args: Args) -> Result<()> {
         .build(h3_quinn::Connection::new(conn.clone()))
         .await?;
 
-    let path = format!(
-        "https://{}/.well-known/masque/udp/{}/",
-        args.server_name, args.target
-    );
+    let (host, port) = args
+        .target
+        .rsplit_once(':')
+        .ok_or_else(|| anyhow!("target must be host:port"))?;
+
+    let uri = http::Uri::builder()
+        .scheme("https")
+        .authority(args.server_name.as_str())
+        .path_and_query(format!("/.well-known/masque/udp/{host}/{port}/"))
+        .build()?;
+
     let req = http::Request::builder()
         .method("CONNECT")
-        .uri(&path)
+        .uri(uri)
         .header("x-protocol", "connect-udp") // server accepts fallback header
         .header("capsule-protocol", "?1")
         .body(())

@@ -144,7 +144,7 @@ async fn handle_connect_udp(
     request: http::Request<()>,
     mut stream: h3::server::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>,
     connection: quinn::Connection,
-    hybrid_server: Arc<HybridServer>,
+    _hybrid_server: Arc<HybridServer>,
 ) -> Result<()> {
     let path = request.uri().path();
     let headers = request.headers();
@@ -191,13 +191,13 @@ async fn handle_connect_udp(
 async fn forward_datagrams(
     connection: quinn::Connection,
     socket: Arc<UdpSocket>,
-    stream: h3::server::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>,
+    _stream: h3::server::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>,
 ) -> Result<()> {
     // Client -> Target (QUIC datagrams -> UDP)
     let conn_clone = connection.clone();
     let socket_clone = socket.clone();
     let to_target = tokio::spawn(async move {
-        let buf = vec![0u8; 65536];
+        let _buf = vec![0u8; 65536];
         loop {
             match conn_clone.read_datagram().await {
                 Ok(datagram) => {

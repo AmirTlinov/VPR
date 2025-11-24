@@ -297,7 +297,7 @@ async fn pipe_stdio(stream: TlsStream<TcpStream>) -> Result<()> {
         Result::<_>::Ok(())
     });
 
-    tokio::try_join!(to_server, from_server)?;
+    let (_to, _from) = tokio::try_join!(to_server, from_server)?;
     Ok(())
 }
 
@@ -333,7 +333,7 @@ async fn pipe_stdio_quic(mut send: quinn::SendStream, mut recv: quinn::RecvStrea
         Result::<_>::Ok(())
     });
 
-    tokio::try_join!(to_remote, from_remote)?;
+    let (_to, _from) = tokio::try_join!(to_remote, from_remote)?;
     Ok(())
 }
 
