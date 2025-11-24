@@ -6,12 +6,12 @@
 //! - TLS certificates: every 6 hours (certificate agility)
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, RwLock};
 use tracing::{debug, info, warn};
 
-/// Session key rotation thresholds
+/// Session key rotation thresholds (defaults)
 pub const SESSION_KEY_TIME_LIMIT: Duration = Duration::from_secs(60);
 pub const SESSION_KEY_DATA_LIMIT: u64 = 1024 * 1024 * 1024; // 1GB
 
@@ -30,20 +30,77 @@ pub enum RotationEvent {
     TlsCert,
 }
 
+/// Session key rotation limits
+#[derive(Debug, Clone, Copy)]
+pub struct SessionKeyLimits {
+    pub time_limit: Duration,
+    pub data_limit: u64,
+}
+
+impl Default for SessionKeyLimits {
+    fn default() -> Self {
+        Self {
+            time_limit: SESSION_KEY_TIME_LIMIT,
+            data_limit: SESSION_KEY_DATA_LIMIT,
+        }
+    }
+}
+
+/// Configuration for rotation manager
+#[derive(Debug, Clone)]
+pub struct KeyRotationConfig {
+    pub session_limits: SessionKeyLimits,
+    pub check_interval: Duration,
+}
+
+impl Default for KeyRotationConfig {
+    fn default() -> Self {
+        Self {
+            session_limits: SessionKeyLimits::default(),
+            check_interval: Duration::from_secs(10),
+        }
+    }
+}
+
+impl KeyRotationConfig {
+    pub fn with_session_limits(time_limit: Duration, data_limit: u64) -> Self {
+        Self {
+            session_limits: SessionKeyLimits {
+                time_limit,
+                data_limit,
+            },
+            ..Self::default()
+        }
+    }
+
+    pub fn with_check_interval(mut self, interval: Duration) -> Self {
+        self.check_interval = interval;
+        self
+    }
+}
+
 /// Session key state tracker
 #[derive(Debug)]
 pub struct SessionKeyState {
-    created_at: Instant,
+    created_at: Mutex<Instant>,
     bytes_processed: AtomicU64,
     rotation_count: AtomicU64,
+    limits: SessionKeyLimits,
+    rekey_lock: Mutex<()>,
 }
 
 impl SessionKeyState {
     pub fn new() -> Self {
+        Self::with_limits(SessionKeyLimits::default())
+    }
+
+    pub fn with_limits(limits: SessionKeyLimits) -> Self {
         Self {
-            created_at: Instant::now(),
+            created_at: Mutex::new(Instant::now()),
             bytes_processed: AtomicU64::new(0),
             rotation_count: AtomicU64::new(0),
+            limits,
+            rekey_lock: Mutex::new(()),
         }
     }
 
@@ -54,20 +111,20 @@ impl SessionKeyState {
 
     /// Check if rotation is needed based on time or data limits
     pub fn needs_rotation(&self) -> bool {
-        let age = self.created_at.elapsed();
+        let age = self.age();
         let bytes = self.bytes_processed.load(Ordering::Relaxed);
 
-        age >= SESSION_KEY_TIME_LIMIT || bytes >= SESSION_KEY_DATA_LIMIT
+        age >= self.limits.time_limit || bytes >= self.limits.data_limit
     }
 
     /// Get rotation reason if rotation is needed
     pub fn rotation_reason(&self) -> Option<SessionRotationReason> {
-        let age = self.created_at.elapsed();
+        let age = self.age();
         let bytes = self.bytes_processed.load(Ordering::Relaxed);
 
-        if bytes >= SESSION_KEY_DATA_LIMIT {
+        if bytes >= self.limits.data_limit {
             Some(SessionRotationReason::DataLimit(bytes))
-        } else if age >= SESSION_KEY_TIME_LIMIT {
+        } else if age >= self.limits.time_limit {
             Some(SessionRotationReason::TimeLimit(age))
         } else {
             None
@@ -75,10 +132,22 @@ impl SessionKeyState {
     }
 
     /// Reset state after rotation
-    pub fn reset(&mut self) {
-        self.created_at = Instant::now();
+    pub fn reset(&self) {
+        let _lock = self.rekey_lock.lock().expect("rekey lock poisoned");
+        self.reset_unlocked();
+    }
+
+    fn reset_unlocked(&self) {
+        if let Ok(mut created_at) = self.created_at.lock() {
+            *created_at = Instant::now();
+        }
         self.bytes_processed.store(0, Ordering::Relaxed);
         self.rotation_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Get configured limits
+    pub fn limits(&self) -> SessionKeyLimits {
+        self.limits
     }
 
     /// Get total rotation count
@@ -88,12 +157,31 @@ impl SessionKeyState {
 
     /// Get session age
     pub fn age(&self) -> Duration {
-        self.created_at.elapsed()
+        self.created_at
+            .lock()
+            .map(|created| created.elapsed())
+            .unwrap_or_default()
     }
 
     /// Get bytes processed
     pub fn bytes_processed(&self) -> u64 {
         self.bytes_processed.load(Ordering::Relaxed)
+    }
+
+    /// Atomically trigger rotation callback if thresholds exceeded
+    pub fn maybe_rotate_with<F>(&self, mut on_rotate: F)
+    where
+        F: FnMut(SessionRotationReason),
+    {
+        if !self.needs_rotation() {
+            return;
+        }
+
+        let _guard = self.rekey_lock.lock().expect("rekey lock poisoned");
+        if let Some(reason) = self.rotation_reason() {
+            on_rotate(reason);
+            self.reset_unlocked();
+        }
     }
 }
 
@@ -185,16 +273,23 @@ pub struct KeyRotationManager {
     tls_state: RwLock<LongTermKeyState>,
     /// Event broadcaster
     event_tx: broadcast::Sender<RotationEvent>,
+    /// Rotation configuration
+    config: KeyRotationConfig,
 }
 
 impl KeyRotationManager {
     pub fn new() -> Self {
+        Self::with_config(KeyRotationConfig::default())
+    }
+
+    pub fn with_config(config: KeyRotationConfig) -> Self {
         let (event_tx, _) = broadcast::channel(64);
         Self {
             session_states: RwLock::new(Vec::new()),
             noise_state: RwLock::new(LongTermKeyState::noise_key()),
             tls_state: RwLock::new(LongTermKeyState::tls_cert()),
             event_tx,
+            config,
         }
     }
 
@@ -205,9 +300,19 @@ impl KeyRotationManager {
 
     /// Register a new session for tracking
     pub async fn register_session(&self) -> Arc<SessionKeyState> {
-        let state = Arc::new(SessionKeyState::new());
+        let state = Arc::new(SessionKeyState::with_limits(self.config.session_limits));
         self.session_states.write().await.push(state.clone());
         state
+    }
+
+    /// Get configured session limits
+    pub fn session_limits(&self) -> SessionKeyLimits {
+        self.config.session_limits
+    }
+
+    /// Interval used by background rotation checks
+    pub fn check_interval(&self) -> Duration {
+        self.config.check_interval
     }
 
     /// Check all sessions and trigger rotations as needed
@@ -294,8 +399,9 @@ pub struct RotationStats {
 pub async fn rotation_check_task(
     manager: Arc<KeyRotationManager>,
     mut shutdown: broadcast::Receiver<()>,
+    interval_duration: Duration,
 ) {
-    let mut interval = tokio::time::interval(Duration::from_secs(10));
+    let mut interval = tokio::time::interval(interval_duration);
 
     loop {
         tokio::select! {
@@ -387,7 +493,7 @@ mod tests {
 
     #[test]
     fn test_session_reset() {
-        let mut state = SessionKeyState::new();
+        let state = SessionKeyState::new();
         state.record_bytes(1_000_000);
         assert_eq!(state.rotation_count(), 0);
 
@@ -413,8 +519,8 @@ mod tests {
     async fn test_manager_register_session() {
         let manager = KeyRotationManager::new();
 
-        let session1 = manager.register_session().await;
-        let session2 = manager.register_session().await;
+        let _session1 = manager.register_session().await;
+        let _session2 = manager.register_session().await;
 
         let stats = manager.stats().await;
         assert_eq!(stats.active_sessions, 2);
@@ -469,6 +575,36 @@ mod tests {
     fn test_rotation_reason_none_initially() {
         let state = SessionKeyState::new();
         assert!(state.rotation_reason().is_none());
+    }
+
+    #[tokio::test]
+    async fn manager_respects_custom_limits() {
+        let config = KeyRotationConfig::with_session_limits(Duration::from_secs(1), 16);
+        let manager = KeyRotationManager::with_config(config);
+
+        let state = manager.register_session().await;
+        assert_eq!(state.limits().data_limit, 16);
+
+        state.record_bytes(16);
+        assert!(state.needs_rotation());
+    }
+
+    #[test]
+    fn maybe_rotate_with_resets_state() {
+        let state = SessionKeyState::with_limits(SessionKeyLimits {
+            time_limit: Duration::from_secs(10),
+            data_limit: 1,
+        });
+
+        state.record_bytes(1);
+        let mut triggered = false;
+        state.maybe_rotate_with(|reason| {
+            triggered = matches!(reason, SessionRotationReason::DataLimit(_));
+        });
+
+        assert!(triggered);
+        assert_eq!(state.rotation_count(), 1);
+        assert_eq!(state.bytes_processed(), 0);
     }
 
     #[test]

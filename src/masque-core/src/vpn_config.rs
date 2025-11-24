@@ -36,6 +36,24 @@ pub struct VpnConfig {
     /// Session ID for reconnection
     #[serde(default)]
     pub session_id: Option<String>,
+    /// Padding strategy name (none|bucket|rand-bucket|mtu)
+    #[serde(default)]
+    pub padding_strategy: Option<String>,
+    /// Max jitter for padding (microseconds)
+    #[serde(default)]
+    pub padding_max_jitter_us: Option<u64>,
+    /// Minimum packet size after padding
+    #[serde(default)]
+    pub padding_min_size: Option<usize>,
+    /// MTU to use for padding calculations
+    #[serde(default)]
+    pub padding_mtu: Option<u16>,
+    /// Session rekey interval in seconds (server-driven)
+    #[serde(default)]
+    pub session_rekey_secs: Option<u64>,
+    /// Session rekey data limit in bytes (server-driven)
+    #[serde(default)]
+    pub session_rekey_bytes: Option<u64>,
 }
 
 impl VpnConfig {
@@ -49,12 +67,25 @@ impl VpnConfig {
             routes: vec![],
             mtu: 1400,
             session_id: None,
+            padding_strategy: None,
+            padding_max_jitter_us: None,
+            padding_min_size: None,
+            padding_mtu: None,
+            session_rekey_secs: None,
+            session_rekey_bytes: None,
         }
     }
 
     /// Add DNS server
     pub fn with_dns(mut self, dns: Ipv4Addr) -> Self {
         self.dns_servers.push(dns);
+        self
+    }
+
+    /// Set session rekey thresholds so client matches server policy
+    pub fn with_rotation(mut self, secs: u64, bytes: u64) -> Self {
+        self.session_rekey_secs = Some(secs);
+        self.session_rekey_bytes = Some(bytes);
         self
     }
 
@@ -73,6 +104,21 @@ impl VpnConfig {
     /// Set session ID
     pub fn with_session_id(mut self, id: impl Into<String>) -> Self {
         self.session_id = Some(id.into());
+        self
+    }
+
+    /// Set padding parameters to sync client/server behavior
+    pub fn with_padding(
+        mut self,
+        strategy: impl Into<String>,
+        max_jitter_us: u64,
+        min_size: usize,
+        mtu: u16,
+    ) -> Self {
+        self.padding_strategy = Some(strategy.into());
+        self.padding_max_jitter_us = Some(max_jitter_us);
+        self.padding_min_size = Some(min_size);
+        self.padding_mtu = Some(mtu);
         self
     }
 
@@ -236,6 +282,18 @@ mod tests {
             .with_session_id("abc123");
 
         assert_eq!(config.session_id, Some("abc123".to_string()));
+    }
+
+    #[test]
+    fn test_vpn_config_rotation_roundtrip() {
+        let config = VpnConfig::new(Ipv4Addr::new(10, 8, 0, 2), Ipv4Addr::new(10, 8, 0, 1))
+            .with_rotation(42, 2048);
+
+        let bytes = config.to_bytes().unwrap();
+        let parsed = VpnConfig::from_bytes(&bytes).unwrap();
+
+        assert_eq!(parsed.session_rekey_secs, Some(42));
+        assert_eq!(parsed.session_rekey_bytes, Some(2048));
     }
 
     #[tokio::test]

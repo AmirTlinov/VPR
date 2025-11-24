@@ -3,23 +3,30 @@
 //! This binary creates a TUN interface and routes traffic through
 //! a MASQUE CONNECT-UDP tunnel with hybrid post-quantum encryption.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use clap::Parser;
 use quinn::{ClientConfig as QuinnClientConfig, Endpoint, TransportConfig};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
-use rustls::{DigitallySignedStruct, SignatureScheme};
+use rustls::{version, DigitallySignedStruct, SignatureScheme};
+use sha2::Sha256;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::mpsc;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::sync::{broadcast, mpsc};
 use tracing::{error, info, Level};
 use tracing_subscriber::FmtSubscriber;
 
+use masque_core::cover_traffic::{CoverTrafficConfig, CoverTrafficGenerator, TrafficPattern};
 use masque_core::hybrid_handshake::HybridClient;
+use masque_core::key_rotation::{
+    rotation_check_task, KeyRotationConfig, KeyRotationManager, SessionKeyLimits, SessionKeyState,
+};
+use masque_core::padding::{Padder, PaddingConfig, PaddingStrategy};
 use masque_core::quic_stream::QuicBiStream;
-use masque_core::tls_fingerprint::{Ja3Fingerprint, TlsProfile};
+use masque_core::tls_fingerprint::{GreaseMode, Ja3Fingerprint, Ja3sFingerprint, Ja4Fingerprint, TlsProfile};
 use masque_core::tun::{setup_routing, DnsProtection, TunConfig, TunDevice};
 use masque_core::vpn_config::{ConfigAck, VpnConfig};
 use masque_core::vpn_tunnel::{
@@ -82,6 +89,14 @@ struct Args {
     #[arg(long, default_value = "30")]
     idle_timeout: u64,
 
+    /// Session rekey time limit (seconds)
+    #[arg(long, default_value = "60")]
+    session_rekey_seconds: u64,
+
+    /// Session rekey data limit (bytes)
+    #[arg(long, default_value = "1073741824")]
+    session_rekey_bytes: u64,
+
     /// Enable DNS leak protection (overwrites /etc/resolv.conf)
     #[arg(long)]
     dns_protection: bool,
@@ -94,6 +109,46 @@ struct Args {
     /// TLS fingerprint profile to mimic (chrome, firefox, safari, random)
     #[arg(long, default_value = "chrome")]
     tls_profile: String,
+
+    /// GREASE mode: random|deterministic
+    #[arg(long, default_value = "random")]
+    tls_grease_mode: String,
+
+    /// GREASE seed when deterministic mode is selected
+    #[arg(long, default_value_t = 0)]
+    tls_grease_seed: u64,
+
+    /// GREASE mode: random|deterministic
+    #[arg(long, default_value = "random")]
+    tls_grease_mode: String,
+
+    /// GREASE seed when deterministic mode is selected
+    #[arg(long, default_value_t = 0)]
+    tls_grease_seed: u64,
+
+    /// Padding strategy: none|bucket|rand-bucket|mtu
+    #[arg(long, default_value = "rand-bucket")]
+    padding_strategy: String,
+
+    /// Maximum jitter for padded sends (microseconds). 0 disables jitter.
+    #[arg(long, default_value = "5000")]
+    padding_max_jitter_us: u64,
+
+    /// Minimum padded packet size (bytes)
+    #[arg(long, default_value = "32")]
+    padding_min_size: usize,
+
+    /// Override MTU for padding (defaults to TUN MTU)
+    #[arg(long)]
+    padding_mtu: Option<u16>,
+
+    /// Cover traffic base rate (pps)
+    #[arg(long, default_value = "8.0")]
+    cover_traffic_rate: f64,
+
+    /// Cover traffic pattern: https|h3|webrtc|idle
+    #[arg(long, default_value = "https")]
+    cover_traffic_pattern: String,
 }
 
 #[tokio::main]
@@ -110,6 +165,22 @@ async fn main() -> Result<()> {
 
     let args = Args::parse();
     run_vpn_client(args).await
+}
+
+fn parse_grease_mode(mode: &str, seed: u64) -> GreaseMode {
+    match mode.to_ascii_lowercase().as_str() {
+        "deterministic" | "det" | "fixed" => GreaseMode::Deterministic(seed),
+        _ => GreaseMode::Random,
+    }
+}
+
+fn preferred_tls13_cipher(profile: &TlsProfile) -> u16 {
+    profile
+        .cipher_suites()
+        .into_iter()
+        .find(|c| (*c & 0xff00) == 0x1300)
+        .or_else(|| profile.cipher_suites().first().copied())
+        .unwrap_or(0x1301)
 }
 
 async fn run_vpn_client(args: Args) -> Result<()> {
@@ -138,16 +209,30 @@ async fn run_vpn_client(args: Args) -> Result<()> {
         TlsProfile::Chrome
     });
 
-    // Log JA3 fingerprint for debugging
-    let ja3 = Ja3Fingerprint::from_profile(&tls_profile);
+    let grease_mode = parse_grease_mode(&args.tls_grease_mode, args.tls_grease_seed);
+
+    // Log JA3/JA3S/JA4 fingerprints for debugging
+    let ja3 = Ja3Fingerprint::from_profile_with_grease(&tls_profile, grease_mode);
+    let ja3s = Ja3sFingerprint::from_profile_with_grease(
+        &tls_profile,
+        preferred_tls13_cipher(&tls_profile),
+        grease_mode,
+    );
+    let ja4 = Ja4Fingerprint::from_profile(&tls_profile);
     info!(
         profile = %tls_profile,
+        grease = ?grease_mode,
         ja3_hash = %ja3.to_ja3_hash(),
+        ja3s_hash = %ja3s.to_ja3s_hash(),
+        ja4 = %ja4.to_string(),
         "TLS fingerprint configured"
     );
 
     // Build QUIC client config
     let quic_config = build_quic_config(args.insecure, args.idle_timeout, tls_profile)?;
+
+    // Padding config for probe challenge (uses CLI defaults before server config arrives)
+    let challenge_padder = Arc::new(build_padder_cli(&args, args.mtu));
 
     // Bind local endpoint
     let mut endpoint = Endpoint::client("0.0.0.0:0".parse()?)?;
@@ -182,6 +267,9 @@ async fn run_vpn_client(args: Args) -> Result<()> {
 
     let mut stream = QuicBiStream::new(send, recv);
 
+    // Handle probe challenge before Noise handshake
+    handle_probe_challenge(&mut stream, &challenge_padder).await?;
+
     let (_transport, hybrid_secret) = hybrid_client
         .handshake_ik(&mut stream)
         .await
@@ -203,6 +291,30 @@ async fn run_vpn_client(args: Args) -> Result<()> {
         mtu = vpn_config.mtu,
         "Received VPN configuration"
     );
+
+    let session_limits = SessionKeyLimits {
+        time_limit: Duration::from_secs(
+            vpn_config
+                .session_rekey_secs
+                .unwrap_or(args.session_rekey_seconds),
+        ),
+        data_limit: vpn_config
+            .session_rekey_bytes
+            .unwrap_or(args.session_rekey_bytes),
+    };
+
+    let rotation_config = KeyRotationConfig {
+        session_limits,
+        ..KeyRotationConfig::default()
+    };
+    let rotation_manager = Arc::new(KeyRotationManager::with_config(rotation_config.clone()));
+    let session_state = rotation_manager.register_session().await;
+    let (rotation_shutdown_tx, rotation_shutdown_rx) = broadcast::channel(1);
+    let rotation_task = tokio::spawn(rotation_check_task(
+        rotation_manager.clone(),
+        rotation_shutdown_rx,
+        rotation_config.check_interval,
+    ));
 
     // Create TUN device with server-assigned configuration
     let tun_config = TunConfig {
@@ -255,18 +367,35 @@ async fn run_vpn_client(args: Args) -> Result<()> {
         }
     }
 
+    let padder = Arc::new(build_padder_from_config(&args, &vpn_config));
+
+    let cover_config = build_cover_config(
+        args.cover_traffic_rate,
+        &args.cover_traffic_pattern,
+        vpn_config.mtu as usize,
+    );
+
     // Start VPN tunnel (dns_protection will auto-restore on drop)
-    let result = run_vpn_tunnel(tun, connection).await;
+    let result = run_vpn_tunnel(tun, connection, padder, cover_config, session_state.clone()).await;
 
     // Explicitly disable DNS protection on exit
     if dns_protection.is_active() {
         let _ = dns_protection.disable();
     }
 
+    let _ = rotation_shutdown_tx.send(());
+    let _ = rotation_task.await;
+
     result
 }
 
-async fn run_vpn_tunnel(tun: TunDevice, connection: quinn::Connection) -> Result<()> {
+async fn run_vpn_tunnel(
+    tun: TunDevice,
+    connection: quinn::Connection,
+    padder: Arc<Padder>,
+    cover_config: CoverTrafficConfig,
+    session_state: Arc<SessionKeyState>,
+) -> Result<()> {
     // Split TUN device into reader and writer
     let (tun_reader, tun_writer) = tun.split();
 
@@ -278,9 +407,13 @@ async fn run_vpn_tunnel(tun: TunDevice, connection: quinn::Connection) -> Result
 
     let encapsulator = Arc::new(PacketEncapsulator::new());
 
-    // Spawn tasks for bidirectional forwarding
+    // Spawn tasks for bidirectional forwarding + cover traffic
     let conn_clone = connection.clone();
     let encap_clone = encapsulator.clone();
+    let tracker_tx = session_state.clone();
+    let cover_encap = encapsulator.clone();
+    let cover_padder = padder.clone();
+    let mut cover_gen = CoverTrafficGenerator::new(cover_config);
 
     // TUN reader -> channel
     let tun_read_task = tokio::spawn(async move {
@@ -289,16 +422,34 @@ async fn run_vpn_tunnel(tun: TunDevice, connection: quinn::Connection) -> Result
         }
     });
 
-    // Channel -> QUIC datagrams
+    // Channel -> QUIC datagrams (real traffic)
+    let pad_clone = padder.clone();
     let tun_to_quic_task = tokio::spawn(async move {
-        if let Err(e) = forward_tun_to_quic(tun_rx, conn_clone, encap_clone).await {
+        if let Err(e) = forward_tun_to_quic(
+            tun_rx,
+            conn_clone,
+            encap_clone,
+            Some(pad_clone),
+            Some(tracker_tx),
+        )
+        .await
+        {
             error!(%e, "TUN->QUIC task error");
         }
     });
 
     // QUIC datagrams -> channel
+    let conn_for_quic_to_tun = connection.clone();
+    let tracker_rx = session_state.clone();
     let quic_to_channel_task = tokio::spawn(async move {
-        if let Err(e) = forward_quic_to_tun(connection, quic_tx, encapsulator).await {
+        if let Err(e) = forward_quic_to_tun(
+            conn_for_quic_to_tun,
+            quic_tx,
+            encapsulator,
+            Some(tracker_rx),
+        )
+        .await
+        {
             error!(%e, "QUIC->TUN task error");
         }
     });
@@ -310,6 +461,32 @@ async fn run_vpn_tunnel(tun: TunDevice, connection: quinn::Connection) -> Result
         }
     });
 
+    // Cover traffic task (client side) — sends through same QUIC connection
+    let cover_conn = connection.clone();
+    let tracker_cover = session_state.clone();
+    let cover_task = tokio::spawn(async move {
+        loop {
+            let delay = cover_gen.next_delay();
+            tokio::time::sleep(delay).await;
+
+            let mut packet = cover_gen.generate_packet().data;
+            cover_padder.pad_in_place(&mut packet);
+            if let Some(j) = cover_padder.jitter_delay() {
+                tokio::time::sleep(j).await;
+            }
+
+            let datagram = cover_encap.encapsulate(bytes::Bytes::from(packet));
+            tracker_cover.record_bytes(datagram.len() as u64);
+            tracker_cover.maybe_rotate_with(|reason| {
+                info!(?reason, "Client session rekey (cover)");
+                cover_conn.force_key_update();
+            });
+            if cover_conn.send_datagram(datagram).is_err() {
+                break;
+            }
+        }
+    });
+
     info!("VPN tunnel running. Press Ctrl+C to stop.");
 
     // Wait for any task to complete (usually means connection lost)
@@ -318,6 +495,7 @@ async fn run_vpn_tunnel(tun: TunDevice, connection: quinn::Connection) -> Result
         _ = tun_to_quic_task => info!("TUN->QUIC forwarder stopped"),
         _ = quic_to_channel_task => info!("QUIC->TUN forwarder stopped"),
         _ = tun_write_task => info!("TUN writer stopped"),
+        _ = cover_task => info!("Cover traffic task stopped"),
         _ = tokio::signal::ctrl_c() => info!("Ctrl+C received, shutting down"),
     }
 
@@ -329,8 +507,12 @@ fn build_quic_config(
     idle_timeout: u64,
     tls_profile: TlsProfile,
 ) -> Result<QuinnClientConfig> {
+    tracing::debug!(profile = %tls_profile, "Building QUIC client config");
+
     let mut transport_config = TransportConfig::default();
     transport_config.max_idle_timeout(Some(Duration::from_secs(idle_timeout).try_into()?));
+
+    tracing::info!(profile = %tls_profile, "Client TLS profile configured");
 
     // Enable QUIC datagrams for VPN traffic
     transport_config.datagram_receive_buffer_size(Some(65536));
@@ -350,9 +532,10 @@ fn build_quic_config(
             .with_no_client_auth()
     };
 
-    // Apply TLS fingerprint profile: cipher suites and kx groups
     crypto_config.cipher_suites = tls_profile.rustls_cipher_suites();
     crypto_config.kx_groups = tls_profile.rustls_kx_groups();
+    crypto_config.versions = vec![&rustls::version::TLS13];
+    crypto_config.alpn_protocols = vec![b"h3".to_vec(), b"masque".to_vec()];
 
     let mut client_config = QuinnClientConfig::new(Arc::new(
         quinn::crypto::rustls::QuicClientConfig::try_from(crypto_config)?,
@@ -360,6 +543,177 @@ fn build_quic_config(
     client_config.transport_config(Arc::new(transport_config));
 
     Ok(client_config)
+}
+
+fn build_padder_cli(args: &Args, fallback_mtu: u16) -> Padder {
+    let strategy = parse_padding_strategy(&args.padding_strategy);
+    let mtu = args.padding_mtu.unwrap_or(fallback_mtu) as usize;
+
+    let config = PaddingConfig {
+        strategy,
+        mtu,
+        jitter_enabled: args.padding_max_jitter_us > 0,
+        max_jitter_us: args.padding_max_jitter_us,
+        min_packet_size: args.padding_min_size,
+    };
+
+    Padder::new(config)
+}
+
+fn parse_padding_strategy(name: &str) -> PaddingStrategy {
+    match name.to_ascii_lowercase().as_str() {
+        "none" => PaddingStrategy::None,
+        "bucket" => PaddingStrategy::Bucket,
+        "mtu" => PaddingStrategy::Mtu,
+        "rand-bucket" | "random-bucket" | "random" => PaddingStrategy::RandomBucket,
+        other => {
+            tracing::warn!(strategy = %other, "Unknown padding strategy, using rand-bucket");
+            PaddingStrategy::RandomBucket
+        }
+    }
+}
+
+fn build_padder_from_config(args: &Args, config: &VpnConfig) -> Padder {
+    // Prefer server-provided padding params to stay in sync
+    let strategy = config
+        .padding_strategy
+        .as_deref()
+        .map(parse_padding_strategy)
+        .unwrap_or_else(|| parse_padding_strategy(&args.padding_strategy));
+
+    let max_jitter_us = config
+        .padding_max_jitter_us
+        .unwrap_or(args.padding_max_jitter_us);
+
+    let min_size = config.padding_min_size.unwrap_or(args.padding_min_size);
+
+    let mtu = config
+        .padding_mtu
+        .unwrap_or_else(|| args.padding_mtu.unwrap_or(config.mtu)) as usize;
+
+    let config = PaddingConfig {
+        strategy,
+        mtu,
+        jitter_enabled: max_jitter_us > 0,
+        max_jitter_us,
+        min_packet_size: min_size,
+    };
+
+    Padder::new(config)
+}
+
+fn parse_cover_pattern(name: &str) -> TrafficPattern {
+    match name.to_ascii_lowercase().as_str() {
+        "https" => TrafficPattern::HttpsBurst,
+        "h3" => TrafficPattern::H3Multiplex,
+        "webrtc" => TrafficPattern::WebRtcCbr,
+        "idle" => TrafficPattern::Idle,
+        _ => TrafficPattern::HttpsBurst,
+    }
+}
+
+fn build_cover_config(rate: f64, pattern: &str, mtu: usize) -> CoverTrafficConfig {
+    CoverTrafficConfig {
+        pattern: parse_cover_pattern(pattern),
+        base_rate_pps: rate,
+        rate_jitter: 0.35,
+        min_packet_size: 64,
+        max_packet_size: mtu.saturating_sub(40).max(64),
+        adaptive: true,
+        min_interval: std::time::Duration::from_millis(5),
+    }
+}
+
+fn padding_strategy_to_byte(strategy: PaddingStrategy) -> u8 {
+    match strategy {
+        PaddingStrategy::None => 0,
+        PaddingStrategy::Bucket => 1,
+        PaddingStrategy::RandomBucket => 2,
+        PaddingStrategy::Mtu => 3,
+    }
+}
+
+fn padding_schedule_bytes(padder: &Padder) -> Vec<u8> {
+    let cfg = padder.config();
+    let mut out = Vec::with_capacity(15);
+    out.push(padding_strategy_to_byte(cfg.strategy));
+    out.extend_from_slice(&cfg.max_jitter_us.to_be_bytes());
+    out.extend_from_slice(&(cfg.min_packet_size as u32).to_be_bytes());
+    out.extend_from_slice(&(cfg.mtu as u16).to_be_bytes());
+    out
+}
+
+fn solve_pow(nonce: &[u8; 32], difficulty: u8) -> [u8; 32] {
+    let mut counter: u64 = 0;
+    let mut candidate = [0u8; 32];
+    loop {
+        candidate[..8].copy_from_slice(&counter.to_be_bytes());
+        let mut hasher = Sha256::new();
+        use sha2::Digest;
+        hasher.update(nonce);
+        hasher.update(&candidate);
+        let hash = hasher.finalize();
+        let mut ok = true;
+        for i in 0..difficulty as usize {
+            if hash[i] != 0 {
+                ok = false;
+                break;
+            }
+        }
+        if ok {
+            return candidate;
+        }
+        counter = counter.wrapping_add(1);
+    }
+}
+
+async fn handle_probe_challenge(stream: &mut QuicBiStream, padder: &Padder) -> Result<()> {
+    use tokio::io::AsyncReadExt;
+
+    let mut len_buf = [0u8; 2];
+    stream
+        .read_exact(&mut len_buf)
+        .await
+        .context("reading probe challenge length")?;
+    let len = u16::from_be_bytes(len_buf) as usize;
+    if len != 34 {
+        anyhow::bail!("unexpected probe challenge length: {len}");
+    }
+
+    let mut buf = vec![0u8; len];
+    stream
+        .read_exact(&mut buf)
+        .await
+        .context("reading probe challenge payload")?;
+
+    if buf[0] != 1 {
+        anyhow::bail!("unexpected probe challenge type");
+    }
+
+    let mut nonce = [0u8; 32];
+    nonce.copy_from_slice(&buf[1..33]);
+    let difficulty = buf[33];
+
+    let solution = solve_pow(&nonce, difficulty);
+    let padding_bytes = padding_schedule_bytes(padder);
+
+    let mut resp = Vec::with_capacity(1 + 32 + padding_bytes.len());
+    resp.push(2u8);
+    resp.extend_from_slice(&solution);
+    resp.extend_from_slice(&padding_bytes);
+
+    let len_bytes = (resp.len() as u16).to_be_bytes();
+    stream
+        .write_all(&len_bytes)
+        .await
+        .context("writing probe response length")?;
+    stream
+        .write_all(&resp)
+        .await
+        .context("writing probe response")?;
+    stream.flush().await.ok();
+
+    Ok(())
 }
 
 /// Insecure certificate verifier for testing

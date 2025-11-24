@@ -3,9 +3,10 @@
 //! This module bridges the local TUN interface with the MASQUE tunnel,
 //! forwarding IP packets through encrypted QUIC datagrams.
 
+use crate::key_rotation::SessionKeyState;
 use crate::masque::UdpCapsule;
 use crate::tun::{IpPacketInfo, TunConfig, TunReader, TunWriter};
-use anyhow::{Context, Result};
+use anyhow::Result;
 use bytes::Bytes;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
@@ -156,6 +157,7 @@ pub async fn forward_tun_to_quic(
     connection: quinn::Connection,
     encapsulator: Arc<PacketEncapsulator>,
     padder: Option<Arc<crate::padding::Padder>>,
+    tracker: Option<Arc<SessionKeyState>>,
 ) -> Result<()> {
     while let Some(packet) = rx.recv().await {
         let payload = if let Some(p) = &padder {
@@ -169,6 +171,13 @@ pub async fn forward_tun_to_quic(
         };
 
         let datagram = encapsulator.encapsulate(payload);
+        if let Some(state) = &tracker {
+            state.record_bytes(datagram.len() as u64);
+            state.maybe_rotate_with(|reason| {
+                info!(?reason, "Client session rekey (tx)");
+                connection.force_key_update();
+            });
+        }
         if let Err(e) = connection.send_datagram(datagram) {
             match e {
                 quinn::SendDatagramError::ConnectionLost(_) => {
@@ -196,20 +205,30 @@ pub async fn forward_quic_to_tun(
     connection: quinn::Connection,
     tx: mpsc::Sender<Bytes>,
     encapsulator: Arc<PacketEncapsulator>,
+    tracker: Option<Arc<SessionKeyState>>,
 ) -> Result<()> {
     loop {
         match connection.read_datagram().await {
-            Ok(datagram) => match encapsulator.decapsulate(datagram) {
-                Ok(packet) => {
-                    if tx.send(packet).await.is_err() {
-                        debug!("QUIC reader: TUN channel closed");
-                        break;
+            Ok(datagram) => {
+                if let Some(state) = &tracker {
+                    state.record_bytes(datagram.len() as u64);
+                    state.maybe_rotate_with(|reason| {
+                        info!(?reason, "Client session rekey (rx)");
+                        connection.force_key_update();
+                    });
+                }
+                match encapsulator.decapsulate(datagram) {
+                    Ok(packet) => {
+                        if tx.send(packet).await.is_err() {
+                            debug!("QUIC reader: TUN channel closed");
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        warn!(%e, "decapsulation error");
                     }
                 }
-                Err(e) => {
-                    warn!(%e, "decapsulation error");
-                }
-            },
+            }
             Err(quinn::ConnectionError::ApplicationClosed { .. }) => {
                 info!("QUIC connection closed by application");
                 break;
