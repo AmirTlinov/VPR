@@ -13,6 +13,9 @@ const asciiArt = document.getElementById('ascii-art');
 const statusDot = document.getElementById('status-dot');
 const statusText = document.getElementById('status-text');
 const targetAddr = document.getElementById('target-addr');
+const healthDot = document.getElementById('health-dot');
+const healthText = document.getElementById('health-text');
+const probeBtn = document.getElementById('probe-btn');
 const statsBox = document.getElementById('stats-box');
 const statTime = document.getElementById('stat-time');
 const statUp = document.getElementById('stat-up');
@@ -35,6 +38,8 @@ let connectTime = null;
 let bytesUp = 0;
 let bytesDown = 0;
 let statsInterval = null;
+let healthTimer = null;
+let tunnelTimer = null;
 
 // ASCII Art variants
 
@@ -113,6 +118,8 @@ settingsBtn.addEventListener('click', () => {
 backBtn.addEventListener('click', () => {
   settingsView.classList.add('hidden');
   mainView.classList.remove('hidden');
+  // Перепроверим сервер при выходе из настроек
+  probeServer();
 });
 
 // Load config
@@ -146,10 +153,14 @@ saveBtn.addEventListener('click', async () => {
     showError('');
     settingsView.classList.add('hidden');
     mainView.classList.remove('hidden');
+    probeServer();
   } catch (e) {
     showError(e);
   }
 });
+
+// Пробивка сервера
+probeBtn.addEventListener('click', () => probeServer());
 
 // Animation control
 function startAnimation(type) {
@@ -195,6 +206,8 @@ function updateUI(status, error = null) {
       btnText.textContent = '[ INITIATE ]';
       connectBtn.disabled = false;
       stopStats();
+      setHealth('unknown');
+      stopTunnelChecks();
       break;
 
     case 'Connecting':
@@ -220,6 +233,9 @@ function updateUI(status, error = null) {
       btnText.textContent = '[ TERMINATE ]';
       connectBtn.disabled = false;
       startStats();
+      scheduleTunnelChecks();
+      // Авто-обновление health раз в 30 сек
+      scheduleHealthChecks();
       break;
 
     case 'Disconnecting':
@@ -230,6 +246,8 @@ function updateUI(status, error = null) {
       btnLoader.classList.remove('hidden');
       connectBtn.disabled = true;
       stopStats();
+      stopHealthChecks();
+      stopTunnelChecks();
       break;
   }
 
@@ -242,6 +260,109 @@ function showError(msg) {
     errorEl.classList.remove('hidden');
   } else {
     errorEl.classList.add('hidden');
+  }
+}
+
+// Health indicator helpers
+function setHealth(state, details = '') {
+  healthDot.classList.remove('health-ok', 'health-bad', 'health-unknown');
+  healthText.classList.remove('health-ok', 'health-bad', 'health-unknown');
+
+  switch (state) {
+    case 'ok':
+      healthDot.classList.add('health-ok');
+      healthText.classList.add('health-ok');
+      healthDot.textContent = '◉';
+      healthText.textContent = details || 'reachable';
+      break;
+    case 'warn':
+      healthDot.classList.add('health-unknown');
+      healthText.classList.add('health-unknown');
+      healthDot.textContent = '●';
+      healthText.textContent = details || 'check tunnel';
+      break;
+    case 'bad':
+      healthDot.classList.add('health-bad');
+      healthText.classList.add('health-bad');
+      healthDot.textContent = '×';
+      healthText.textContent = details || 'unreachable';
+      break;
+    default:
+      healthDot.classList.add('health-unknown');
+      healthText.classList.add('health-unknown');
+      healthDot.textContent = '●';
+      healthText.textContent = details || 'unknown';
+  }
+}
+
+async function checkTunnel() {
+  try {
+    const res = await invoke('check_tunnel');
+    if (!res.tun_present) {
+      setHealth('bad', 'vpr0 missing');
+      return;
+    }
+    if (!res.default_via_tun || res.route_dev_to_inet !== 'vpr0') {
+      setHealth('bad', 'no default via tun');
+      return;
+    }
+    if (res.warnings && res.warnings.length > 0) {
+      setHealth('warn', res.warnings[0]);
+    } else {
+      setHealth('ok', res.route_src_ip ? `src ${res.route_src_ip}` : 'tunnel ok');
+    }
+  } catch (e) {
+    setHealth('bad', e.toString());
+  }
+}
+
+function scheduleTunnelChecks() {
+  stopTunnelChecks();
+  checkTunnel();
+  tunnelTimer = setInterval(checkTunnel, 15000);
+}
+
+function stopTunnelChecks() {
+  if (tunnelTimer) {
+    clearInterval(tunnelTimer);
+    tunnelTimer = null;
+  }
+}
+
+async function probeServer() {
+  const server = cfgServer.value.trim();
+  const port = cfgPort.value.trim() || '443';
+
+  if (!server) {
+    setHealth('unknown', 'set server');
+    return;
+  }
+
+  setHealth('unknown', 'checking...');
+
+  try {
+    const res = await invoke('probe_server', { server, port });
+    if (res.reachable) {
+      const latency = res.latency_ms ? `${res.latency_ms} ms` : '';
+      const ip = res.ip ? `@${res.ip}` : '';
+      setHealth('ok', `${latency} ${ip}`.trim());
+    } else {
+      setHealth('bad', res.error || 'no route');
+    }
+  } catch (e) {
+    setHealth('bad', e.toString());
+  }
+}
+
+function scheduleHealthChecks() {
+  stopHealthChecks();
+  healthTimer = setInterval(probeServer, 30000);
+}
+
+function stopHealthChecks() {
+  if (healthTimer) {
+    clearInterval(healthTimer);
+    healthTimer = null;
   }
 }
 

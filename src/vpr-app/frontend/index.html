@@ -42,6 +42,12 @@
         <div class="server-line" id="server-line">
           <span class="dim">&gt; target:</span> <span id="target-addr">none</span>
         </div>
+        <div class="health-line">
+          <span class="dim">&gt; health:</span>
+          <span class="status-indicator" id="health-dot">●</span>
+          <span id="health-text">unknown</span>
+          <button class="chip" id="probe-btn">ping</button>
+        </div>
       </div>
 
       <button class="btn-hack" id="connect-btn">

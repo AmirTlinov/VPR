@@ -5,7 +5,7 @@
   "identifier": "com.vpr.client",
   "build": {
     "frontendDist": "frontend",
-    "devUrl": "http://localhost:1420"
+    "devUrl": "http://localhost:1421"
   },
   "app": {
     "withGlobalTauri": true,
