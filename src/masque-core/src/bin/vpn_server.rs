@@ -23,9 +23,10 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{broadcast, mpsc, RwLock};
 use tokio::time::interval;
 use tokio::time::sleep;
-use tracing::{debug, error, info, warn, Level};
+use tracing::{debug, error, info, trace, warn, Level};
 use tracing_subscriber::FmtSubscriber;
 
+use ipnetwork::IpNetwork;
 use masque_core::cover_traffic::{CoverTrafficConfig, CoverTrafficGenerator, TrafficPattern};
 use masque_core::hybrid_handshake::{read_handshake_msg, HybridServer};
 use masque_core::key_rotation::{
@@ -40,7 +41,6 @@ use masque_core::tls_fingerprint::{
     select_tls_profile, GreaseMode, Ja3Fingerprint, Ja3sFingerprint, Ja4Fingerprint, TlsProfile,
     TlsProfileBucket,
 };
-use ipnetwork::IpNetwork;
 use masque_core::tun::{
     enable_ip_forwarding, setup_ipv6_nat, setup_nat_with_config, NatConfig, RouteRule,
     RoutingConfig, RoutingPolicy, RoutingState, TunConfig, TunDevice,
@@ -55,6 +55,29 @@ use vpr_crypto::keys::NoiseKeypair;
 #[derive(Debug, Default)]
 struct SuspicionTracker {
     score: Mutex<f64>,
+}
+
+/// Try to detect the default outbound interface from system routing table (Linux "ip route show default").
+fn detect_default_iface() -> Option<String> {
+    if let Ok(output) = Command::new("ip")
+        .args(["route", "show", "default"])
+        .output()
+    {
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            for line in stdout.lines() {
+                let mut parts = line.split_whitespace();
+                while let Some(tok) = parts.next() {
+                    if tok == "dev" {
+                        if let Some(iface) = parts.next() {
+                            return Some(iface.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 impl SuspicionTracker {
@@ -188,7 +211,7 @@ struct Args {
     outbound_iface: Option<String>,
 
     /// Enable IP forwarding
-    #[arg(long)]
+    #[arg(long, default_value_t = true)]
     enable_forwarding: bool,
 
     /// Idle timeout in seconds
@@ -522,32 +545,39 @@ async fn run_vpn_server(args: Args) -> Result<()> {
     // Enable IP forwarding if requested
     if args.enable_forwarding {
         enable_ip_forwarding().context("enabling IP forwarding")?;
+    } else {
+        warn!("IP forwarding disabled by flag; clients will not reach the internet");
     }
 
     // Setup NAT with improved configuration
     let mut nat_state = RoutingState::new();
-    if let Some(ref iface) = args.outbound_iface {
+    let outbound_iface = match args.outbound_iface.clone() {
+        Some(iface) => Some(iface),
+        None => detect_default_iface(),
+    };
+
+    if let Some(ref iface) = outbound_iface {
         let nat_config = NatConfig {
             outbound_iface: iface.clone(),
             masquerade_ipv4: true,
             masquerade_ipv6: args.ipv6_nat,
             preserve_source: false,
         };
-        setup_nat_with_config(tun.name(), &nat_config, &mut nat_state)
-            .context("setting up NAT")?;
+        setup_nat_with_config(tun.name(), &nat_config, &mut nat_state).context("setting up NAT")?;
         info!(
             tun = %tun.name(),
             outbound = %iface,
             ipv6_nat = args.ipv6_nat,
             "NAT configured"
         );
+    } else {
+        warn!("No outbound interface detected; NAT not configured");
     }
 
     // Setup IPv6 NAT if requested
     if args.ipv6_nat {
         if let Some(ref iface) = args.outbound_iface {
-            setup_ipv6_nat(tun.name(), iface, &mut nat_state)
-                .context("setting up IPv6 NAT")?;
+            setup_ipv6_nat(tun.name(), iface, &mut nat_state).context("setting up IPv6 NAT")?;
         } else {
             warn!("IPv6 NAT requested but no outbound interface specified");
         }
@@ -932,23 +962,21 @@ async fn handle_vpn_client_with_config(
 
     // Parse routing policy
     let policy = match routing_policy.to_lowercase().as_str() {
-        "split" => RoutingPolicy::SplitTunnel,
-        "bypass" => RoutingPolicy::BypassTunnel,
-        _ => RoutingPolicy::FullTunnel,
+        "split" => RoutingPolicy::Split,
+        "bypass" => RoutingPolicy::Bypass,
+        _ => RoutingPolicy::Full,
     };
 
     // Parse routes
     let route_rules: Vec<RouteRule> = routes
         .iter()
         .filter_map(|r| {
-            IpNetwork::from_str(r)
-                .ok()
-                .map(|net| RouteRule {
-                    destination: net,
-                    gateway: Some(IpAddr::V4(gateway_ip)),
-                    metric: 0,
-                    table: None,
-                })
+            IpNetwork::from_str(r).ok().map(|net| RouteRule {
+                destination: net,
+                gateway: Some(IpAddr::V4(gateway_ip)),
+                metric: 0,
+                table: None,
+            })
         })
         .collect();
 
@@ -975,7 +1003,7 @@ async fn handle_vpn_client_with_config(
         .with_session_id(&session_id);
 
     // Add routes for backward compatibility
-    if policy == RoutingPolicy::FullTunnel {
+    if policy == RoutingPolicy::Full {
         vpn_config = vpn_config.with_route("0.0.0.0/0");
     } else {
         for route in routes.iter() {
@@ -1053,7 +1081,7 @@ async fn handle_vpn_client_with_config(
                     // Update padder suspicion based on DPI feedback
                     let suspicion = dpi_feedback_tx.current_suspicion();
                     pad_clone.update_suspicion(suspicion);
-                    
+
                     let padded = pad_clone.pad(&packet);
                     if let Some(delay) = pad_clone.jitter_delay() { sleep(delay).await; }
                     let datagram = encap_clone.encapsulate(Bytes::from(padded));
@@ -1113,9 +1141,20 @@ async fn handle_vpn_client_with_config(
                 });
                 match encapsulator.decapsulate(datagram) {
                     Ok(packet) => {
-                        if to_tun_tx.send(packet).await.is_err() {
-                            warn!("TUN channel closed");
-                            break;
+                        // Validate IP packet before sending to TUN
+                        // Cover traffic generates random data that is not valid IP
+                        match masque_core::tun::IpPacketInfo::parse(&packet) {
+                            Ok(_info) => {
+                                // Valid IP packet - send to TUN
+                                if to_tun_tx.send(packet).await.is_err() {
+                                    warn!("TUN channel closed");
+                                    break;
+                                }
+                            }
+                            Err(_) => {
+                                // Not a valid IP packet - likely cover traffic, silently drop
+                                trace!(packet_len = packet.len(), "Dropping non-IP packet (cover traffic)");
+                            }
                         }
                     }
                     Err(e) => {
