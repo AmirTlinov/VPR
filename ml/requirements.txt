@@ -1,0 +1,32 @@
+# VPR Traffic Morphing Model - Dependencies
+# Install: pip install -r requirements.txt
+
+# Core ML
+torch>=2.0.0
+numpy>=1.24.0
+scipy>=1.10.0
+
+# Data processing
+pandas>=2.0.0
+pyarrow>=12.0.0  # For efficient parquet storage
+scapy>=2.5.0     # Packet capture parsing
+
+# ONNX export
+onnx>=1.14.0
+onnxruntime>=1.15.0
+
+# Experiment tracking
+tensorboard>=2.13.0
+pyyaml>=6.0
+
+# Reproducibility
+deterministic-ml>=0.1.0
+
+# Visualization
+matplotlib>=3.7.0
+seaborn>=0.12.0
+
+# CLI
+click>=8.1.0
+tqdm>=4.65.0
+rich>=13.0.0

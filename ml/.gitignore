@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+
+# ML artifacts (large, regeneratable)
+data/
+models/
+runs/
+*.pt
+*.onnx
+*.parquet
+
+# IDE
+.idea/
+.vscode/
+*.swp

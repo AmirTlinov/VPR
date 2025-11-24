@@ -1,0 +1,157 @@
+# Traffic Morphing Transformer 20M - Training Configuration
+# All seeds fixed for full reproducibility
+
+# =============================================================================
+# REPRODUCIBILITY - Critical for deterministic training
+# =============================================================================
+seed: 42
+deterministic: true
+benchmark: false  # Disable cuDNN benchmark for determinism
+
+# =============================================================================
+# MODEL ARCHITECTURE - Scaled to ~20M parameters
+# =============================================================================
+model:
+  name: "TMT-20M"
+  # Input features per packet
+  input_dim: 4  # [size_norm, delay_log, direction, burst_pos]
+  # Context window size
+  context_size: 16
+  # Embedding dimension (optimized for ~20M params)
+  embed_dim: 512
+  # Transformer blocks
+  num_layers: 6
+  # Attention heads
+  num_heads: 8
+  # Feed-forward hidden dimension (4x embed_dim)
+  ffn_dim: 2048
+  # Dropout rate
+  dropout: 0.1
+  # Output heads
+  output_heads:
+    delay: 1       # Delay adjustment in ms
+    padding: 1     # Padding size (normalized)
+    inject: 1      # Cover traffic probability
+    confidence: 1  # Prediction confidence
+
+# =============================================================================
+# TRAINING
+# =============================================================================
+training:
+  # Batch size (per GPU)
+  batch_size: 256
+  # Total epochs
+  epochs: 100
+  # Learning rate
+  lr: 1.0e-4
+  # Weight decay
+  weight_decay: 1.0e-5
+  # Gradient clipping
+  max_grad_norm: 1.0
+  # Warmup steps
+  warmup_steps: 1000
+  # Early stopping patience
+  patience: 10
+  # Validation frequency (epochs)
+  val_every: 1
+  # Checkpoint frequency (epochs)
+  save_every: 5
+
+# =============================================================================
+# OPTIMIZER
+# =============================================================================
+optimizer:
+  name: "AdamW"
+  betas: [0.9, 0.98]
+  eps: 1.0e-9
+
+# =============================================================================
+# LOSS WEIGHTS
+# =============================================================================
+loss:
+  # KL divergence weight (traffic distribution matching)
+  kl_weight: 1.0
+  # Latency penalty weight
+  latency_weight: 0.5
+  # Bandwidth overhead penalty
+  bandwidth_weight: 0.3
+  # Confidence calibration weight
+  confidence_weight: 0.2
+
+# =============================================================================
+# DATA
+# =============================================================================
+data:
+  # Training data path
+  train_path: "data/train.parquet"
+  # Validation data path
+  val_path: "data/val.parquet"
+  # Test data path
+  test_path: "data/test.parquet"
+  # Number of data loading workers
+  num_workers: 4
+  # Pin memory for GPU
+  pin_memory: true
+
+# =============================================================================
+# TARGET PROFILES - Statistical targets for each traffic type
+# =============================================================================
+profiles:
+  youtube:
+    mean_size: 1100.0
+    size_std: 400.0
+    mean_delay_log: 2.5
+    delay_std: 1.5
+    outbound_ratio: 0.15
+
+  zoom:
+    mean_size: 800.0
+    size_std: 300.0
+    mean_delay_log: 2.0
+    delay_std: 0.8
+    outbound_ratio: 0.45
+
+  gaming:
+    mean_size: 150.0
+    size_std: 80.0
+    mean_delay_log: 1.5
+    delay_std: 0.5
+    outbound_ratio: 0.50
+
+  browsing:
+    mean_size: 600.0
+    size_std: 500.0
+    mean_delay_log: 3.5
+    delay_std: 2.0
+    outbound_ratio: 0.25
+
+  netflix:
+    mean_size: 1200.0
+    size_std: 350.0
+    mean_delay_log: 2.3
+    delay_std: 1.2
+    outbound_ratio: 0.10
+
+# =============================================================================
+# QUALITY THRESHOLDS - Model must meet these to pass validation
+# =============================================================================
+quality:
+  # Maximum KL divergence from target profile
+  max_kl_divergence: 0.1
+  # Maximum average latency overhead (ms)
+  max_latency_overhead_ms: 5.0
+  # Minimum bandwidth efficiency (%)
+  min_bandwidth_efficiency: 85.0
+  # Minimum confidence calibration score
+  min_confidence_score: 0.9
+
+# =============================================================================
+# EXPORT
+# =============================================================================
+export:
+  # ONNX opset version
+  onnx_opset: 17
+  # Quantization
+  quantize: "int8"
+  # Output path
+  output_path: "models/tmt-20m.onnx"
