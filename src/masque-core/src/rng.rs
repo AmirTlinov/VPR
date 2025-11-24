@@ -76,9 +76,14 @@ pub fn osrng_call_count() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    // Mutex to serialize tests that modify global counting state
+    static TEST_MUTEX: Mutex<()> = Mutex::new(());
 
     #[test]
     fn random_u64_uses_osrng() {
+        let _guard = TEST_MUTEX.lock().unwrap();
         enable_counting();
         reset_osrng_calls();
         let _ = random_u64();
@@ -87,6 +92,7 @@ mod tests {
 
     #[test]
     fn counting_toggle_controls_instrumentation() {
+        let _guard = TEST_MUTEX.lock().unwrap();
         disable_counting();
         reset_osrng_calls();
         let _ = random_u64();

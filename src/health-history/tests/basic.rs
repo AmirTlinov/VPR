@@ -1,5 +1,5 @@
 //! Basic tests for health-history library types
-use health_history::{parse_report, HealthReport, Severity, TransportResult};
+use health_history::{parse_report, Severity, TransportResult};
 
 #[test]
 fn parse_report_with_full_data() {

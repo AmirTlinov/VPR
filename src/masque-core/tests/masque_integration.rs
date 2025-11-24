@@ -16,7 +16,10 @@ async fn test_all_capsule_types_roundtrip() {
         (CONTEXT_ID_UDP, Bytes::from_static(b"udp payload")),
         (CONTEXT_ID_HANDSHAKE, Bytes::from_static(b"handshake data")),
         (CONTEXT_ID_ADDRESS_REQUEST, Bytes::from_static(b"addr req")),
-        (CONTEXT_ID_ADDRESS_ASSIGN, Bytes::from_static(b"addr assign")),
+        (
+            CONTEXT_ID_ADDRESS_ASSIGN,
+            Bytes::from_static(b"addr assign"),
+        ),
         (CONTEXT_ID_CLOSE, Bytes::from_static(b"close")),
     ];
 
@@ -27,7 +30,10 @@ async fn test_all_capsule_types_roundtrip() {
 
         assert_eq!(decoded.context_id, context_id);
         assert_eq!(decoded.payload, payload);
-        assert_eq!(decoded.capsule_type(), CapsuleType::from_context_id(context_id));
+        assert_eq!(
+            decoded.capsule_type(),
+            CapsuleType::from_context_id(context_id)
+        );
     }
 }
 
@@ -60,7 +66,11 @@ async fn test_capsule_buffer_all_types() {
     let chunk_size = data.len() / 3;
     for i in 0..3 {
         let start = i * chunk_size;
-        let end = if i == 2 { data.len() } else { (i + 1) * chunk_size };
+        let end = if i == 2 {
+            data.len()
+        } else {
+            (i + 1) * chunk_size
+        };
         let chunk = data.slice(start..end);
 
         if let Ok(Some(capsule)) = buf.add_bytes(chunk.clone()) {
@@ -78,8 +88,7 @@ async fn test_capsule_buffer_all_types() {
     assert_eq!(extracted.len(), capsules.len());
     for (i, (extracted_cap, expected_cap)) in extracted.iter().zip(capsules.iter()).enumerate() {
         assert_eq!(
-            extracted_cap.context_id,
-            expected_cap.context_id,
+            extracted_cap.context_id, expected_cap.context_id,
             "Capsule {} context ID mismatch",
             i
         );
@@ -122,11 +131,9 @@ async fn test_udp_forwarding_buffer_batching() {
     let addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
 
     // Add multiple datagrams
-    let mut should_flush = false;
     for i in 0..50 {
         let data = Bytes::from(format!("datagram_{}", i));
-        should_flush = buffer.add(data, addr);
-        if should_flush {
+        if buffer.add(data, addr) {
             break;
         }
     }
@@ -170,14 +177,14 @@ async fn test_udp_forwarding_buffer_size_limit() {
 #[tokio::test]
 async fn test_close_capsule_handling() {
     let close_capsule = UdpCapsule::new_close(Bytes::from_static(b"session closed"));
-    
+
     assert!(close_capsule.is_close());
     assert_eq!(close_capsule.context_id, CONTEXT_ID_CLOSE);
-    
+
     // Close capsule should encode/decode correctly
     let encoded = close_capsule.encode();
     let decoded = UdpCapsule::decode(encoded).expect("failed to decode close capsule");
-    
+
     assert!(decoded.is_close());
     assert_eq!(decoded.payload.as_ref(), b"session closed");
 }
@@ -228,11 +235,11 @@ async fn test_unknown_capsule_type() {
     // Test handling of unknown context IDs
     let unknown_id = 999u64;
     let payload = Bytes::from_static(b"unknown capsule");
-    
+
     let capsule = UdpCapsule::with_context_id(unknown_id, payload.clone());
     assert_eq!(capsule.context_id, unknown_id);
     assert_eq!(capsule.capsule_type(), CapsuleType::Unknown(unknown_id));
-    
+
     // Should still encode/decode correctly
     let encoded = capsule.encode();
     let decoded = UdpCapsule::decode(encoded).expect("failed to decode");

@@ -28,10 +28,9 @@ fn write_cert_pair(dir: &TempDir) -> (std::path::PathBuf, std::path::PathBuf) {
 }
 
 fn spawn_echo_tcp() -> SocketAddr {
-    let port = next_port();
-    let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let addr = listener.local_addr().unwrap();
     std::thread::spawn(move || {
-        let listener = TcpListener::bind(addr).unwrap();
         for mut stream in listener.incoming().flatten() {
             let mut buf = [0u8; 1024];
             if let Ok(n) = stream.read(&mut buf) {
@@ -45,10 +44,9 @@ fn spawn_echo_tcp() -> SocketAddr {
 }
 
 fn spawn_echo_udp() -> SocketAddr {
-    let port = next_port();
-    let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+    let socket = UdpSocket::bind(("127.0.0.1", 0)).unwrap();
+    let addr = socket.local_addr().unwrap();
     std::thread::spawn(move || {
-        let socket = UdpSocket::bind(addr).unwrap();
         let mut buf = [0u8; 65535];
         loop {
             if let Ok((n, peer)) = socket.recv_from(&mut buf) {

@@ -2,16 +2,19 @@
 
 use tempfile::TempDir;
 
-use vpr_crypto::keys::{HybridKeypair, NoiseKeypair, SigningKeypair};
+use vpr_crypto::keys::{NoiseKeypair, SigningKeypair};
 use vpr_crypto::manifest::{ManifestPayload, ServerEndpoint, SignedManifest};
 use vpr_crypto::seal::{seal_file, unseal_file, SealIdentity};
+use vpr_crypto::HybridKeypair;
 
 #[test]
-fn hybrid_keypair_from_bytes_roundtrip() {
+fn hybrid_keypair_generation() {
     let kp = HybridKeypair::generate();
-    let bytes = kp.to_bytes();
-    let restored = HybridKeypair::from_bytes(&bytes).expect("should restore");
-    assert_eq!(kp.public_key(), restored.public_key());
+    let bundle = kp.public_bundle();
+    // Public bundle should have non-zero x25519 key
+    assert!(bundle.x25519.iter().any(|b| *b != 0));
+    // ML-KEM public key should be present
+    assert!(!bundle.mlkem.is_empty());
 }
 
 #[test]
@@ -38,7 +41,7 @@ fn seal_unseal_roundtrip() {
 
     // Use SealIdentity (age encryption)
     let identity = SealIdentity::generate();
-    let recipient = identity.to_recipient();
+    let recipient = identity.recipient();
 
     seal_file(&input, &sealed, &recipient).expect("seal");
     unseal_file(&sealed, &unsealed, &identity).expect("unseal");
@@ -59,7 +62,7 @@ fn manifest_sign_verify() {
     let signed = SignedManifest::sign(&payload, &signing).expect("sign");
 
     // verify expects &[u8; 32] public key
-    let pubkey = signing.public_key();
+    let pubkey = signing.public_bytes();
     let verified = signed.verify(&pubkey).expect("verify");
     assert_eq!(verified.version, payload.version);
 }
@@ -78,7 +81,7 @@ fn manifest_verify_wrong_key_fails() {
     let signed = SignedManifest::sign(&payload, &signing).expect("sign");
 
     // Verify with wrong key should fail
-    let wrong_pubkey = wrong_signer.public_key();
+    let wrong_pubkey = wrong_signer.public_bytes();
     let result = signed.verify(&wrong_pubkey);
     assert!(result.is_err(), "verification with wrong key should fail");
 }

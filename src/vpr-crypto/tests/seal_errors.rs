@@ -25,7 +25,7 @@ fn seal_to_readonly_dir_fails() {
     let invalid_output = dir.path().join("nonexistent_dir").join("output.age");
 
     let identity = SealIdentity::generate();
-    let recipient = identity.to_recipient();
+    let recipient = identity.recipient();
     let res = seal_file(&plain, &invalid_output, &recipient);
     assert!(res.is_err(), "sealing to invalid path should fail");
 }
@@ -37,7 +37,7 @@ fn signing_keypair_roundtrip() {
     let sig = key.sign(msg);
 
     // Verify with public key bytes
-    let pubkey = key.public_key();
+    let _pubkey = key.public_bytes();
     assert!(
         key.verify(msg, &sig).is_ok(),
         "signature verification should succeed"

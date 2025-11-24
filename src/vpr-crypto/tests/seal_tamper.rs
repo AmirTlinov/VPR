@@ -11,7 +11,7 @@ fn tampered_ciphertext_fails_unseal() {
 
     // Create identity and recipient
     let identity = SealIdentity::generate();
-    let recipient = identity.to_recipient();
+    let recipient = identity.recipient();
 
     // Write plaintext and seal it
     std::fs::write(&plain, b"secret data").unwrap();
@@ -39,7 +39,7 @@ fn wrong_identity_fails_unseal() {
     // Create two different identities
     let identity1 = SealIdentity::generate();
     let identity2 = SealIdentity::generate();
-    let recipient1 = identity1.to_recipient();
+    let recipient1 = identity1.recipient();
 
     // Seal with identity1's recipient
     std::fs::write(&plain, b"secret").unwrap();
