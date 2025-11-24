@@ -4,6 +4,7 @@
 //! Uses SHA-256 hash of the first N bytes of each message for deduplication.
 
 use sha2::{Digest, Sha256};
+use tracing::{trace, warn};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::RwLock;
@@ -115,7 +116,8 @@ impl NonceCache {
             let cache = self.cache.read().unwrap();
             if let Some(entry) = cache.get(&hash) {
                 if entry.expires_at > now {
-                    self.metrics.replays_blocked.fetch_add(1, Ordering::Relaxed);
+                    let blocked = self.metrics.replays_blocked.fetch_add(1, Ordering::Relaxed) + 1;
+                    warn!(target: "telemetry.replay", blocked, "replay detected");
                     return Err(ReplayError::DuplicateMessage);
                 }
                 // Entry exists but expired, will be replaced
@@ -129,7 +131,8 @@ impl NonceCache {
             // Double-check after acquiring write lock
             if let Some(entry) = cache.get(&hash) {
                 if entry.expires_at > now {
-                    self.metrics.replays_blocked.fetch_add(1, Ordering::Relaxed);
+                    let blocked = self.metrics.replays_blocked.fetch_add(1, Ordering::Relaxed) + 1;
+                    warn!(target: "telemetry.replay", blocked, "replay detected");
                     return Err(ReplayError::DuplicateMessage);
                 }
             }
@@ -144,6 +147,7 @@ impl NonceCache {
             self.metrics
                 .messages_processed
                 .fetch_add(1, Ordering::Relaxed);
+            trace!(target: "telemetry.replay", processed = self.metrics.messages_processed.load(Ordering::Relaxed));
         }
 
         // Periodic cleanup
