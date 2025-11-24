@@ -505,3 +505,38 @@ body {
   80% { transform: translate(1px, 1px); }
   90% { transform: translate(-1px, 1px); }
 }
+
+/* Color Utilities for Globe */
+.color-accent {
+  color: var(--accent);
+  text-shadow: 0 0 5px var(--accent);
+}
+
+.color-dim {
+  color: var(--text-dim);
+  opacity: 0.4;
+}
+
+.color-white {
+  color: #fff;
+  text-shadow: 0 0 8px #fff;
+  font-weight: bold;
+}
+
+.color-land {
+  color: var(--text);
+  text-shadow: 0 0 3px var(--text);
+}
+
+.color-land-dim {
+  color: var(--text-dim);
+}
+
+.color-ocean {
+  color: var(--accent);
+}
+
+.color-ocean-dim {
+  color: var(--accent);
+  opacity: 0.4;
+}

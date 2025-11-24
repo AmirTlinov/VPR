@@ -1,4 +1,5 @@
 pub mod h3_server;
+pub mod replay_protection;
 pub mod hybrid_handshake;
 pub mod masque;
 pub mod noise_keys;

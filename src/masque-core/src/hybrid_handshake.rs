@@ -3,30 +3,52 @@
 //! Wraps vpr-crypto's hybrid Noise (X25519 + ML-KEM768) for use in MASQUE server.
 //! Provides both server (responder) and client (initiator) handshake flows.
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use std::path::Path;
+use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use vpr_crypto::{
     keys::NoiseKeypair,
     noise::{HybridSecret, NoiseInitiator, NoiseResponder, NoiseTransport},
 };
 
+use crate::replay_protection::NonceCache;
+
 /// Server-side hybrid Noise handshake state
 pub struct HybridServer {
     keypair: NoiseKeypair,
+    /// Optional replay protection cache
+    replay_cache: Option<Arc<NonceCache>>,
 }
 
 impl HybridServer {
     /// Load server keypair from directory
     pub fn load(dir: &Path, name: &str) -> Result<Self> {
         let keypair = NoiseKeypair::load(dir, name).context("loading server noise keypair")?;
-        Ok(Self { keypair })
+        Ok(Self {
+            keypair,
+            replay_cache: None,
+        })
     }
 
     /// Create from raw secret key bytes
     pub fn from_secret(secret: &[u8; 32]) -> Self {
         let keypair = NoiseKeypair::from_secret_bytes(secret);
-        Self { keypair }
+        Self {
+            keypair,
+            replay_cache: None,
+        }
+    }
+
+    /// Enable replay protection with shared cache
+    pub fn with_replay_protection(mut self, cache: Arc<NonceCache>) -> Self {
+        self.replay_cache = Some(cache);
+        self
+    }
+
+    /// Get replay cache metrics (if enabled)
+    pub fn replay_metrics(&self) -> Option<crate::replay_protection::ReplayMetricsSnapshot> {
+        self.replay_cache.as_ref().map(|c| c.metrics().snapshot())
     }
 
     /// Get public key bytes for distribution to clients
@@ -44,6 +66,14 @@ impl HybridServer {
 
         // Read client's first message: [Noise e,es,s,ss] + [HybridPublic]
         let msg1 = read_handshake_msg(stream).await?;
+
+        // Check for replay attack
+        if let Some(cache) = &self.replay_cache {
+            cache
+                .check_and_record(&msg1)
+                .map_err(|e| anyhow::anyhow!("replay attack detected: {}", e))?;
+        }
+
         let (_payload, peer_hybrid) = responder
             .read_message(&msg1)
             .context("reading client handshake")?;
@@ -69,6 +99,14 @@ impl HybridServer {
             .context("creating NK responder")?;
 
         let msg1 = read_handshake_msg(stream).await?;
+
+        // Check for replay attack
+        if let Some(cache) = &self.replay_cache {
+            cache
+                .check_and_record(&msg1)
+                .map_err(|e| anyhow::anyhow!("replay attack detected: {}", e))?;
+        }
+
         let (_payload, peer_hybrid) = responder
             .read_message(&msg1)
             .context("reading client NK handshake")?;
@@ -252,6 +290,7 @@ async fn write_handshake_msg<W: AsyncWrite + Unpin>(writer: &mut W, data: &[u8])
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::replay_protection::NonceCache;
     use tokio::io::duplex;
     use vpr_crypto::keys::NoiseKeypair;
 
@@ -307,5 +346,29 @@ mod tests {
 
         let server_msg = server_handle.await.unwrap();
         assert_eq!(server_msg, test_msg);
+    }
+
+    #[tokio::test]
+    async fn replay_protection_blocks_duplicate() {
+        let server_kp = NoiseKeypair::generate();
+        let client_kp = NoiseKeypair::generate();
+
+        let replay_cache = Arc::new(NonceCache::new());
+        let server = HybridServer::from_secret(&server_kp.secret_bytes())
+            .with_replay_protection(replay_cache.clone());
+
+        // Create a fake "handshake message" to replay
+        let fake_msg = b"fake handshake message for replay test";
+
+        // First time should be recorded
+        assert!(replay_cache.check_and_record(fake_msg).is_ok());
+
+        // Second time should be blocked
+        assert!(replay_cache.check_and_record(fake_msg).is_err());
+
+        // Verify metrics
+        let metrics = server.replay_metrics().unwrap();
+        assert_eq!(metrics.messages_processed, 1);
+        assert_eq!(metrics.replays_blocked, 1);
     }
 }

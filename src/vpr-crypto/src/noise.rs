@@ -22,9 +22,10 @@ pub struct HybridKeypair {
 impl HybridKeypair {
     /// Generate new hybrid keypair
     pub fn generate() -> Self {
+        use rand::rngs::OsRng;
         use rand::RngCore;
         let mut x25519_secret = [0u8; 32];
-        rand::thread_rng().fill_bytes(&mut x25519_secret);
+        OsRng.fill_bytes(&mut x25519_secret);
         let x25519_public =
             x25519_dalek::x25519(x25519_secret, x25519_dalek::X25519_BASEPOINT_BYTES);
 
@@ -69,7 +70,19 @@ impl HybridKeypair {
 
 impl Drop for HybridKeypair {
     fn drop(&mut self) {
+        use pqcrypto_traits::kem::SecretKey as _;
         self.x25519_secret.zeroize();
+        // ML-KEM SecretKey doesn't implement Zeroize, so we use unsafe to clear memory
+        // SecretKey is 2400 bytes for ML-KEM-768
+        let secret_bytes = self.mlkem_secret.as_bytes();
+        let ptr = secret_bytes.as_ptr() as *mut u8;
+        let len = secret_bytes.len();
+        // SAFETY: We have exclusive access during Drop, and the memory is valid
+        unsafe {
+            std::ptr::write_bytes(ptr, 0, len);
+            // Compiler fence to prevent optimization from removing the zeroing
+            std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
+        }
     }
 }
 
@@ -377,7 +390,7 @@ mod tests {
 
         // Generate ephemeral for encapsulation
         let mut eph_secret = [0u8; 32];
-        rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut eph_secret);
+        rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut eph_secret);
         let eph_public = x25519_dalek::x25519(eph_secret, x25519_dalek::X25519_BASEPOINT_BYTES);
 
         let (ct, secret1) = public.encapsulate(&eph_secret).unwrap();
@@ -390,12 +403,12 @@ mod tests {
     fn noise_ik_handshake() {
         // Generate static keys
         let mut server_static = [0u8; 32];
-        rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut server_static);
+        rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut server_static);
         let server_public =
             x25519_dalek::x25519(server_static, x25519_dalek::X25519_BASEPOINT_BYTES);
 
         let mut client_static = [0u8; 32];
-        rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut client_static);
+        rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut client_static);
 
         // Handshake
         let mut initiator = NoiseInitiator::new_ik(&client_static, &server_public).unwrap();

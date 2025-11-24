@@ -3,9 +3,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::Parser;
 
-use health_history::{
-    classify_suspicion, default_path, load_reports, parse_report, tail_reports, Severity,
-};
+use health_history::{classify_suspicion, default_path, load_reports, tail_reports};
 
 #[derive(Parser, Debug)]
 #[command(

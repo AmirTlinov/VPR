@@ -1,0 +1,44 @@
+---
+assignee: ai
+component: null
+created: 2025-11-24 04:20
+domain: src/masque-core
+id: TASK-006
+parent: ''
+phase: null
+priority: MEDIUM
+progress: 0
+status: WARN
+tags: []
+title: guided
+updated: 2025-11-24 04:20
+---
+
+# guided
+
+## Описание
+CRIT-003: Replay protection модуль с окном 5 мин, хешем первых сообщений и метрикой отказов. Защита от повторной отправки handshake сообщений.
+
+## Подзадачи
+- [ ] Создать replay_protection.rs модуль с NonceCache структурой
+  - Критерии: NonceCache хранит хеши сообщений с timestamp; TTL=5 мин автоочистка; Thread-safe через RwLock/DashMap
+  - Тесты: cargo build
+  - Блокеры: нет
+  - Чекпоинты: Критерии=TODO; Тесты=TODO; Блокеры=TODO
+- [ ] Добавить check_and_record метод для проверки replay
+  - Критерии: Возвращает Result<(),ReplayError>; Инкрементирует метрику отказов
+  - Тесты: unit test
+  - Блокеры: CRIT-003.1
+  - Чекпоинты: Критерии=TODO; Тесты=TODO; Блокеры=TODO
+- [ ] Интегрировать replay protection в hybrid_handshake
+  - Критерии: Все handshake сообщения проверяются; Метрика экспортируется
+  - Тесты: integration test
+  - Блокеры: CRIT-003.2
+  - Чекпоинты: Критерии=TODO; Тесты=TODO; Блокеры=TODO
+
+## Критерии успеха
+- unit test replay
+- integration test
+
+## Риски
+- производительность HashMap при высокой нагрузке

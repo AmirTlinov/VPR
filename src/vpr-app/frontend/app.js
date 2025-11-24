@@ -37,41 +37,72 @@ let bytesDown = 0;
 let statsInterval = null;
 
 // ASCII Art variants
+
+// Pirate skull for OFFLINE
 const ASCII_OFFLINE = `
-    ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
-   ██░░░░░░░░░░░░░░██
-  ██░░░░░░░░░░░░░░░░██
-  ██░░██░░░░░░░░██░░██
-  ██░░░░░░░░░░░░░░░░██
-  ██░░░░░░████░░░░░░██
-   ██░░░░░░░░░░░░░░██
-    ██░░▄▄▄▄▄▄▄▄░░██
-     ██░░░░░░░░░░██
-      ████████████`;
+        ___________
+       /           \\
+      /  _       _  \\
+     |  (o)     (o)  |
+     |       V       |
+      \\   \\═════/   /
+       \\___________/
+          │ │ │ │
+     ═════╧═╧═╧═╧═════
+        \\│/   \\│/
+         X     X
+        /│\\   /│\\`;
 
-const ASCII_ONLINE = `
-    ╔═══════════════╗
-   ║█▀▀▀▀▀▀▀▀▀▀▀▀▀█║
-  ║█  ▄▄      ▄▄  █║
-  ║█  ██      ██  █║
-  ║█              █║
-  ║█    ██████    █║
-   ║█            █║
-    ║█▄▄▄▄▄▄▄▄▄▄█║
-     ╚═══════════╝
-      CONNECTED`;
+// Earth Globe Renderer
+const globe = new GlobeRenderer(asciiArt, 50, 25);
 
-const ASCII_CONNECTING = `
-    ┌───────────────┐
-   │ ░░░░░░░░░░░░░ │
-  │  ▓▓      ▓▓   │
-  │  ▓▓      ▓▓   │
-  │               │
-  │   ░▒▓▓▓▓▒░   │
-   │             │
-    │ SYNCING... │
-     └───────────┘
-      :::::::::::`;
+// Connecting animation frames
+const CONNECTING_FRAMES = [
+  `
+        ╭──────────╮
+      ╭─┤░░░░░░░░░░├─╮
+     │  │░░░░░░░░░░│  │
+     │  │░░░░░░░░░░│  │
+     │  │░░░░░░░░░░│  │
+     │  │░░░░░░░░░░│  │
+      ╰─┤░░░░░░░░░░├─╯
+        ╰──────────╯
+        LINKING...`,
+  `
+        ╭──────────╮
+      ╭─┤▒░░░░░░░░░├─╮
+     │  │▒▒░░░░░░░░│  │
+     │  │░▒▒░░░░░░░│  │
+     │  │░░▒▒░░░░░░│  │
+     │  │░░░▒▒░░░░░│  │
+      ╰─┤░░░░▒░░░░░├─╯
+        ╰──────────╯
+        LINKING..`,
+  `
+        ╭──────────╮
+      ╭─┤▓▒░░░░░░░░├─╮
+     │  │▓▓▒░░░░░░░│  │
+     │  │▒▓▓▒░░░░░░│  │
+     │  │░▒▓▓▒░░░░░│  │
+     │  │░░▒▓▓▒░░░░│  │
+      ╰─┤░░░▒▓▒░░░░├─╯
+        ╰──────────╯
+        LINKING.`,
+  `
+        ╭──────────╮
+      ╭─┤█▓▒░░░░░░░├─╮
+     │  │██▓▒░░░░░░│  │
+     │  │▓██▓▒░░░░░│  │
+     │  │▒▓██▓▒░░░░│  │
+     │  │░▒▓██▓▒░░░│  │
+      ╰─┤░░▒▓█▓▒░░░├─╯
+        ╰──────────╯
+        LINKING...`
+];
+
+let earthFrame = 0;
+let connectingFrame = 0;
+let animationInterval = null;
 
 // Navigation
 settingsBtn.addEventListener('click', () => {
@@ -120,6 +151,29 @@ saveBtn.addEventListener('click', async () => {
   }
 });
 
+// Animation control
+function startAnimation(type) {
+  stopAnimation();
+
+  if (type === 'earth') {
+    globe.start();
+  } else if (type === 'connecting') {
+    connectingFrame = 0;
+    animationInterval = setInterval(() => {
+      asciiArt.textContent = CONNECTING_FRAMES[connectingFrame];
+      connectingFrame = (connectingFrame + 1) % CONNECTING_FRAMES.length;
+    }, 200); // Fast animation
+  }
+}
+
+function stopAnimation() {
+  globe.stop();
+  if (animationInterval) {
+    clearInterval(animationInterval);
+    animationInterval = null;
+  }
+}
+
 // Update UI
 function updateUI(status, error = null) {
   currentStatus = status;
@@ -134,7 +188,7 @@ function updateUI(status, error = null) {
 
   switch (status) {
     case 'Disconnected':
-      asciiArt.textContent = ASCII_OFFLINE;
+      startAnimation('earth');
       statusDot.textContent = '●';
       statusText.textContent = 'OFFLINE';
       targetAddr.textContent = 'none';
@@ -146,7 +200,7 @@ function updateUI(status, error = null) {
     case 'Connecting':
       asciiArt.classList.add('connecting');
       statusDot.classList.add('connecting');
-      asciiArt.textContent = ASCII_CONNECTING;
+      startAnimation('connecting');
       statusText.textContent = 'LINKING...';
       targetAddr.textContent = cfgServer.value || '...';
       btnText.classList.add('hidden');
@@ -159,7 +213,7 @@ function updateUI(status, error = null) {
       statusDot.classList.add('active');
       connectBtn.classList.add('active');
       statsBox.classList.add('active');
-      asciiArt.textContent = ASCII_ONLINE;
+      startAnimation('earth');
       statusDot.textContent = '◉';
       statusText.textContent = 'ONLINE';
       targetAddr.textContent = `${cfgServer.value}:${cfgPort.value}`;
@@ -169,7 +223,8 @@ function updateUI(status, error = null) {
       break;
 
     case 'Disconnecting':
-      asciiArt.textContent = ASCII_CONNECTING;
+      stopAnimation();
+      asciiArt.textContent = CONNECTING_FRAMES[0];
       statusText.textContent = 'CLOSING...';
       btnText.classList.add('hidden');
       btnLoader.classList.remove('hidden');

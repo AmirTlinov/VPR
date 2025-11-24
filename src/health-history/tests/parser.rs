@@ -35,7 +35,7 @@ fn cli_json_output() {
     )
     .unwrap();
 
-    let mut cmd = Command::cargo_bin("health-history").unwrap();
+    let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("health-history"));
     cmd.arg("--path")
         .arg(tmp.path())
         .arg("--tail")

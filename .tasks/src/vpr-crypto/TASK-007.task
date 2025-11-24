@@ -1,0 +1,44 @@
+---
+assignee: ai
+component: null
+created: 2025-11-24 04:21
+domain: src/vpr-crypto
+id: TASK-007
+parent: ROOT
+phase: null
+priority: HIGH
+progress: 0
+status: FAIL
+tags: []
+title: 'CRIT-001..002: crypto hygiene'
+updated: 2025-11-24 04:21
+---
+
+# CRIT-001..002: crypto hygiene
+
+## Описание
+Замена RNG на OsRng и Zeroize ML-KEM секрета в HybridKeypair
+
+## Подзадачи
+- [ ] CRIT-001: заменить все rand::random()/thread_rng на OsRng в vpr-crypto
+  - Критерии: Генерация X25519/Noise использует только rand::rngs::OsRng; Нет вызовов rand::random()/thread_rng в prod-коде модуля; cargo test -p vpr-crypto проходит без флапов
+  - Тесты: cargo test -p vpr-crypto --lib; rg "thread_rng\|rand::random" src/vpr-crypto -g'*.rs' --quiet && false || true
+  - Блокеры: Убедиться в совместимости API OsRng с существующими вызовами; Проверить влияние на deterministic тесты
+  - Чекпоинты: Критерии=TODO; Тесты=TODO; Блокеры=TODO
+- [ ] CRIT-002: Zeroize/Drop для ML-KEM секрета в HybridKeypair и проверка очистки
+  - Критерии: HybridKeypair очищает PQ секреты через zeroize при Drop; Юнит тест подтверждает очистку буфера после drop; Покрытие ≥85% по затронутым файлам
+  - Тесты: cargo test -p vpr-crypto --lib -- --nocapture; cargo llvm-cov -p vpr-crypto
+  - Блокеры: Неизвестна внутренняя структура ML-KEM секрета — нужна инспекция; Возможна потребность в feature zeroize для зависимостей
+  - Чекпоинты: Критерии=TODO; Тесты=TODO; Блокеры=TODO
+- [ ] Документация и чек: зафиксировать политику RNG/zeroize в docs/security.md
+  - Критерии: docs/security.md отражает переход на OsRng и очистку ML-KEM; Сформирован чеклист для ревью RNG/zeroize; Док доступен в репозитории
+  - Тесты: spellcheck/markdownlint для затронутых файлов; manual review чеклиста
+  - Блокеры: Согласование формата docs/security.md; Нет доступа к прошлым политикам
+  - Чекпоинты: Критерии=TODO; Тесты=TODO; Блокеры=TODO
+
+## Критерии успеха
+- cargo test -p vpr-crypto
+
+## Риски
+- регресс производительности
+- несовместимость zeroize

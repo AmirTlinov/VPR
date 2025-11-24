@@ -228,7 +228,9 @@ fn generate_session_id() -> String {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let random: u64 = rand::random();
+    use rand::rngs::OsRng;
+    use rand::RngCore;
+    let random: u64 = OsRng.next_u64();
     format!("{:x}{:016x}", timestamp, random)
 }
 

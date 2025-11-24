@@ -1,7 +1,8 @@
 use crate::frame::AsciiFrame;
 use ratatui::style::Color;
 
-const GRADIENT: [char; 10] = [' ', '.', ',', '-', '~', ':', ';', '*', 'O', '@'];
+// Hacker-style gradient
+const GRADIENT: [char; 10] = [' ', '.', ':', ';', 'i', '1', '0', 'X', '#', '@'];
 
 #[derive(Clone)]
 pub struct GlobeRenderer {
@@ -57,8 +58,8 @@ impl GlobeRenderer {
                 continue;
             }
 
-            let ch = shade_char(shading, is_land);
-            let color = shade_color(is_land, shading);
+            let ch = shade_char(shading, is_land, tick);
+            let color = shade_color(is_land, shading, tick);
             frame.put(row as usize, col as usize, depth, ch, color);
         }
 
@@ -66,38 +67,43 @@ impl GlobeRenderer {
     }
 }
 
-fn shade_char(intensity: f32, is_land: bool) -> char {
+fn shade_char(intensity: f32, is_land: bool, tick: u64) -> char {
     let clamped = intensity.clamp(0.0, 1.0);
     let idx = (clamped * (GRADIENT.len() - 1) as f32).round() as usize;
     let glyph = GRADIENT[idx];
 
     if is_land && glyph == ' ' {
-        ','
+        // Occasional glitch effect for water
+        if tick % 17 == 0 { '.' } else { ' ' }
     } else {
         glyph
     }
 }
 
-fn shade_color(is_land: bool, intensity: f32) -> Color {
-    let base = if is_land {
-        (62u8, 188u8, 118u8)
+fn shade_color(is_land: bool, intensity: f32, tick: u64) -> Color {
+    // Matrix/Watch Dogs palette: Black background, Cyan/Green foreground
+    
+    let t = intensity.clamp(0.0, 1.0);
+
+    if is_land {
+        // Land is bright Cyan/White
+        let r = lerp(0, 100, t);
+        let g = lerp(200, 255, t);
+        let b = lerp(200, 255, t);
+        Color::Rgb(r, g, b)
     } else {
-        (48u8, 158u8, 206u8)
-    };
-
-    let highlight = if is_land {
-        (210u8, 238u8, 160u8)
-    } else {
-        (160u8, 222u8, 255u8)
-    };
-
-    let t = intensity.clamp(0.0, 1.0) * 0.65;
-
-    let r = lerp(base.0, highlight.0, t);
-    let g = lerp(base.1, highlight.1, t);
-    let b = lerp(base.2, highlight.2, t);
-
-    Color::Rgb(r, g, b)
+        // Water is Dark Blue/Green or Empty
+        if t < 0.2 {
+             Color::Rgb(0, 20, 40)
+        } else {
+             // Glitchy water
+             if tick % 9 == 0 {
+                 Color::Rgb(0, 100, 0)
+             } else {
+                 Color::Rgb(0, 50, 100)
+             }
+        }
+    }
 }
 
 fn lerp(a: u8, b: u8, t: f32) -> u8 {
@@ -188,7 +194,7 @@ mod tests {
         let globe = GlobeRenderer::new(2000, 0.3, 0.18);
         let start = Instant::now();
         for i in 0..32 {
-            let _ = globe.render_frame(96, 40, i as f32 * 0.1, i);
+            let _ = globe.render_frame(96, 40, i as f32 * 0.1, i as u64);
         }
 
         assert!(
