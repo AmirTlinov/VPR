@@ -1,13 +1,13 @@
 # TODO
 
 ## 1. Project Scaffolding & Baseline
-- [x] Initialize repo structure: `src/`, `infra/`, `gui/`, `docs/`, `.agents/`
-- [ ] Add base Nix/Poetry environments for Rust+Python components
+- [x] Initialize repo structure: `src/`, `infra/`, `docs/`
+- [ ] Add base Nix environments for Rust components
 - [ ] Define shared config schema (`config/vpr.yaml`) and sample secrets layout (`secrets/README`)
 - [ ] Set up CI hooks (lint, fmt, tests) and pre-commit config
 
 ## 2. Cryptography & Identity
-- [ ] Implement offline root CA generation script (Rust or Go)
+- [ ] Implement offline root CA generation script (Rust)
 - [ ] Build `intermediate_ctl` tool for issuing node certs + Noise seeds
 - [ ] Integrate `age`-based sealing for all artifacts; document key rotation policy
 - [ ] Create KAT suite for NoiseIK/NK hybrids (X25519 + ML-KEM768)
@@ -26,20 +26,21 @@
 - [ ] Create moving-target DoH rotation job (ACME issuance + manifest update)
 - [ ] Implement bootstrap manifest signer/validator and stego RSS publisher
 
-## 5. vpr Studio (Python GUI)
-- [x] Scaffold PySide6 app structure with tabs: Deploy, Rotate, Failover, Health, Logs
-- [ ] Implement state store (`~/.vpr/state.json`) with age-signed updates
-- [x] Build Deploy wizard: user inputs login/IP/password (or SSH key), presses `Setup Node`, GUI auto-installs dependencies, runs Terraform/Ansible, and displays progress/logs
-- [x] Implement Rotate Fronts/DoH actions with ACME, nginx reload, manifest push (single button per action)
-- [x] Build Swap Node workflow (DNS update, manifest publish, drain monitor) triggered by one click
-- [ ] Add Sync Content + Cleanup utilities (rsync + log pruning) with confirmation dialogs
-- [x] Create Health dashboard (suspicion, RTT, DoH/DoQ status) + рекомендации/горячие действия
-- [ ] Package GUI (PyInstaller or Briefcase) for Linux/macOS
+## 5. Desktop Client (Tauri)
+- [x] Create Tauri app structure with Rust backend
+- [x] Implement settings UI (server, port, protocol, DoH endpoint)
+- [x] Build connection status display with ASCII shield
+- [x] Add session stats (time, upload, download)
+- [ ] Integrate real masque-core connection logic
+- [ ] Implement kill switch functionality
+- [ ] Add auto-connect on startup
+- [ ] Package for Linux (deb, rpm, AppImage)
+- [ ] Package for macOS and Windows
 
 ## 6. Telemetry & Observability
-- [x] Implement lightweight GUI health harness + history CLI for suspicion/jitter
+- [x] Implement health-harness CLI for suspicion/jitter checks
 - [ ] Implement lightweight agent exporting suspicion score, RTT, DoH/DoQ stats
-- [ ] Add Prometheus-compatible endpoint (local-only) and GUI charts
+- [ ] Add Prometheus-compatible endpoint (local-only)
 - [ ] Build alerting rules for suspicion >0.35, bootstrap latency >3 s, DNS failures >1%
 - [ ] Add log aggregation (structured JSON) per action, retained 30 days
 
@@ -47,16 +48,16 @@
 - [ ] Create Ansible role for miniPC deployment (MASQUE ingress + web cover + local ODoH)
 - [ ] Implement Sync Content workflow (git fetch + rsync)
 - [ ] Automate health beacon JSON publication to manifest
-- [ ] Write failover drill script (simulate VPS block → Swap Node)
+- [ ] Write failover drill script (simulate VPS block)
 
 ## 8. Testing & Validation
 - [ ] Build network-namespace harness for non-disruptive tunnel tests
 - [ ] Develop DPI lab scripts (adv padding, dMAP probes)
 - [ ] Create chaos scenarios: packet loss bursts, QUIC block, DNS poisoning
-- [ ] Document playbooks for monthly “mass-block chaos” exercise
+- [ ] Document playbooks for monthly "mass-block chaos" exercise
 
 ## 9. Documentation & Ops
 - [ ] Expand `1.logic` into full design doc (`docs/architecture.md`)
-- [ ] Write operator guide for vpr Studio (deploy, rotate, swap, health)
+- [ ] Write user guide for desktop client
 - [ ] Document disaster-recovery workflow (portable node promotion, key compromise)
 - [ ] Prepare compliance checklist (crypto, secrets, logging)

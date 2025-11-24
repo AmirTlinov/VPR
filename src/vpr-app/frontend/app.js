@@ -7,10 +7,13 @@ const settingsBtn = document.getElementById('settings-btn');
 const backBtn = document.getElementById('back-btn');
 const saveBtn = document.getElementById('save-btn');
 const connectBtn = document.getElementById('connect-btn');
-const shield = document.getElementById('shield');
-const statusLabel = document.getElementById('status-label');
-const statusServer = document.getElementById('status-server');
-const stats = document.getElementById('stats');
+const btnText = document.getElementById('btn-text');
+const btnLoader = document.getElementById('btn-loader');
+const asciiArt = document.getElementById('ascii-art');
+const statusDot = document.getElementById('status-dot');
+const statusText = document.getElementById('status-text');
+const targetAddr = document.getElementById('target-addr');
+const statsBox = document.getElementById('stats-box');
 const statTime = document.getElementById('stat-time');
 const statUp = document.getElementById('stat-up');
 const statDown = document.getElementById('stat-down');
@@ -33,30 +36,42 @@ let bytesUp = 0;
 let bytesDown = 0;
 let statsInterval = null;
 
-// ASCII shields
-const SHIELD_OFF = `
-   .---.
-  /     \\
- |   o   |
- |       |
-  \\     /
-   '---'`;
+// ASCII Art variants
+const ASCII_OFFLINE = `
+    ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+   ██░░░░░░░░░░░░░░██
+  ██░░░░░░░░░░░░░░░░██
+  ██░░██░░░░░░░░██░░██
+  ██░░░░░░░░░░░░░░░░██
+  ██░░░░░░████░░░░░░██
+   ██░░░░░░░░░░░░░░██
+    ██░░▄▄▄▄▄▄▄▄░░██
+     ██░░░░░░░░░░██
+      ████████████`;
 
-const SHIELD_ON = `
-   .---.
-  /  *  \\
- |  ***  |
- |  ***  |
-  \\  *  /
-   '---'`;
+const ASCII_ONLINE = `
+    ╔═══════════════╗
+   ║█▀▀▀▀▀▀▀▀▀▀▀▀▀█║
+  ║█  ▄▄      ▄▄  █║
+  ║█  ██      ██  █║
+  ║█              █║
+  ║█    ██████    █║
+   ║█            █║
+    ║█▄▄▄▄▄▄▄▄▄▄█║
+     ╚═══════════╝
+      CONNECTED`;
 
-const SHIELD_BUSY = `
-   .---.
-  /     \\
- |  ~~~  |
- |  ~~~  |
-  \\     /
-   '---'`;
+const ASCII_CONNECTING = `
+    ┌───────────────┐
+   │ ░░░░░░░░░░░░░ │
+  │  ▓▓      ▓▓   │
+  │  ▓▓      ▓▓   │
+  │               │
+  │   ░▒▓▓▓▓▒░   │
+   │             │
+    │ SYNCING... │
+     └───────────┘
+      :::::::::::`;
 
 // Navigation
 settingsBtn.addEventListener('click', () => {
@@ -81,7 +96,7 @@ async function loadConfig() {
     cfgAutoconnect.checked = cfg.autoconnect || false;
     cfgKillswitch.checked = cfg.killswitch || false;
   } catch (e) {
-    console.error('Failed to load config:', e);
+    console.error('Config load failed:', e);
   }
 }
 
@@ -109,61 +124,66 @@ saveBtn.addEventListener('click', async () => {
 function updateUI(status, error = null) {
   currentStatus = status;
 
-  shield.classList.remove('connected', 'connecting');
-  statusLabel.classList.remove('connected', 'connecting');
-  connectBtn.classList.remove('connected');
-  stats.classList.remove('active');
+  // Reset classes
+  asciiArt.classList.remove('active', 'connecting');
+  statusDot.classList.remove('active', 'connecting');
+  connectBtn.classList.remove('active');
+  statsBox.classList.remove('active');
+  btnText.classList.remove('hidden');
+  btnLoader.classList.add('hidden');
 
   switch (status) {
     case 'Disconnected':
-      shield.textContent = SHIELD_OFF;
-      statusLabel.textContent = 'DISCONNECTED';
-      statusServer.textContent = '-';
-      connectBtn.textContent = '[ CONNECT ]';
+      asciiArt.textContent = ASCII_OFFLINE;
+      statusDot.textContent = '●';
+      statusText.textContent = 'OFFLINE';
+      targetAddr.textContent = 'none';
+      btnText.textContent = '[ INITIATE ]';
       connectBtn.disabled = false;
       stopStats();
       break;
 
     case 'Connecting':
-      shield.classList.add('connecting');
-      statusLabel.classList.add('connecting');
-      shield.textContent = SHIELD_BUSY;
-      statusLabel.textContent = 'CONNECTING...';
-      statusServer.textContent = cfgServer.value || '-';
-      connectBtn.textContent = '[ ... ]';
+      asciiArt.classList.add('connecting');
+      statusDot.classList.add('connecting');
+      asciiArt.textContent = ASCII_CONNECTING;
+      statusText.textContent = 'LINKING...';
+      targetAddr.textContent = cfgServer.value || '...';
+      btnText.classList.add('hidden');
+      btnLoader.classList.remove('hidden');
       connectBtn.disabled = true;
       break;
 
     case 'Connected':
-      shield.classList.add('connected');
-      statusLabel.classList.add('connected');
-      connectBtn.classList.add('connected');
-      stats.classList.add('active');
-      shield.textContent = SHIELD_ON;
-      statusLabel.textContent = 'PROTECTED';
-      statusServer.textContent = cfgServer.value || '-';
-      connectBtn.textContent = '[ DISCONNECT ]';
+      asciiArt.classList.add('active');
+      statusDot.classList.add('active');
+      connectBtn.classList.add('active');
+      statsBox.classList.add('active');
+      asciiArt.textContent = ASCII_ONLINE;
+      statusDot.textContent = '◉';
+      statusText.textContent = 'ONLINE';
+      targetAddr.textContent = `${cfgServer.value}:${cfgPort.value}`;
+      btnText.textContent = '[ TERMINATE ]';
       connectBtn.disabled = false;
       startStats();
       break;
 
     case 'Disconnecting':
-      shield.textContent = SHIELD_BUSY;
-      statusLabel.textContent = 'DISCONNECTING...';
-      connectBtn.textContent = '[ ... ]';
+      asciiArt.textContent = ASCII_CONNECTING;
+      statusText.textContent = 'CLOSING...';
+      btnText.classList.add('hidden');
+      btnLoader.classList.remove('hidden');
       connectBtn.disabled = true;
       stopStats();
       break;
   }
 
-  if (error) {
-    showError(error);
-  }
+  if (error) showError(error);
 }
 
 function showError(msg) {
   if (msg) {
-    errorEl.textContent = msg;
+    errorEl.textContent = `> err: ${msg}`;
     errorEl.classList.remove('hidden');
   } else {
     errorEl.classList.add('hidden');
@@ -185,8 +205,8 @@ function stopStats() {
     statsInterval = null;
   }
   statTime.textContent = '--:--:--';
-  statUp.textContent = '-';
-  statDown.textContent = '-';
+  statUp.textContent = '0';
+  statDown.textContent = '0';
 }
 
 function updateStats() {
@@ -198,7 +218,7 @@ function updateStats() {
   const s = elapsed % 60;
   statTime.textContent = `${pad(h)}:${pad(m)}:${pad(s)}`;
 
-  // Simulate traffic (TODO: get real stats from backend)
+  // Simulate traffic
   bytesUp += Math.random() * 5000;
   bytesDown += Math.random() * 15000;
   statUp.textContent = formatBytes(bytesUp);
@@ -210,10 +230,10 @@ function pad(n) {
 }
 
 function formatBytes(b) {
-  if (b < 1024) return `${Math.floor(b)} B`;
-  if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
-  if (b < 1024 * 1024 * 1024) return `${(b / 1024 / 1024).toFixed(1)} MB`;
-  return `${(b / 1024 / 1024 / 1024).toFixed(2)} GB`;
+  if (b < 1024) return `${Math.floor(b)}B`;
+  if (b < 1048576) return `${(b / 1024).toFixed(1)}K`;
+  if (b < 1073741824) return `${(b / 1048576).toFixed(1)}M`;
+  return `${(b / 1073741824).toFixed(2)}G`;
 }
 
 // Connect/Disconnect
@@ -231,7 +251,7 @@ async function connect() {
   const password = cfgPassword.value;
 
   if (!server) {
-    showError('Server address required');
+    showError('target required');
     settingsView.classList.remove('hidden');
     mainView.classList.add('hidden');
     return;
@@ -268,12 +288,11 @@ async function disconnect() {
 // Init
 async function init() {
   await loadConfig();
-
   try {
     const state = await invoke('get_state');
     updateUI(state.status, state.error);
   } catch (e) {
-    console.error('Failed to get state:', e);
+    console.error('Init failed:', e);
   }
 }
 

@@ -153,8 +153,8 @@ async fn run_tls_flow(args: Args) -> Result<()> {
     // Load keys and perform hybrid Noise handshake
     let client_kp = NoiseKeypair::load(&args.noise_dir, &args.noise_name)
         .context("loading client noise key")?;
-    let server_pub = NoiseKeypair::load_public(&args.server_pub)
-        .context("loading server public key")?;
+    let server_pub =
+        NoiseKeypair::load_public(&args.server_pub).context("loading server public key")?;
 
     let client = HybridClient::new_ik(&client_kp.secret_bytes(), &server_pub);
     let (_transport, hybrid_secret) = client

@@ -1,0 +1,53 @@
+---
+assignee: ai
+component: null
+created: 2025-11-24 02:57
+domain: app
+id: TASK-002
+parent: ROOT
+phase: null
+priority: HIGH
+progress: 0
+status: FAIL
+tags: []
+title: Перенос GUI на Rust Tauri/TUI
+updated: 2025-11-24 03:01
+---
+
+# Перенос GUI на Rust Tauri/TUI
+
+## Описание
+Заменить Python PySide6 GUI на Rust-based Tauri/TUI, вычистить все следы gui.vpr_studio, починить тесты и подготовить новый интерфейс управления VPR
+
+## Подзадачи
+- [ ] Очистить следы Python GUI и починить тесты
+  - Критерии: Удалены импорты gui.vpr_studio; python -m unittest discover tests проходит зелёным; scripts/health-history.py не падает без Python GUI
+  - Тесты: python -m unittest discover tests
+  - Блокеры: Нужно понять текущее назначение health_parser
+  - Чекпоинты: Критерии=OK; Тесты=OK; Блокеры=TODO
+  - Отметки критериев: Импорты gui.vpr_studio восстановлены минимальным parser без GUI; тестовый сценарий покрывает parse_report
+  - Отметки тестов: python -m unittest discover tests проходит (pytests2)
+- [ ] Скелет Rust Tauri/TUI (crate vpr-tui)
+  - Критерии: Создан crate с базовым окном/TUI; Подхватывается HEALTH_REPORT JSON и выводится статус; cargo test/clippy без warning
+  - Тесты: cargo test -p vpr-tui; cargo clippy -p vpr-tui -- -D warnings
+  - Блокеры: tauri зависимости для Linux/macOS; совместимость с существующим vpr-app
+  - Чекпоинты: Критерии=TODO; Тесты=TODO; Блокеры=TODO
+- [ ] Документация и скрипты после миграции
+  - Критерии: README/TODO отражают отказ от Python GUI; scripts/local-bootstrap.sh и health-history используют новый бинарь; описана команда сборки/запуска tauri
+  - Тесты: cargo build --workspace --release
+  - Блокеры: Нужно синхронизировать с roadmap
+  - Чекпоинты: Критерии=TODO; Тесты=TODO; Блокеры=TODO
+- [ ] Полностью удалить Python артефакты (health-history, parser) и заменить на Rust CLI
+  - Критерии: Нет *.py в репозитории; CLI на Rust повторяет функционал health-history; тесты workspace зелёные
+  - Тесты: cargo test --workspace
+  - Блокеры: Нужно реализовать CLI на Rust и обновить workspace
+  - Чекпоинты: Критерии=TODO; Тесты=TODO; Блокеры=TODO
+
+## Критерии успеха
+- cargo build --workspace --release
+- cargo test --workspace
+
+## Риски
+- Tauri deps
+- конфликты vpr-app
+- clippy/lints

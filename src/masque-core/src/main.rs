@@ -317,7 +317,10 @@ async fn run_quic(
     Ok(())
 }
 
-async fn handle_quic_connection(connection: quinn::Connection, server: Arc<HybridServer>) -> Result<()> {
+async fn handle_quic_connection(
+    connection: quinn::Connection,
+    server: Arc<HybridServer>,
+) -> Result<()> {
     info!(
         remote = %connection.remote_address(),
         "QUIC connection established"
