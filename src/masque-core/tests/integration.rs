@@ -1,4 +1,3 @@
-use assert_cmd::cargo::cargo_bin;
 use predicates::prelude::*;
 use rcgen::generate_simple_self_signed;
 use std::io::{Read, Write};
@@ -96,7 +95,7 @@ fn spawn_server(
         args.push(q.into());
     }
 
-    std::process::Command::new(cargo_bin("masque-core"))
+    std::process::Command::new(assert_cmd::cargo::cargo_bin!("masque-core"))
         .args(args)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -129,7 +128,7 @@ async fn tls_tcp_end_to_end() {
     wait_port(bind_addr.parse().unwrap()).await;
 
     // Client: send payload and expect echo
-    let mut client = std::process::Command::new(cargo_bin("client"))
+    let mut client = std::process::Command::new(assert_cmd::cargo::cargo_bin!("client"))
         .args([
             "--addr",
             &bind_addr,
@@ -183,7 +182,7 @@ async fn quic_tcp_end_to_end() {
     // give QUIC listener time to bind
     sleep(Duration::from_millis(200)).await;
 
-    let mut client = std::process::Command::new(cargo_bin("client"))
+    let mut client = std::process::Command::new(assert_cmd::cargo::cargo_bin!("client"))
         .args([
             "--addr",
             &quic_addr,
@@ -240,7 +239,7 @@ async fn quic_udp_end_to_end() {
     let udp_listen_port = next_port();
     let udp_listen = format!("127.0.0.1:{udp_listen_port}");
 
-    let mut client = std::process::Command::new(cargo_bin("client"))
+    let mut client = std::process::Command::new(assert_cmd::cargo::cargo_bin!("client"))
         .args([
             "--addr",
             &quic_addr,

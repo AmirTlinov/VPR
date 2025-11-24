@@ -23,6 +23,7 @@ use tracing_subscriber::FmtSubscriber;
 use masque_core::hybrid_handshake::HybridServer;
 use masque_core::quic_stream::QuicBiStream;
 use masque_core::tun::{enable_ip_forwarding, setup_nat, TunConfig, TunDevice};
+use masque_core::vpn_config::{ConfigAck, VpnConfig};
 use masque_core::vpn_tunnel::PacketEncapsulator;
 use vpr_crypto::keys::NoiseKeypair;
 
@@ -245,6 +246,10 @@ async fn run_vpn_server(args: Args) -> Result<()> {
     let state_clone = state.clone();
     let tun_read_task = tokio::spawn(tun_reader_task(tun_reader, state_clone));
 
+    // Capture config values for spawned tasks
+    let gateway_ip = args.tun_addr;
+    let mtu = args.mtu;
+
     // Accept client connections
     while let Some(incoming) = endpoint.accept().await {
         let hs = hybrid_server.clone();
@@ -257,7 +262,7 @@ async fn run_vpn_server(args: Args) -> Result<()> {
                     let remote = connection.remote_address();
                     info!(%remote, "New VPN connection");
 
-                    if let Err(e) = handle_vpn_client(connection, hs, st, to_tun).await {
+                    if let Err(e) = handle_vpn_client(connection, hs, st, to_tun, gateway_ip, mtu).await {
                         error!(%remote, %e, "Client error");
                     }
                 }
@@ -281,6 +286,8 @@ async fn handle_vpn_client(
     hybrid_server: Arc<HybridServer>,
     state: Arc<RwLock<ServerState>>,
     to_tun_tx: mpsc::Sender<Bytes>,
+    gateway_ip: Ipv4Addr,
+    mtu: u16,
 ) -> Result<()> {
     let remote = connection.remote_address();
 
@@ -312,6 +319,36 @@ async fn handle_vpn_client(
     };
 
     info!(%remote, client_ip = %client_ip, "IP allocated");
+
+    // Send VPN configuration to client
+    let vpn_config = VpnConfig::new(client_ip, gateway_ip)
+        .with_mtu(mtu)
+        .with_dns(Ipv4Addr::new(8, 8, 8, 8))
+        .with_dns(Ipv4Addr::new(1, 1, 1, 1))
+        .with_route("0.0.0.0/0"); // Full tunnel mode
+
+    vpn_config
+        .send(&mut stream)
+        .await
+        .context("sending VPN config")?;
+
+    info!(%remote, client_ip = %client_ip, "VPN config sent");
+
+    // Wait for client acknowledgment
+    let ack = ConfigAck::recv(&mut stream)
+        .await
+        .context("receiving config ack")?;
+
+    if !ack.accepted {
+        let err_msg = ack.error.unwrap_or_else(|| "unknown error".into());
+        error!(%remote, %err_msg, "Client rejected config");
+        // Release IP before returning error
+        let mut st = state.write().await;
+        st.ip_pool.release(client_ip);
+        anyhow::bail!("client rejected config: {}", err_msg);
+    }
+
+    info!(%remote, client_ip = %client_ip, "Client accepted config");
 
     // Create channel for packets going to this client
     let (client_tx, mut client_rx) = mpsc::channel::<Bytes>(1024);

@@ -20,6 +20,7 @@ use tracing_subscriber::FmtSubscriber;
 use masque_core::hybrid_handshake::HybridClient;
 use masque_core::quic_stream::QuicBiStream;
 use masque_core::tun::{setup_routing, TunConfig, TunDevice};
+use masque_core::vpn_config::{ConfigAck, VpnConfig};
 use masque_core::vpn_tunnel::{
     channel_to_tun, forward_quic_to_tun, forward_tun_to_quic, tun_to_channel, PacketEncapsulator,
 };
@@ -101,7 +102,6 @@ async fn run_vpn_client(args: Args) -> Result<()> {
     info!(
         server = %args.server,
         tun_name = %args.tun_name,
-        tun_addr = %args.tun_addr,
         "Starting VPR VPN client"
     );
 
@@ -117,30 +117,6 @@ async fn run_vpn_client(args: Args) -> Result<()> {
         .server
         .parse()
         .with_context(|| format!("parsing server address: {}", args.server))?;
-
-    // Create TUN device
-    let tun_config = TunConfig {
-        name: args.tun_name.clone(),
-        address: args.tun_addr,
-        netmask: args.tun_netmask,
-        mtu: args.mtu,
-        destination: Some(args.gateway),
-    };
-
-    let tun = TunDevice::create(tun_config)
-        .await
-        .context("creating TUN device")?;
-
-    info!(
-        name = %tun.name(),
-        addr = %args.tun_addr,
-        "TUN device created"
-    );
-
-    // Configure routing if requested
-    if args.set_default_route {
-        setup_routing(tun.name(), args.gateway).context("setting up routing")?;
-    }
 
     // Build QUIC client config
     let quic_config = build_quic_config(args.insecure, args.idle_timeout)?;
@@ -170,13 +146,12 @@ async fn run_vpn_client(args: Args) -> Result<()> {
 
     let hybrid_client = HybridClient::new_ik(&client_keypair.secret_bytes(), &server_pub_bytes);
 
-    // Open bidirectional stream for handshake
+    // Open bidirectional stream for handshake and config
     let (send, recv) = connection
         .open_bi()
         .await
         .context("opening bidirectional stream")?;
 
-    // Wrap in bidirectional stream for handshake
     let mut stream = QuicBiStream::new(send, recv);
 
     let (_transport, hybrid_secret) = hybrid_client
@@ -189,7 +164,51 @@ async fn run_vpn_client(args: Args) -> Result<()> {
         "Hybrid PQ handshake complete"
     );
 
-    // Now we're authenticated - start VPN tunnel
+    // Receive VPN configuration from server
+    let vpn_config = VpnConfig::recv(&mut stream)
+        .await
+        .context("receiving VPN config")?;
+
+    info!(
+        client_ip = %vpn_config.client_ip,
+        gateway = %vpn_config.gateway,
+        mtu = vpn_config.mtu,
+        "Received VPN configuration"
+    );
+
+    // Create TUN device with server-assigned configuration
+    let tun_config = TunConfig {
+        name: args.tun_name.clone(),
+        address: vpn_config.client_ip,
+        netmask: vpn_config.netmask,
+        mtu: vpn_config.mtu,
+        destination: Some(vpn_config.gateway),
+    };
+
+    let tun = TunDevice::create(tun_config)
+        .await
+        .context("creating TUN device")?;
+
+    info!(
+        name = %tun.name(),
+        addr = %vpn_config.client_ip,
+        "TUN device created with server-assigned IP"
+    );
+
+    // Send acknowledgment to server
+    ConfigAck::ok()
+        .send(&mut stream)
+        .await
+        .context("sending config ack")?;
+
+    info!("Config acknowledged, starting VPN tunnel");
+
+    // Configure routing if requested
+    if args.set_default_route {
+        setup_routing(tun.name(), vpn_config.gateway).context("setting up routing")?;
+    }
+
+    // Start VPN tunnel
     run_vpn_tunnel(tun, connection).await
 }
 
