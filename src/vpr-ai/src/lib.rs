@@ -44,6 +44,8 @@
 //! ```
 
 pub mod cover;
+pub mod dpi_simulator;
+pub mod e2e_test;
 pub mod features;
 pub mod morpher;
 pub mod profiles;
