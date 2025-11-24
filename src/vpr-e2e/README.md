@@ -80,7 +80,7 @@ Reports are saved to `logs/e2e/`:
 
 | Test | Description |
 |------|-------------|
-| `ping_gateway` | Ping VPN gateway (10.8.0.1) |
+| `ping_gateway` | Ping VPN gateway (10.9.0.1) |
 | `dns_resolution` | DNS lookup via 8.8.8.8 |
 | `external_connectivity` | Get public IP via ifconfig.me |
 | `latency` | Latency to multiple endpoints |

@@ -3,15 +3,41 @@ profiles:
   stealth:
     node: vps-primary
     masq_domain: stealth.example.com
+    cert_domain: doh.example.com
+    acme_directory_url: https://acme-v02.api.letsencrypt.org/directory
     doh_domains:
       - doh1.example.com
     tls_fp_policy: chrome-stable
+    # Routing configuration
+    routing:
+      policy: split  # full, split, bypass
+      routes:
+        - destination: "10.0.0.0/8"
+          gateway: "10.9.0.1"
+          metric: 100
+        - destination: "192.168.0.0/16"
+          gateway: "10.9.0.1"
+          metric: 200
+          table: 100
+      dns_servers:
+        - "8.8.8.8"
+        - "1.1.1.1"
+      ipv6_enabled: false
   performance:
     node: vps-primary
     enable_dpdk: false
+    routing:
+      policy: full
+      ipv6_enabled: true
   portable:
     node: home-mini
     masq_domain: home.example.lan
+    routing:
+      policy: split
+      routes:
+        - destination: "172.16.0.0/12"
+      dns_servers:
+        - "9.9.9.9"
 
 secrets_path: ../secrets
 state_file: ~/.vpr/state.json

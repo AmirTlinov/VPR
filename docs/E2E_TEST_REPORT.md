@@ -50,20 +50,20 @@ Hybrid PQ handshake complete
 ### 4. Session Management
 ```
 Session created
-- client_ip: 10.8.0.3
-- gateway: 10.8.0.1
+- client_ip: 10.9.0.3
+- gateway: 10.9.0.1
 - mtu: 1400
 - session_id: unique per connection
 ```
 
 ### 5. Network Test (Ping)
 ```
-PING 10.8.0.1 (10.8.0.1) 56(84) bytes of data.
-64 bytes from 10.8.0.1: icmp_seq=1 ttl=64 time=148 ms
-64 bytes from 10.8.0.1: icmp_seq=2 ttl=64 time=71.0 ms
-64 bytes from 10.8.0.1: icmp_seq=3 ttl=64 time=138 ms
+PING 10.9.0.1 (10.9.0.1) 56(84) bytes of data.
+64 bytes from 10.9.0.1: icmp_seq=1 ttl=64 time=148 ms
+64 bytes from 10.9.0.1: icmp_seq=2 ttl=64 time=71.0 ms
+64 bytes from 10.9.0.1: icmp_seq=3 ttl=64 time=138 ms
 
---- 10.8.0.1 ping statistics ---
+--- 10.9.0.1 ping statistics ---
 3 packets transmitted, 3 received, 0% packet loss
 rtt min/avg/max/mdev = 70.976/119.118/148.413/34.307 ms
 ```

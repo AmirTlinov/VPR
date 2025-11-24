@@ -45,7 +45,7 @@ impl TestRunner {
     pub async fn test_ping(&self) -> TestResult {
         let start = Instant::now();
         let test_name = "ping_gateway";
-        let gateway = "10.8.0.1";
+        let gateway = "10.9.0.1";
 
         tracing::info!("Running ping test to {}", gateway);
 
@@ -305,7 +305,10 @@ impl TestRunner {
             duration_ms: start.elapsed().as_millis() as u64,
             details: Some(format!(
                 "Latency: min={:.1}ms, avg={:.1}ms, max={:.1}ms ({} endpoints)",
-                min_latency, avg_latency, max_latency, latencies.len()
+                min_latency,
+                avg_latency,
+                max_latency,
+                latencies.len()
             )),
             metrics: Some(serde_json::json!({
                 "latency_min_ms": min_latency,

@@ -288,9 +288,9 @@ impl Deployer {
              RUST_LOG=info nohup ./bin/vpn-server \
              --bind 0.0.0.0:{vpn_port} \
              --tun-name vpr-srv \
-             --tun-addr 10.8.0.1 \
-             --pool-start 10.8.0.2 \
-             --pool-end 10.8.0.254 \
+             --tun-addr 10.9.0.1 \
+             --pool-start 10.9.0.2 \
+             --pool-end 10.9.0.254 \
              --mtu 1400 \
              --noise-dir secrets \
              --noise-name server \

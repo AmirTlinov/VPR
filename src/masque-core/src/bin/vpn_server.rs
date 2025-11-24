@@ -115,7 +115,7 @@ struct Args {
     tun_name: String,
 
     /// Server TUN IP address (gateway for clients)
-    #[arg(long, default_value = "10.8.0.1")]
+    #[arg(long, default_value = "10.9.0.1")]
     tun_addr: Ipv4Addr,
 
     /// TUN netmask
@@ -131,11 +131,11 @@ struct Args {
     mtu: u16,
 
     /// Start of client IP pool
-    #[arg(long, default_value = "10.8.0.2")]
+    #[arg(long, default_value = "10.9.0.2")]
     pool_start: Ipv4Addr,
 
     /// End of client IP pool
-    #[arg(long, default_value = "10.8.0.254")]
+    #[arg(long, default_value = "10.9.0.254")]
     pool_end: Ipv4Addr,
 
     /// Padding strategy: none|bucket|rand-bucket|mtu
@@ -1221,14 +1221,24 @@ async fn tun_reader_task(
         match tun_reader.read_packet().await {
             Ok(packet) => match masque_core::tun::IpPacketInfo::parse(&packet) {
                 Ok(info) => {
-                    let dst_ip = info.dst_addr;
-                    let st = state.read().await;
-                    if let Some(session) = st.clients.get(&dst_ip) {
-                        if session.tx.send(packet).await.is_err() {
-                            debug!(dst = %dst_ip, "Client channel closed");
+                    // IPv6 packets are passed through but we don't have IPv6 client lookup yet
+                    // TODO: Add IPv6 client address support for full dual-stack
+                    if let Some(dst_ipv4) = info.dst_addr.as_ipv4() {
+                        let st = state.read().await;
+                        if let Some(session) = st.clients.get(&dst_ipv4) {
+                            if session.tx.send(packet).await.is_err() {
+                                debug!(dst = %dst_ipv4, "Client channel closed");
+                            }
+                        } else {
+                            debug!(dst = %dst_ipv4, "No client for destination");
                         }
                     } else {
-                        debug!(dst = %dst_ip, "No client for destination");
+                        // IPv6 packet - log at trace level only (these are common link-local traffic)
+                        trace!(
+                            dst = %info.dst_addr,
+                            protocol = %info.protocol_name(),
+                            "IPv6 packet from TUN (client lookup not yet supported)"
+                        );
                     }
                 }
                 Err(e) => {

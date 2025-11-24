@@ -33,9 +33,9 @@ OUTER_CLI="10.201.0.2"
 WAN_SRV="198.18.0.2"
 WAN_INET="198.18.0.1"
 
-TUN_GW="10.8.0.1"
-TUN_CLI="10.8.0.2"
-TUN_CIDR="10.8.0.0/24"
+TUN_GW="10.9.0.1"
+TUN_CLI="10.9.0.2"
+TUN_CIDR="10.9.0.0/24"
 MTU=1400
 
 HTTP_PORT=8080
@@ -150,7 +150,7 @@ start_server() {
     --tun-name "${TUN_S}" \
     --tun-addr "${TUN_GW}" \
     --pool-start "${TUN_CLI}" \
-    --pool-end "10.8.0.50" \
+    --pool-end "10.9.0.50" \
     --mtu ${MTU} \
     --noise-dir "${TMP}/keys" --noise-name server \
     --cert "${TMP}/server.crt" --key "${TMP}/server.key" \
