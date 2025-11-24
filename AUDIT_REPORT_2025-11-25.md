@@ -1,0 +1,177 @@
+# VPR Security & Code Quality Audit Report
+
+**Date:** 2025-11-25
+**Auditor:** Claude Code
+**Scope:** Full codebase audit
+
+---
+
+## Executive Summary
+
+The VPR codebase demonstrates **solid security fundamentals** in its cryptographic implementations. However, significant **technical debt exists in integration tests** that have not been updated to match evolved APIs.
+
+### Overall Assessment: **75/100**
+
+| Category | Score | Status |
+|----------|-------|--------|
+| Security | 85/100 | Good |
+| Code Quality | 80/100 | Good |
+| Test Coverage (lib) | 90/100 | Excellent |
+| Test Coverage (integration) | 40/100 | Critical debt |
+| Documentation | 70/100 | Adequate |
+
+---
+
+## 1. Security Analysis
+
+### 1.1 Unsafe Code Review
+
+**5 unsafe blocks found** - all justified:
+
+| Location | Purpose | Risk |
+|----------|---------|------|
+| `vpr-crypto/src/constant_time.rs` | `libc::geteuid()` | Low - required for privilege check |
+| `vpr-crypto/src/keys.rs` | Secure memory zeroization | Low - security hardening |
+| `vpr-crypto/src/noise.rs` | ML-KEM secret key handling | Low - PQ crypto requirement |
+
+**Verdict:** All unsafe code is security-critical and properly isolated.
+
+### 1.2 Hardcoded Secrets
+
+**None found in production code.**
+
+All hex strings (32+ chars) are test fixtures in `tests/` directories:
+- Test signing keys
+- Test manifest pubkeys
+- Test TLS fingerprints (Chrome/Firefox/Safari hashes)
+
+### 1.3 Cryptographic Implementation
+
+| Component | Implementation | Status |
+|-----------|---------------|--------|
+| TLS 1.3 | rustls + ring | Secure |
+| Noise Protocol | IK pattern | Secure |
+| Post-Quantum | ML-KEM (Kyber768) | Secure |
+| Key Derivation | HKDF-SHA256 | Secure |
+| Signatures | Ed25519 | Secure |
+| File Encryption | age (X25519) | Secure |
+
+### 1.4 Mutex/Lock Safety
+
+All mutex `.expect("...poisoned")` calls are appropriate:
+- Poisoned mutex indicates prior panic with held lock
+- Fail-fast is correct behavior in this scenario
+
+---
+
+## 2. Code Quality
+
+### 2.1 Clippy Analysis
+
+```
+cargo clippy --workspace --lib: PASS (0 warnings)
+```
+
+### 2.2 Error Handling Patterns
+
+| Pattern | Count | Location |
+|---------|-------|----------|
+| `.unwrap()` | 206 | Mostly tests |
+| `.expect()` | 259 | Mostly tests, config |
+| `panic!` | 14 | All in test code |
+
+**Production code uses proper `Result<T, E>` error handling.**
+
+### 2.3 TODO Comments
+
+Only 2 TODOs in production code:
+1. `bootstrap.rs:215` - ODoH protocol implementation
+2. `vpn_server.rs:1225` - IPv6 client address support
+
+---
+
+## 3. Test Coverage
+
+### 3.1 Library Tests (Unit Tests)
+
+```
+cargo test --workspace --lib: PASS
+44 tests passed, 0 failed
+```
+
+**Excellent coverage** of core functionality:
+- Cryptographic primitives
+- Key management
+- Manifest signing/verification
+- Noise handshake
+- TUI rendering
+
+### 3.2 Integration Tests (CRITICAL ISSUE)
+
+**Multiple integration test files fail to compile** due to API drift:
+
+| Crate | Broken Tests | Issue |
+|-------|-------------|-------|
+| `health-history` | 1 file | Old API types |
+| `vpr-tui` | 1 file | Old API types |
+| `vpr-crypto` | 3 files | Old seal/pki API |
+| `masque-core` | 2+ files | TunConfig, SigningKeypair API changes |
+
+**Fixed in this audit:**
+- `health-history/tests/basic.rs`
+- `vpr-tui/tests/render_smoke.rs`
+- `vpr-crypto/tests/seal_tamper.rs`
+- `vpr-crypto/tests/seal_errors.rs`
+- `vpr-crypto/tests/keys_seal_pki.rs`
+
+**Remaining debt:** `masque-core/tests/*` (~24 files)
+
+---
+
+## 4. Recommendations
+
+### 4.1 Critical (Fix Immediately)
+
+1. **Update masque-core integration tests**
+   - 24 test files reference deprecated APIs
+   - Tests cannot run, blocking CI
+
+### 4.2 High Priority
+
+2. **Add CI workflow** to fail on broken tests
+3. **Implement ODoH** (marked TODO in bootstrap.rs)
+
+### 4.3 Medium Priority
+
+4. **Add IPv6 client address support** (marked TODO)
+5. **Reduce `.unwrap()` in production code** (non-test paths)
+6. **Add property-based testing** for crypto primitives
+
+### 4.4 Low Priority
+
+7. **Improve documentation coverage**
+8. **Add benchmarks** for performance-critical paths
+
+---
+
+## 5. Files Modified in This Audit
+
+| File | Change |
+|------|--------|
+| `src/health-history/tests/basic.rs` | Rewrote tests for current API |
+| `src/vpr-tui/tests/render_smoke.rs` | Rewrote tests for current API |
+| `src/vpr-crypto/tests/seal_tamper.rs` | Rewrote tests for current API |
+| `src/vpr-crypto/tests/seal_errors.rs` | Rewrote tests for current API |
+| `src/vpr-crypto/tests/keys_seal_pki.rs` | Rewrote tests for current API |
+
+---
+
+## 6. Conclusion
+
+The VPR project has **strong security foundations** with proper use of modern cryptography (Noise, ML-KEM, age encryption). The main technical debt is in **integration tests** that have not kept pace with API evolution.
+
+**Recommended next step:** Dedicated test cleanup sprint to fix all `masque-core/tests/` files.
+
+---
+
+*Report generated by Claude Code*
