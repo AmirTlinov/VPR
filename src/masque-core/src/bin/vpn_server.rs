@@ -552,6 +552,7 @@ async fn run_vpn_server(args: Args) -> Result<()> {
         let session_rekey_seconds = args.session_rekey_seconds;
         let session_rekey_bytes = args.session_rekey_bytes;
         let dns_servers = dns_servers.clone();
+        let tls_bucket_local = tls_bucket;
 
         tokio::spawn(async move {
             match incoming.await {
@@ -579,6 +580,7 @@ async fn run_vpn_server(args: Args) -> Result<()> {
                         session_rekey_seconds,
                         session_rekey_bytes,
                         dns_servers,
+                        tls_bucket_local,
                     )
                     .await
                     {
@@ -624,6 +626,7 @@ async fn handle_vpn_client_with_config(
     session_rekey_seconds: u64,
     session_rekey_bytes: u64,
     dns_servers: Arc<Vec<IpAddr>>,
+    tls_bucket: TlsProfileBucket,
 ) -> Result<()> {
     let remote = connection.remote_address();
     let remote_ip = remote.ip();
@@ -760,6 +763,7 @@ async fn handle_vpn_client_with_config(
     };
 
     info!(%remote, client_ip = %client_ip, session_id = %session_id, "Session created");
+    debug!(%remote, tls_bucket = ?tls_bucket, "TLS canary bucket applied for client");
 
     // Send VPN configuration to client with session_id for reconnect
     let mut vpn_config = VpnConfig::new(client_ip, gateway_ip)

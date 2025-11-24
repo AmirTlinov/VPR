@@ -9,6 +9,7 @@ use rustls::crypto::ring::kx_group;
 use rustls::crypto::SupportedKxGroup;
 use rustls::SupportedCipherSuite;
 use std::fmt;
+use std::time::SystemTime;
 
 /// GREASE generation strategy
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,6 +64,44 @@ pub enum TlsProfile {
     Safari,
     Random,
     Custom,
+}
+
+/// Bucket of selected profile for telemetry/logs
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TlsProfileBucket {
+    Main,
+    Canary,
+}
+
+/// Choose TLS profile with optional canary rollout.
+/// canary_pct in [0.0, 100.0]; seed allows deterministic tests.
+pub fn select_tls_profile(
+    main: TlsProfile,
+    canary: Option<TlsProfile>,
+    canary_pct: f64,
+    seed: Option<u64>,
+) -> (TlsProfile, TlsProfileBucket) {
+    let pct = canary_pct.clamp(0.0, 100.0);
+    let Some(canary_profile) = canary.filter(|_| pct > 0.0) else {
+        return (main, TlsProfileBucket::Main);
+    };
+
+    // Deterministic seed for tests; otherwise time ^ os entropy.
+    let seed = seed.unwrap_or_else(|| {
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0);
+        now ^ OsRng.gen::<u64>()
+    });
+    let mut rng = ChaCha20Rng::seed_from_u64(seed);
+    let roll: f64 = rng.gen_range(0.0..100.0);
+
+    if roll < pct {
+        (canary_profile, TlsProfileBucket::Canary)
+    } else {
+        (main, TlsProfileBucket::Main)
+    }
 }
 
 impl TlsProfile {
@@ -351,6 +390,41 @@ pub mod known_ja3 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tls_canary_respects_zero_percent() {
+        let (p, bucket) =
+            select_tls_profile(TlsProfile::Chrome, Some(TlsProfile::Safari), 0.0, Some(1));
+        assert_eq!(p, TlsProfile::Chrome);
+        assert_eq!(bucket, TlsProfileBucket::Main);
+    }
+
+    #[test]
+    fn tls_canary_respects_hundred_percent() {
+        let (p, bucket) =
+            select_tls_profile(TlsProfile::Chrome, Some(TlsProfile::Safari), 100.0, Some(1));
+        assert_eq!(p, TlsProfile::Safari);
+        assert_eq!(bucket, TlsProfileBucket::Canary);
+    }
+
+    #[test]
+    fn tls_canary_deterministic_with_seed() {
+        let mut main_hits = 0;
+        let mut canary_hits = 0;
+        for i in 0..10 {
+            let (_p, bucket) = select_tls_profile(
+                TlsProfile::Chrome,
+                Some(TlsProfile::Firefox),
+                30.0,
+                Some(42 + i),
+            );
+            match bucket {
+                TlsProfileBucket::Main => main_hits += 1,
+                TlsProfileBucket::Canary => canary_hits += 1,
+            }
+        }
+        assert!(main_hits > 0 && canary_hits > 0);
+    }
 
     #[test]
     fn ja3_hash_deterministic_with_same_seed() {
