@@ -138,6 +138,48 @@ impl SigningKeypair {
     }
 }
 
+/// Signature verifier (public key only, for verification without signing capability)
+#[derive(Clone)]
+pub struct SignatureVerifier {
+    verifying: VerifyingKey,
+}
+
+impl SignatureVerifier {
+    /// Create verifier from public key bytes
+    pub fn from_public_bytes(bytes: &[u8; 32]) -> Result<Self> {
+        let verifying = VerifyingKey::from_bytes(bytes)
+            .map_err(|e| CryptoError::InvalidKey(format!("invalid public key: {e}")))?;
+        Ok(Self { verifying })
+    }
+
+    /// Get public key bytes
+    pub fn public_bytes(&self) -> [u8; 32] {
+        self.verifying.to_bytes()
+    }
+
+    /// Verify a signature
+    pub fn verify(&self, message: &[u8], signature: &[u8; 64]) -> Result<()> {
+        use ed25519_dalek::{Signature, Verifier};
+        let sig = Signature::from_bytes(signature);
+        self.verifying
+            .verify(message, &sig)
+            .map_err(|e| CryptoError::InvalidKey(format!("signature verification failed: {e}")))
+    }
+
+    /// Load public key from file
+    pub fn load(path: &Path) -> Result<Self> {
+        let pk_bytes = std::fs::read(path)?;
+        if pk_bytes.len() != 32 {
+            return Err(CryptoError::InvalidKey(
+                "public key must be 32 bytes".into(),
+            ));
+        }
+        let mut arr = [0u8; 32];
+        arr.copy_from_slice(&pk_bytes);
+        Self::from_public_bytes(&arr)
+    }
+}
+
 /// Key metadata stored alongside keys
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KeyMetadata {
