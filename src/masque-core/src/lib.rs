@@ -1,9 +1,10 @@
+pub mod cover_traffic;
 pub mod h3_server;
 pub mod hybrid_handshake;
 pub mod masque;
 pub mod noise_keys;
-pub mod cover_traffic;
 pub mod padding;
+pub mod probe_protection;
 pub mod quic_stream;
 pub mod replay_protection;
 pub mod rng;
