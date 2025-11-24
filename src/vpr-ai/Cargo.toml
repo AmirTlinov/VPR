@@ -1,0 +1,30 @@
+[package]
+name = "vpr-ai"
+version = "0.1.0"
+edition = "2021"
+description = "AI-powered traffic morphing for VPR VPN"
+
+[features]
+default = []
+onnx = ["ort"]
+training = []  # Enable training utilities
+
+[dependencies]
+anyhow = "1.0"
+thiserror = "1.0"
+tracing = "0.1"
+
+# ONNX Runtime for inference
+ort = { version = "2.0.0-rc.10", optional = true, default-features = false, features = ["load-dynamic"] }
+
+# Feature extraction
+ndarray = "0.16"
+
+# Timing
+tokio = { version = "1.39", features = ["time", "sync"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+
+[dev-dependencies]
+tokio = { version = "1.39", features = ["rt-multi-thread", "macros"] }

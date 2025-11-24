@@ -7,5 +7,6 @@ members = [
   "src/vpr-app",
   "src/vpr-crypto",
   "src/health-history",
-  "src/vpr-tui"
+  "src/vpr-tui",
+  "src/vpr-ai"
 ]
