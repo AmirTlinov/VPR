@@ -1,36 +1,60 @@
+# VPR AI Agent System
+
 Говори по русски.
 
+## Цель проекта
 
-ЦЕЛЬ: Создание программы для туннелирования интернет соединения для создания неизвестного ультра-производительного, высокосекретного, безопасного  протокола который нельзя было бы обнаружить или заблокировать. Который настраивался бы "одной кнопкой" на сервер и работал бы даже в Северной Корее,Татарстане,РФ,Китае и тд
+Создание программы для туннелирования интернет соединения для создания неизвестного ультра-производительного, высокосекретного, безопасного протокола который нельзя было бы обнаружить или заблокировать. Который настраивался бы "одной кнопкой" на сервер и работал бы даже в Северной Корее, Татарстане, РФ, Китае и тд.
 
-• - Clarify constraints: define threat model (state-level surveillance, DPI,
-    active probing, traffic correlation), performance targets (Gbps per tunnel,
-    acceptable latency), supported platforms, and “one-button” deployment scope
-    (single binary? container? IaC).
-  - Map requirements to capabilities: split into transport obfuscation (hide
-    “VPN-ness”), cryptographic assurances (forward secrecy, PQ readiness),
-    network optimization (multi-path, congestion control), operational resilience
-    (auto failover, self-update).
-  - Survey existing building blocks: evaluate modern protocols (WireGuard,
-    Masque/HTTP3, QUIC, L4S-aware congestion control, Noise-based handshakes) for
-    reuse vs. custom layers; document gaps relative to goals (e.g., DPI evasion,
-    stealth bootstrap).
-  - Design layered architecture:
-    • Covert bootstrap: pluggable transports (MASQUE over HTTPS/DoH, domain
-    fronting fallback, decentralized rendezvous).
-    • Core tunnel: stateless handshake (NoiseIK/NK variant) with hybrid PQ KEM +
-    X25519, rotating session keys, padded packet framing.
-    • Traffic shaping: adaptive cover traffic, mimic legitimate protocols (H3,
-    WebRTC) with ML-based DPI feedback loop.
-    • Performance plane: kernel bypass (DPDK/eBPF) on servers, NIC offload,
-    multipath UDP, per-flow congestion control tuned for high-latency links.
-  - Build automation path: “one button” should orchestrate provisioning
-    (Terraform/Ansible), binary/config deployment, certificate/KEM material
-    generation, telemetry hooks, and self-tests; package as reproducible images
-    (Nix/OCI).
-  - Threat-driven validation: red-team DPI emulation, active probe resistance
-    tests, side-channel audits, fuzzing of handshake/state machines, KATs for
-    crypto, chaos testing for link churn.
-  - Iterate with telemetry: collect anonymized performance/suspicion metrics,
-    feed into transport-selection heuristics; maintain rapid update channel to
-    push new disguises/configs when censors react.
+## Элитный Отряд Субагентов
+
+Для flagship-качества разработки VPR создан специализированный набор AI-агентов. Каждый агент — эксперт в своём домене.
+
+### Состав команды
+
+| Агент | Специализация | Файл |
+|-------|---------------|------|
+| 🔐 **Crypto Sentinel** | PQ криптография, Noise protocol, key management | `.claude/commands/agents/crypto-sentinel.md` |
+| 🎭 **DPI Evader** | ML evasion, traffic morphing, cover traffic | `.claude/commands/agents/dpi-evader.md` |
+| 🚀 **Transport Architect** | MASQUE/QUIC, протоколы, производительность | `.claude/commands/agents/transport-architect.md` |
+| 🛡️ **Security Auditor** | Threat modeling, code audit, vulnerabilities | `.claude/commands/agents/security-auditor.md` |
+| ✅ **E2E Enforcer** | Integration testing, chaos engineering | `.claude/commands/agents/e2e-enforcer.md` |
+| 🦀 **Rust Surgeon** | Rust код, clippy, performance, idioms | `.claude/commands/agents/rust-surgeon.md` |
+| ⚙️ **Infra Ops** | Terraform, Ansible, one-button deployment | `.claude/commands/agents/infra-ops.md` |
+| 🎯 **Stealth Orchestrator** | System coordination, threat response | `.claude/commands/agents/stealth-orchestrator.md` |
+| 📚 **Doc Smith** | Documentation, ADRs, technical writing | `.claude/commands/agents/doc-smith.md` |
+
+### Использование
+
+Агенты активируются через slash-команды:
+```
+/agents/crypto-sentinel   — для криптографических задач
+/agents/dpi-evader        — для задач маскировки трафика
+/agents/transport-architect — для работы с MASQUE/QUIC
+...
+```
+
+Полный индекс и примеры использования: `.claude/commands/agents/index.md`
+
+## Архитектурные требования
+
+- **Clarify constraints**: define threat model (state-level surveillance, DPI, active probing, traffic correlation), performance targets (Gbps per tunnel, acceptable latency), supported platforms, and "one-button" deployment scope
+- **Map requirements to capabilities**: transport obfuscation, cryptographic assurances (forward secrecy, PQ readiness), network optimization, operational resilience
+- **Survey existing building blocks**: WireGuard, MASQUE/HTTP3, QUIC, Noise-based handshakes
+- **Design layered architecture**:
+  - Covert bootstrap: pluggable transports (MASQUE over HTTPS/DoH, domain fronting)
+  - Core tunnel: NoiseIK/NK + hybrid PQ-KEM + X25519, rotating session keys
+  - Traffic shaping: adaptive cover traffic, mimic legitimate protocols (H3, WebRTC)
+  - Performance plane: kernel bypass (DPDK/eBPF), multipath UDP
+- **Build automation**: Terraform/Ansible, reproducible images
+- **Threat-driven validation**: red-team DPI, active probe resistance, fuzzing
+
+## Стандарты качества
+
+Все агенты следуют единым стандартам VPR:
+
+- Cyclomatic complexity ≤ 10
+- Test coverage ≥ 85% по изменённому коду
+- Никаких моков/фейков в продакшн коде
+- Conventional Commits
+- Документация обновляется вместе с кодом
