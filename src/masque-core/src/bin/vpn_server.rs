@@ -26,6 +26,7 @@ use masque_core::rng;
 use masque_core::tun::{enable_ip_forwarding, setup_nat, TunConfig, TunDevice};
 use masque_core::vpn_config::{ConfigAck, VpnConfig};
 use masque_core::vpn_tunnel::PacketEncapsulator;
+use vpr_crypto::ct_eq_32;
 use vpr_crypto::keys::NoiseKeypair;
 
 #[derive(Parser, Debug)]
@@ -172,7 +173,8 @@ impl ServerState {
     fn restore_session(&mut self, session_id: &str, client_pubkey: &[u8; 32]) -> Option<Ipv4Addr> {
         if let Some(session) = self.sessions.get(session_id) {
             // Verify client identity and session freshness
-            if &session.client_pubkey == client_pubkey
+            // Use constant-time comparison to prevent timing attacks
+            if ct_eq_32(&session.client_pubkey, client_pubkey)
                 && session.last_seen.elapsed() < SESSION_TIMEOUT
             {
                 return Some(session.allocated_ip);
