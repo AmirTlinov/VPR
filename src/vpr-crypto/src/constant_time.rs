@@ -80,7 +80,10 @@ pub fn ct_eq_64(a: &[u8; 64], b: &[u8; 64]) -> bool {
 ///
 /// This function exists only for non-secret conditions where timing doesn't matter.
 #[inline]
-#[deprecated(since = "0.1.0", note = "Use ct_select_u8/u32/u64 for constant-time selection")]
+#[deprecated(
+    since = "0.1.0",
+    note = "Use ct_select_u8/u32/u64 for constant-time selection"
+)]
 pub fn select<T: Copy>(condition: bool, a: T, b: T) -> T {
     if condition {
         a

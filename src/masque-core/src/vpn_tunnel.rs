@@ -10,6 +10,7 @@ use bytes::Bytes;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 use tokio::sync::mpsc;
+use tokio::time::sleep;
 use tracing::{debug, error, info, warn};
 
 /// VPN tunnel configuration
@@ -154,9 +155,20 @@ pub async fn forward_tun_to_quic(
     mut rx: mpsc::Receiver<Bytes>,
     connection: quinn::Connection,
     encapsulator: Arc<PacketEncapsulator>,
+    padder: Option<Arc<crate::padding::Padder>>,
 ) -> Result<()> {
     while let Some(packet) = rx.recv().await {
-        let datagram = encapsulator.encapsulate(packet);
+        let payload = if let Some(p) = &padder {
+            let padded = p.pad(&packet);
+            if let Some(delay) = p.jitter_delay() {
+                sleep(delay).await;
+            }
+            Bytes::from(padded)
+        } else {
+            packet
+        };
+
+        let datagram = encapsulator.encapsulate(payload);
         if let Err(e) = connection.send_datagram(datagram) {
             match e {
                 quinn::SendDatagramError::ConnectionLost(_) => {

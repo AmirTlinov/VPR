@@ -61,14 +61,38 @@ impl HybridServer {
         &self,
         stream: &mut S,
     ) -> Result<(NoiseTransport, HybridSecret)> {
+        self.handshake_ik_impl(stream, None).await
+    }
+
+    /// Perform IK handshake with a pre-read first message
+    ///
+    /// `replay_prechecked` skips cache check if the caller already recorded the message.
+    pub async fn handshake_ik_with_first<S: AsyncRead + AsyncWrite + Unpin>(
+        &self,
+        stream: &mut S,
+        first_message: Vec<u8>,
+        replay_prechecked: bool,
+    ) -> Result<(NoiseTransport, HybridSecret)> {
+        self.handshake_ik_impl(stream, Some((first_message, replay_prechecked)))
+            .await
+    }
+
+    async fn handshake_ik_impl<S: AsyncRead + AsyncWrite + Unpin>(
+        &self,
+        stream: &mut S,
+        first_message: Option<(Vec<u8>, bool)>,
+    ) -> Result<(NoiseTransport, HybridSecret)> {
         let mut responder =
             NoiseResponder::new_ik(&self.keypair.secret_bytes()).context("creating responder")?;
 
         // Read client's first message: [Noise e,es,s,ss] + [HybridPublic]
-        let msg1 = read_handshake_msg(stream).await?;
+        let (msg1, replay_prechecked) = match first_message {
+            Some((m, prechecked)) => (m, prechecked),
+            None => (read_handshake_msg(stream).await?, false),
+        };
 
-        // Check for replay attack
-        if let Some(cache) = &self.replay_cache {
+        // Check for replay attack if not already recorded upstream
+        if let (Some(cache), false) = (&self.replay_cache, replay_prechecked) {
             cache
                 .check_and_record(&msg1)
                 .map_err(|e| anyhow::anyhow!("replay attack detected: {}", e))?;
@@ -95,13 +119,34 @@ impl HybridServer {
         &self,
         stream: &mut S,
     ) -> Result<(NoiseTransport, HybridSecret)> {
+        self.handshake_nk_impl(stream, None).await
+    }
+
+    /// Perform NK handshake with pre-read first message
+    pub async fn handshake_nk_with_first<S: AsyncRead + AsyncWrite + Unpin>(
+        &self,
+        stream: &mut S,
+        first_message: Vec<u8>,
+        replay_prechecked: bool,
+    ) -> Result<(NoiseTransport, HybridSecret)> {
+        self.handshake_nk_impl(stream, Some((first_message, replay_prechecked)))
+            .await
+    }
+
+    async fn handshake_nk_impl<S: AsyncRead + AsyncWrite + Unpin>(
+        &self,
+        stream: &mut S,
+        first_message: Option<(Vec<u8>, bool)>,
+    ) -> Result<(NoiseTransport, HybridSecret)> {
         let mut responder = NoiseResponder::new_nk(&self.keypair.secret_bytes())
             .context("creating NK responder")?;
 
-        let msg1 = read_handshake_msg(stream).await?;
+        let (msg1, replay_prechecked) = match first_message {
+            Some((m, prechecked)) => (m, prechecked),
+            None => (read_handshake_msg(stream).await?, false),
+        };
 
-        // Check for replay attack
-        if let Some(cache) = &self.replay_cache {
+        if let (Some(cache), false) = (&self.replay_cache, replay_prechecked) {
             cache
                 .check_and_record(&msg1)
                 .map_err(|e| anyhow::anyhow!("replay attack detected: {}", e))?;
@@ -254,7 +299,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> EncryptedStream<S> {
 }
 
 /// Read length-prefixed handshake message (u32 BE for larger PQ messages)
-async fn read_handshake_msg<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Vec<u8>> {
+pub async fn read_handshake_msg<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Vec<u8>> {
     let mut len_buf = [0u8; 4];
     reader
         .read_exact(&mut len_buf)

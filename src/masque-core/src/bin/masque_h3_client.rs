@@ -5,8 +5,7 @@
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
 use clap::Parser;
-use h3::client::SendRequest;
-use quinn::{ClientConfig, Endpoint, VarInt};
+use quinn::{ClientConfig, Endpoint};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{ClientConfig as RustlsClientConfig, DigitallySignedStruct, SignatureScheme};
@@ -42,8 +41,12 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    rustls::crypto::ring::default_provider().install_default().ok();
-    let subscriber = FmtSubscriber::builder().with_max_level(tracing::Level::INFO).finish();
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .ok();
+    let subscriber = FmtSubscriber::builder()
+        .with_max_level(tracing::Level::INFO)
+        .finish();
     let _ = tracing::subscriber::set_global_default(subscriber);
 
     let args = Args::parse();
@@ -63,20 +66,30 @@ async fn run(args: Args) -> Result<()> {
 
     info!(remote = %conn.remote_address(), "quic established");
 
-    let mut h3 = h3::client::Connection::new(h3_quinn::Connection::new(conn.clone())).await?;
+    let (mut h3, mut sender): (
+        h3::client::Connection<_, Bytes>,
+        h3::client::SendRequest<_, Bytes>,
+    ) = h3::client::builder()
+        .enable_datagram(true)
+        .enable_extended_connect(true)
+        .build(h3_quinn::Connection::new(conn.clone()))
+        .await?;
 
-    let path = format!("/.well-known/masque/udp/{}/", args.target);
+    let path = format!(
+        "https://{}/.well-known/masque/udp/{}/",
+        args.server_name, args.target
+    );
     let req = http::Request::builder()
         .method("CONNECT")
         .uri(&path)
-        .header(":protocol", "connect-udp")
+        .header("x-protocol", "connect-udp") // server accepts fallback header
         .header("capsule-protocol", "?1")
         .body(())
         .unwrap();
 
-    let (mut sender, mut recv_stream) = h3.send_request(req).await?;
+    let mut req_stream = sender.send_request(req).await?;
 
-    let resp = recv_stream.recv_response().await?.ok_or_else(|| anyhow!("no response"))?;
+    let resp = req_stream.recv_response().await?;
     if resp.status() != http::StatusCode::OK {
         return Err(anyhow!("status {}", resp.status()));
     }
@@ -84,9 +97,8 @@ async fn run(args: Args) -> Result<()> {
 
     // Prepare payload
     let payload = vec![0xAB; args.payload];
-    let mut buf = Vec::with_capacity(payload.len() + 2);
-    let ctx = VarInt::from_u32(0);
-    ctx.write(&mut buf);
+    let mut buf = Vec::with_capacity(payload.len() + 1);
+    buf.push(0); // varint encoding for context id 0
     buf.extend_from_slice(&payload);
 
     // Send datagram and wait for response datagram
@@ -100,9 +112,9 @@ async fn run(args: Args) -> Result<()> {
         }
         match tokio::time::timeout(remaining, conn.read_datagram()).await {
             Ok(Ok(d)) => {
-                let mut slice = d.as_ref();
-                let (cid, rest) = read_varint(slice)?;
-                if cid != ctx {
+                let slice = d.as_ref();
+                let (cid, rest) = read_ctx(slice)?;
+                if cid != 0 {
                     warn!(cid = %cid, "skipping datagram with other context");
                     continue;
                 }
@@ -119,9 +131,11 @@ async fn run(args: Args) -> Result<()> {
     }
 }
 
-fn read_varint(buf: &[u8]) -> Result<(VarInt, &[u8])> {
-    let (val, used) = VarInt::read(buf).map_err(|e| anyhow!("varint {e}"))?;
-    Ok((val, &buf[used..]))
+fn read_ctx(buf: &[u8]) -> Result<(u64, &[u8])> {
+    if buf.is_empty() {
+        return Err(anyhow!("empty datagram"));
+    }
+    Ok((buf[0] as u64, &buf[1..]))
 }
 
 fn quic_client_config() -> Result<ClientConfig> {
@@ -168,6 +182,11 @@ impl ServerCertVerifier for NoVerifier {
 
     fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
         use SignatureScheme::*;
-        vec![RSA_PSS_SHA256, ECDSA_NISTP256_SHA256, ECDSA_NISTP384_SHA384, RSA_PKCS1_SHA256]
+        vec![
+            RSA_PSS_SHA256,
+            ECDSA_NISTP256_SHA256,
+            ECDSA_NISTP384_SHA384,
+            RSA_PKCS1_SHA256,
+        ]
     }
 }
