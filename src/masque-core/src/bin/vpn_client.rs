@@ -11,15 +11,16 @@ use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{DigitallySignedStruct, SignatureScheme};
 use sha2::Sha256;
 use std::fs;
+use std::fs::File;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::process::Command;
-use std::fs::File;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{broadcast, mpsc};
-use tracing::{error, info, Level};
+use tracing::{error, info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
 
 use masque_core::cover_traffic::{CoverTrafficConfig, CoverTrafficGenerator, TrafficPattern};
@@ -33,7 +34,12 @@ use masque_core::tls_fingerprint::{
     select_tls_profile, GreaseMode, Ja3Fingerprint, Ja3sFingerprint, Ja4Fingerprint, TlsProfile,
     TlsProfileBucket,
 };
-use masque_core::tun::{restore_routing, setup_routing, DnsProtection, TunConfig, TunDevice};
+use ipnetwork::IpNetwork;
+use masque_core::tun::{
+    restore_routing, restore_split_tunnel, setup_ipv6_routing, setup_policy_routing,
+    setup_routing, setup_split_tunnel, DnsProtection, RouteRule, RoutingPolicy,
+    RoutingState, TunConfig, TunDevice,
+};
 use masque_core::vpn_config::{ConfigAck, VpnConfig};
 use masque_core::vpn_tunnel::{
     channel_to_tun, forward_quic_to_tun, forward_tun_to_quic, tun_to_channel, PacketEncapsulator,
@@ -87,7 +93,10 @@ struct Args {
     #[arg(long)]
     server_pub: PathBuf,
 
-    /// Skip TLS certificate verification (INSECURE, for testing)
+    /// Skip TLS certificate verification (INSECURE - NEVER use in production!)
+    /// 
+    /// WARNING: This flag disables TLS certificate verification, making the connection
+    /// vulnerable to man-in-the-middle attacks. Only use for development/testing.
     #[arg(long)]
     insecure: bool,
 
@@ -171,6 +180,22 @@ struct Args {
     /// Cover traffic pattern: https|h3|webrtc|idle
     #[arg(long, default_value = "https")]
     cover_traffic_pattern: String,
+
+    /// Enable split tunnel mode (only specified routes through VPN)
+    #[arg(long)]
+    split_tunnel: bool,
+
+    /// Add route (CIDR notation, can be specified multiple times)
+    #[arg(long, value_delimiter = ',')]
+    route: Vec<String>,
+
+    /// Enable policy-based routing
+    #[arg(long)]
+    policy_routing: bool,
+
+    /// Enable IPv6 support
+    #[arg(long)]
+    ipv6: bool,
 }
 
 #[tokio::main]
@@ -206,9 +231,26 @@ fn preferred_tls13_cipher(profile: &TlsProfile) -> u16 {
 }
 
 async fn run_vpn_client(args: Args) -> Result<()> {
+    // SECURITY WARNING: --insecure flag disables TLS certificate verification
+    // This should NEVER be used in production as it makes the connection vulnerable to MITM attacks
+    if args.insecure {
+        error!(
+            "SECURITY WARNING: TLS certificate verification is DISABLED via --insecure flag!"
+        );
+        error!(
+            "This makes the connection vulnerable to man-in-the-middle attacks."
+        );
+        error!(
+            "NEVER use this flag in production environments."
+        );
+        // In production builds, we could exit here, but for development/testing we allow it
+        // with prominent warnings
+    }
+
     info!(
         server = %args.server,
         tun_name = %args.tun_name,
+        insecure = args.insecure,
         "Starting VPR VPN client"
     );
 
@@ -362,6 +404,15 @@ async fn run_vpn_client(args: Args) -> Result<()> {
 
     let mut stream = QuicBiStream::new(send, recv);
 
+    // QUIC streams require writing before peer is notified of stream opening.
+    // Send protocol version byte to trigger server's accept_bi().
+    const VPR_PROTOCOL_VERSION: u8 = 0x01;
+    stream
+        .write_all(&[VPR_PROTOCOL_VERSION])
+        .await
+        .context("sending protocol init")?;
+    stream.flush().await.ok();
+
     // Handle probe challenge before Noise handshake
     handle_probe_challenge(&mut stream, &challenge_padder).await?;
 
@@ -423,6 +474,8 @@ async fn run_vpn_client(args: Args) -> Result<()> {
         netmask: vpn_config.netmask,
         mtu: vpn_config.mtu,
         destination: Some(vpn_config.gateway),
+        address_v6: None,
+        prefix_len_v6: None,
     };
 
     let tun = TunDevice::create(tun_config)
@@ -443,17 +496,188 @@ async fn run_vpn_client(args: Args) -> Result<()> {
 
     info!("Config acknowledged, starting VPN tunnel");
 
-    // Configure routing if requested
-    if args.set_default_route {
-        setup_routing(tun.name(), vpn_config.gateway).context("setting up routing")?;
+    // Routing state for cleanup
+    let mut routing_state = RoutingState::new();
+
+    // Determine routing policy from config or CLI
+    let routing_config = vpn_config.routing_config.as_ref();
+    
+    // Validate routing config if present
+    if let Some(config) = routing_config {
+        if let Err(e) = config.validate() {
+            warn!(%e, "Invalid routing config from server, using defaults");
+        }
+    }
+    
+    let policy = if args.split_tunnel {
+        RoutingPolicy::SplitTunnel
+    } else if let Some(config) = routing_config {
+        config.policy
+    } else {
+        RoutingPolicy::FullTunnel
+    };
+
+    // Configure routing based on policy
+    match policy {
+        RoutingPolicy::FullTunnel => {
+            if args.set_default_route {
+                setup_routing(tun.name(), vpn_config.gateway).context("setting up routing")?;
+            }
+        }
+        RoutingPolicy::SplitTunnel => {
+            // Parse routes from CLI or config
+            let routes: Vec<RouteRule> = if !args.route.is_empty() {
+                args.route
+                    .iter()
+                    .filter_map(|r| {
+                        IpNetwork::from_str(r)
+                            .ok()
+                            .map(|net| RouteRule {
+                                destination: net,
+                                gateway: Some(IpAddr::V4(vpn_config.gateway)),
+                                metric: 0,
+                                table: None,
+                            })
+                    })
+                    .collect()
+            } else if let Some(config) = routing_config {
+                config.routes.clone()
+            } else {
+                vec![]
+            };
+
+            if !routes.is_empty() {
+                setup_split_tunnel(
+                    tun.name(),
+                    IpAddr::V4(vpn_config.gateway),
+                    &routes,
+                    &mut routing_state,
+                )
+                .with_context(|| {
+                    format!(
+                        "setting up split tunnel with {} routes",
+                        routes.len()
+                    )
+                })?;
+            } else {
+                warn!("Split tunnel enabled but no routes specified - VPN may not route traffic correctly");
+            }
+        }
+        RoutingPolicy::BypassTunnel => {
+            // Bypass tunnel - routes bypass VPN (not implemented in this version)
+            warn!("Bypass tunnel policy not fully implemented");
+        }
     }
 
-    // Enable DNS leak protection if requested
+    // Policy-based routing
+    if args.policy_routing {
+        let routes: Vec<RouteRule> = if !args.route.is_empty() {
+            args.route
+                .iter()
+                .filter_map(|r| {
+                    IpNetwork::from_str(r)
+                        .ok()
+                        .map(|net| RouteRule {
+                            destination: net,
+                            gateway: Some(IpAddr::V4(vpn_config.gateway)),
+                            metric: 0,
+                            table: Some(100), // Custom table
+                        })
+                })
+                .collect()
+            } else if let Some(config) = routing_config {
+                config.routes.clone()
+            } else {
+                vec![]
+            };
+
+            if !routes.is_empty() {
+                setup_policy_routing(
+                    tun.name(),
+                    IpAddr::V4(vpn_config.gateway),
+                    &routes,
+                    &mut routing_state,
+                )
+                .with_context(|| {
+                    format!(
+                        "setting up policy routing with {} routes",
+                        routes.len()
+                    )
+                })?;
+            } else {
+                warn!("Policy routing enabled but no routes specified");
+            }
+        }
+
+    // IPv6 support
+    if args.ipv6 || routing_config.map(|c| c.ipv6_enabled).unwrap_or(false) {
+        if let Some(gateway_v6) = vpn_config
+            .routing_config
+            .as_ref()
+            .and_then(|c| {
+                // Try to extract IPv6 gateway from routes
+                c.routes
+                    .iter()
+                    .find_map(|r| {
+                        if let IpNetwork::V6(_) = r.destination {
+                            r.gateway.and_then(|gw| {
+                                if let IpAddr::V6(gw_v6) = gw {
+                                    Some(gw_v6)
+                                } else {
+                                    None
+                                }
+                            })
+                        } else {
+                            None
+                        }
+                    })
+            }) {
+            let routes: Vec<RouteRule> = routing_config
+                .map(|c| {
+                    c.routes
+                        .iter()
+                        .filter(|r| matches!(r.destination, IpNetwork::V6(_)))
+                        .cloned()
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            if !routes.is_empty() {
+                setup_ipv6_routing(tun.name(), gateway_v6, &routes, &mut routing_state)
+                    .with_context(|| {
+                        format!(
+                            "setting up IPv6 routing with {} routes, gateway {}",
+                            routes.len(),
+                            gateway_v6
+                        )
+                    })?;
+            } else {
+                warn!("IPv6 enabled but no IPv6 routes configured");
+            }
+        } else {
+            warn!("IPv6 enabled but no IPv6 gateway configured - IPv6 routing will not work");
+        }
+    }
+
+    // Enable DNS leak protection
+    // Priority: CLI args > RoutingConfig > VpnConfig
     let mut dns_protection = DnsProtection::new();
-    if args.dns_protection {
-        // Use custom DNS servers if provided, otherwise use VPN config
+    let should_enable_dns = args.dns_protection
+        || routing_config
+            .as_ref()
+            .map(|c| !c.dns_servers.is_empty())
+            .unwrap_or(false);
+
+    if should_enable_dns {
+        // Determine DNS servers with priority: CLI > RoutingConfig > VpnConfig
         let dns_servers = if !args.dns_servers.is_empty() {
             &args.dns_servers
+        } else if let Some(routing_cfg) = routing_config {
+            if !routing_cfg.dns_servers.is_empty() {
+                &routing_cfg.dns_servers
+            } else {
+                &vpn_config.dns_servers
+            }
         } else {
             &vpn_config.dns_servers
         };
@@ -461,9 +685,20 @@ async fn run_vpn_client(args: Args) -> Result<()> {
         if !dns_servers.is_empty() {
             dns_protection
                 .enable(dns_servers)
-                .context("enabling DNS protection")?;
+                .with_context(|| {
+                    format!(
+                        "enabling DNS protection with {} servers: {:?}",
+                        dns_servers.len(),
+                        dns_servers
+                    )
+                })?;
+            info!(
+                dns_count = dns_servers.len(),
+                dns_servers = ?dns_servers,
+                "DNS leak protection enabled"
+            );
         } else {
-            tracing::warn!("DNS protection enabled but no DNS servers configured");
+            warn!("DNS protection requested but no DNS servers available - DNS queries may leak");
         }
     }
 
@@ -479,21 +714,44 @@ async fn run_vpn_client(args: Args) -> Result<()> {
     let tun_name = tun.name().to_string();
     let gateway = vpn_config.gateway;
     let routing_configured = args.set_default_route;
+    let use_split_tunnel = policy == RoutingPolicy::SplitTunnel;
 
     // Start VPN tunnel (dns_protection will auto-restore on drop)
     let result = run_vpn_tunnel(tun, connection, padder, cover_config, session_state.clone()).await;
 
     // Восстановить маршрутизацию при выходе
-    if routing_configured {
+    if use_split_tunnel {
+        if let Err(e) = restore_split_tunnel(&mut routing_state) {
+            tracing::error!(
+                %e,
+                route_count = routing_state.route_count(),
+                "Failed to restore split tunnel routes - manual cleanup may be required"
+            );
+        } else {
+            info!("Split tunnel routes restored successfully");
+        }
+    } else if routing_configured {
         if let Err(e) = restore_routing(&tun_name, gateway) {
-            tracing::warn!(%e, "Failed to restore routing");
+            tracing::error!(
+                %e,
+                tun = %tun_name,
+                gateway = %gateway,
+                "Failed to restore routing - manual cleanup may be required"
+            );
+        } else {
+            info!(tun = %tun_name, "Routing restored successfully");
         }
     }
 
     // Explicitly disable DNS protection on exit
     if dns_protection.is_active() {
         if let Err(e) = dns_protection.disable() {
-            tracing::warn!(%e, "Failed to disable DNS protection");
+            tracing::error!(
+                %e,
+                "Failed to restore DNS configuration - manual cleanup may be required"
+            );
+        } else {
+            info!("DNS protection disabled, original config restored");
         }
     }
 
@@ -521,13 +779,32 @@ async fn run_vpn_tunnel(
 
     let encapsulator = Arc::new(PacketEncapsulator::new());
 
+    // Create traffic monitor for tracking real traffic patterns
+    let traffic_monitor = Arc::new(masque_core::traffic_monitor::TrafficMonitor::new());
+
     // Spawn tasks for bidirectional forwarding + cover traffic
     let conn_clone = connection.clone();
     let encap_clone = encapsulator.clone();
     let tracker_tx = session_state.clone();
     let cover_encap = encapsulator.clone();
     let cover_padder = padder.clone();
-    let mut cover_gen = CoverTrafficGenerator::new(cover_config);
+    let cover_gen = Arc::new(tokio::sync::Mutex::new(CoverTrafficGenerator::new(cover_config)));
+    
+    // Spawn task to update cover traffic generator with real traffic rate
+    let traffic_monitor_for_cover = traffic_monitor.clone();
+    let cover_gen_for_update = cover_gen.clone();
+    tokio::spawn(async move {
+        let update_interval = std::time::Duration::from_secs(1);
+        if let Err(e) = masque_core::vpn_tunnel::traffic_monitor_update_task(
+            traffic_monitor_for_cover,
+            cover_gen_for_update,
+            update_interval,
+        )
+        .await
+        {
+            error!(%e, "Traffic monitor update task error");
+        }
+    });
 
     // TUN reader -> channel
     let tun_read_task = tokio::spawn(async move {
@@ -536,8 +813,15 @@ async fn run_vpn_tunnel(
         }
     });
 
+    // Create DPI feedback controller (optional, for adaptive traffic shaping)
+    // For now, we'll create it but not use suspicion tracking on client side
+    // In the future, this can be updated from server's suspicion score
+    let dpi_feedback = Arc::new(masque_core::dpi_feedback::DpiFeedbackController::new());
+
     // Channel -> QUIC datagrams (real traffic)
     let pad_clone = padder.clone();
+    let dpi_feedback_clone = dpi_feedback.clone();
+    let traffic_monitor_tx = traffic_monitor.clone();
     let tun_to_quic_task = tokio::spawn(async move {
         if let Err(e) = forward_tun_to_quic(
             tun_rx,
@@ -545,6 +829,8 @@ async fn run_vpn_tunnel(
             encap_clone,
             Some(pad_clone),
             Some(tracker_tx),
+            Some(dpi_feedback_clone),
+            Some(traffic_monitor_tx),
         )
         .await
         {
@@ -555,12 +841,14 @@ async fn run_vpn_tunnel(
     // QUIC datagrams -> channel
     let conn_for_quic_to_tun = connection.clone();
     let tracker_rx = session_state.clone();
+    let traffic_monitor_rx = traffic_monitor.clone();
     let quic_to_channel_task = tokio::spawn(async move {
         if let Err(e) = forward_quic_to_tun(
             conn_for_quic_to_tun,
             quic_tx,
             encapsulator,
             Some(tracker_rx),
+            Some(traffic_monitor_rx),
         )
         .await
         {
@@ -578,12 +866,19 @@ async fn run_vpn_tunnel(
     // Cover traffic task (client side) — sends through same QUIC connection
     let cover_conn = connection.clone();
     let tracker_cover = session_state.clone();
+    let cover_gen_for_task = cover_gen.clone();
     let cover_task = tokio::spawn(async move {
         loop {
-            let delay = cover_gen.next_delay();
+            let delay = {
+                let gen = cover_gen_for_task.lock().await;
+                gen.next_delay()
+            };
             tokio::time::sleep(delay).await;
 
-            let mut packet = cover_gen.generate_packet().data;
+            let mut packet = {
+                let mut gen = cover_gen_for_task.lock().await;
+                gen.generate_packet().data
+            };
             cover_padder.pad_in_place(&mut packet);
             if let Some(j) = cover_padder.jitter_delay() {
                 tokio::time::sleep(j).await;

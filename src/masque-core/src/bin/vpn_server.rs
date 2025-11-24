@@ -15,6 +15,7 @@ use std::io::BufReader;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::process::Command;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -39,7 +40,11 @@ use masque_core::tls_fingerprint::{
     select_tls_profile, GreaseMode, Ja3Fingerprint, Ja3sFingerprint, Ja4Fingerprint, TlsProfile,
     TlsProfileBucket,
 };
-use masque_core::tun::{enable_ip_forwarding, setup_nat, TunConfig, TunDevice};
+use ipnetwork::IpNetwork;
+use masque_core::tun::{
+    enable_ip_forwarding, setup_ipv6_nat, setup_nat_with_config, NatConfig, RouteRule,
+    RoutingConfig, RoutingPolicy, RoutingState, TunConfig, TunDevice,
+};
 use masque_core::vpn_config::{ConfigAck, VpnConfig};
 use masque_core::vpn_tunnel::PacketEncapsulator;
 use rustls::crypto::SupportedKxGroup;
@@ -197,6 +202,22 @@ struct Args {
     /// Session rekey data limit (bytes)
     #[arg(long, default_value = "1073741824")]
     session_rekey_bytes: u64,
+
+    /// Enable IPv6 support
+    #[arg(long)]
+    ipv6: bool,
+
+    /// Enable IPv6 NAT masquerading
+    #[arg(long)]
+    ipv6_nat: bool,
+
+    /// Routing policy: full|split|bypass
+    #[arg(long, default_value = "full")]
+    routing_policy: String,
+
+    /// Routes to push to clients (CIDR notation, comma-separated)
+    #[arg(long, value_delimiter = ',')]
+    routes: Vec<String>,
 
     /// TLS fingerprint profile to mimic (chrome, firefox, safari, random)
     #[arg(long, default_value = "chrome")]
@@ -425,6 +446,11 @@ async fn run_vpn_server(args: Args) -> Result<()> {
     let replay_cache = Arc::new(NonceCache::new());
     let suspicion = Arc::new(SuspicionTracker::new());
 
+    // Create DPI feedback controller for adaptive traffic shaping
+    // Note: We use the local SuspicionTracker, not the one from suspicion module
+    // For now, we'll update DPI feedback manually from suspicion score in connection handlers
+    let dpi_feedback = Arc::new(masque_core::dpi_feedback::DpiFeedbackController::new());
+
     let padder = Arc::new(build_padder(&args));
     let padding_strategy = args.padding_strategy.clone();
     let padding_max_jitter_us = args.padding_max_jitter_us;
@@ -479,6 +505,8 @@ async fn run_vpn_server(args: Args) -> Result<()> {
         netmask: args.tun_netmask,
         mtu: args.mtu,
         destination: None,
+        address_v6: None,
+        prefix_len_v6: None,
     };
 
     let tun = TunDevice::create(tun_config)
@@ -496,9 +524,33 @@ async fn run_vpn_server(args: Args) -> Result<()> {
         enable_ip_forwarding().context("enabling IP forwarding")?;
     }
 
-    // Setup NAT if outbound interface specified
+    // Setup NAT with improved configuration
+    let mut nat_state = RoutingState::new();
     if let Some(ref iface) = args.outbound_iface {
-        setup_nat(tun.name(), iface).context("setting up NAT")?;
+        let nat_config = NatConfig {
+            outbound_iface: iface.clone(),
+            masquerade_ipv4: true,
+            masquerade_ipv6: args.ipv6_nat,
+            preserve_source: false,
+        };
+        setup_nat_with_config(tun.name(), &nat_config, &mut nat_state)
+            .context("setting up NAT")?;
+        info!(
+            tun = %tun.name(),
+            outbound = %iface,
+            ipv6_nat = args.ipv6_nat,
+            "NAT configured"
+        );
+    }
+
+    // Setup IPv6 NAT if requested
+    if args.ipv6_nat {
+        if let Some(ref iface) = args.outbound_iface {
+            setup_ipv6_nat(tun.name(), iface, &mut nat_state)
+                .context("setting up IPv6 NAT")?;
+        } else {
+            warn!("IPv6 NAT requested but no outbound interface specified");
+        }
     }
 
     // TLS fingerprint profiles (main + canary union for rustls config)
@@ -583,6 +635,9 @@ async fn run_vpn_server(args: Args) -> Result<()> {
     // Capture config values for spawned tasks
     let gateway_ip = args.tun_addr;
     let mtu = args.mtu;
+    let routing_policy = args.routing_policy.clone();
+    let routes = Arc::new(args.routes.clone());
+    let ipv6_enabled = args.ipv6;
 
     // Accept client connections
     while let Some(incoming) = endpoint.accept().await {
@@ -601,6 +656,7 @@ async fn run_vpn_server(args: Args) -> Result<()> {
         let dns_servers = dns_servers.clone();
         let suspicion = suspicion.clone();
         let suspicion_score = suspicion.current();
+        let dpi_feedback_conn = dpi_feedback.clone();
         let effective_canary = if suspicion_score >= 35.0 {
             0.0
         } else {
@@ -612,6 +668,9 @@ async fn run_vpn_server(args: Args) -> Result<()> {
             effective_canary,
             Some(args.tls_canary_seed).filter(|s| *s != 0),
         );
+        let routing_policy_clone = routing_policy.clone();
+        let routes_clone = routes.clone();
+        let ipv6_enabled_clone = ipv6_enabled;
 
         tokio::spawn(async move {
             match incoming.await {
@@ -659,6 +718,10 @@ async fn run_vpn_server(args: Args) -> Result<()> {
                         dns_servers,
                         tls_bucket_local,
                         suspicion,
+                        routing_policy_clone,
+                        routes_clone,
+                        ipv6_enabled_clone,
+                        dpi_feedback_conn.clone(),
                     )
                     .await
                     {
@@ -706,6 +769,10 @@ async fn handle_vpn_client_with_config(
     dns_servers: Arc<Vec<IpAddr>>,
     tls_bucket: TlsProfileBucket,
     suspicion: Arc<SuspicionTracker>,
+    routing_policy: String,
+    routes: Arc<Vec<String>>,
+    ipv6_enabled: bool,
+    dpi_feedback: Arc<masque_core::dpi_feedback::DpiFeedbackController>,
 ) -> Result<()> {
     let remote = connection.remote_address();
     let remote_ip = remote.ip();
@@ -733,6 +800,21 @@ async fn handle_vpn_client_with_config(
 
     // Perform hybrid PQ Noise handshake with replay protection
     let mut stream = QuicBiStream::new(send, recv);
+
+    // Read protocol init byte (QUIC streams require client to write first)
+    const VPR_PROTOCOL_VERSION: u8 = 0x01;
+    let mut init_buf = [0u8; 1];
+    stream
+        .read_exact(&mut init_buf)
+        .await
+        .context("reading protocol init")?;
+    if init_buf[0] != VPR_PROTOCOL_VERSION {
+        anyhow::bail!(
+            "unsupported protocol version: {} (expected {})",
+            init_buf[0],
+            VPR_PROTOCOL_VERSION
+        );
+    }
 
     let handshake_start = Instant::now();
 
@@ -775,7 +857,7 @@ async fn handle_vpn_client_with_config(
     pow.copy_from_slice(&resp_buf[1..33]);
     let padding_echo = &resp_buf[33..48];
 
-    if !challenge.verify(&pow) {
+    if !probe.verify_challenge(remote_ip, &challenge.nonce, &pow) {
         probe.record_failure(remote_ip);
         anyhow::bail!("probe PoW failed");
     }
@@ -848,6 +930,36 @@ async fn handle_vpn_client_with_config(
     info!(%remote, client_ip = %client_ip, session_id = %session_id, "Session created");
     debug!(%remote, tls_bucket = ?tls_bucket, "TLS canary bucket applied for client");
 
+    // Parse routing policy
+    let policy = match routing_policy.to_lowercase().as_str() {
+        "split" => RoutingPolicy::SplitTunnel,
+        "bypass" => RoutingPolicy::BypassTunnel,
+        _ => RoutingPolicy::FullTunnel,
+    };
+
+    // Parse routes
+    let route_rules: Vec<RouteRule> = routes
+        .iter()
+        .filter_map(|r| {
+            IpNetwork::from_str(r)
+                .ok()
+                .map(|net| RouteRule {
+                    destination: net,
+                    gateway: Some(IpAddr::V4(gateway_ip)),
+                    metric: 0,
+                    table: None,
+                })
+        })
+        .collect();
+
+    // Create routing config
+    let routing_config = RoutingConfig {
+        policy,
+        routes: route_rules.clone(),
+        dns_servers: dns_servers.as_ref().clone(),
+        ipv6_enabled,
+    };
+
     // Send VPN configuration to client with session_id for reconnect
     let mut vpn_config = VpnConfig::new(client_ip, gateway_ip)
         .with_mtu(mtu)
@@ -859,8 +971,17 @@ async fn handle_vpn_client_with_config(
         )
         .with_rotation(session_rekey_seconds, session_rekey_bytes)
         .with_suspicion(suspicion.current())
-        .with_route("0.0.0.0/0") // Full tunnel mode
+        .with_routing_config(routing_config)
         .with_session_id(&session_id);
+
+    // Add routes for backward compatibility
+    if policy == RoutingPolicy::FullTunnel {
+        vpn_config = vpn_config.with_route("0.0.0.0/0");
+    } else {
+        for route in routes.iter() {
+            vpn_config = vpn_config.with_route(route);
+        }
+    }
 
     for dns in dns_servers.iter() {
         vpn_config = vpn_config.with_dns(*dns);
@@ -924,10 +1045,15 @@ async fn handle_vpn_client_with_config(
     let encap_clone = encapsulator.clone();
     let pad_clone = padder.clone();
     let session_state_tx = session_state.clone();
+    let dpi_feedback_tx = dpi_feedback.clone();
     let to_client_task = tokio::spawn(async move {
         loop {
             tokio::select! {
                 Some(packet) = client_rx.recv() => {
+                    // Update padder suspicion based on DPI feedback
+                    let suspicion = dpi_feedback_tx.current_suspicion();
+                    pad_clone.update_suspicion(suspicion);
+                    
                     let padded = pad_clone.pad(&packet);
                     if let Some(delay) = pad_clone.jitter_delay() { sleep(delay).await; }
                     let datagram = encap_clone.encapsulate(Bytes::from(padded));
