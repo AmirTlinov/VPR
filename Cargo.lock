@@ -3002,6 +3002,7 @@ dependencies = [
  "nix",
  "predicates",
  "quinn",
+ "rand 0.8.5",
  "rcgen",
  "rustls",
  "rustls-pemfile",
