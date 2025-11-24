@@ -262,7 +262,10 @@ async fn run_vpn_server(args: Args) -> Result<()> {
                     let remote = connection.remote_address();
                     info!(%remote, "New VPN connection");
 
-                    if let Err(e) = handle_vpn_client(connection, hs, st, to_tun, gateway_ip, mtu).await {
+                    if let Err(e) =
+                        handle_vpn_client_with_config(connection, hs, st, to_tun, gateway_ip, mtu)
+                            .await
+                    {
                         error!(%remote, %e, "Client error");
                     }
                 }
@@ -281,7 +284,7 @@ async fn run_vpn_server(args: Args) -> Result<()> {
 }
 
 /// Handle a single VPN client connection
-async fn handle_vpn_client(
+async fn handle_vpn_client_with_config(
     connection: quinn::Connection,
     hybrid_server: Arc<HybridServer>,
     state: Arc<RwLock<ServerState>>,

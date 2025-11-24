@@ -109,7 +109,10 @@ impl VpnConfig {
     /// Send config over async stream
     pub async fn send<W: AsyncWrite + Unpin>(&self, writer: &mut W) -> Result<()> {
         let bytes = self.to_bytes()?;
-        writer.write_all(&bytes).await.context("writing VpnConfig")?;
+        writer
+            .write_all(&bytes)
+            .await
+            .context("writing VpnConfig")?;
         writer.flush().await.context("flushing VpnConfig")?;
         Ok(())
     }
@@ -196,14 +199,11 @@ mod tests {
 
     #[test]
     fn test_vpn_config_roundtrip() {
-        let config = VpnConfig::new(
-            Ipv4Addr::new(10, 8, 0, 5),
-            Ipv4Addr::new(10, 8, 0, 1),
-        )
-        .with_dns(Ipv4Addr::new(8, 8, 8, 8))
-        .with_dns(Ipv4Addr::new(1, 1, 1, 1))
-        .with_route("0.0.0.0/0")
-        .with_mtu(1400);
+        let config = VpnConfig::new(Ipv4Addr::new(10, 8, 0, 5), Ipv4Addr::new(10, 8, 0, 1))
+            .with_dns(Ipv4Addr::new(8, 8, 8, 8))
+            .with_dns(Ipv4Addr::new(1, 1, 1, 1))
+            .with_route("0.0.0.0/0")
+            .with_mtu(1400);
 
         let bytes = config.to_bytes().unwrap();
         let parsed = VpnConfig::from_bytes(&bytes).unwrap();
@@ -232,21 +232,15 @@ mod tests {
 
     #[test]
     fn test_vpn_config_builder() {
-        let config = VpnConfig::new(
-            Ipv4Addr::new(10, 8, 0, 2),
-            Ipv4Addr::new(10, 8, 0, 1),
-        )
-        .with_session_id("abc123");
+        let config = VpnConfig::new(Ipv4Addr::new(10, 8, 0, 2), Ipv4Addr::new(10, 8, 0, 1))
+            .with_session_id("abc123");
 
         assert_eq!(config.session_id, Some("abc123".to_string()));
     }
 
     #[tokio::test]
     async fn test_async_send_recv() {
-        let config = VpnConfig::new(
-            Ipv4Addr::new(10, 8, 0, 10),
-            Ipv4Addr::new(10, 8, 0, 1),
-        );
+        let config = VpnConfig::new(Ipv4Addr::new(10, 8, 0, 10), Ipv4Addr::new(10, 8, 0, 1));
 
         let (mut client, mut server) = tokio::io::duplex(1024);
 
@@ -254,9 +248,7 @@ mod tests {
             config.send(&mut client).await.unwrap();
         });
 
-        let recv_task = tokio::spawn(async move {
-            VpnConfig::recv(&mut server).await.unwrap()
-        });
+        let recv_task = tokio::spawn(async move { VpnConfig::recv(&mut server).await.unwrap() });
 
         send_task.await.unwrap();
         let received = recv_task.await.unwrap();
