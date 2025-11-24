@@ -5,6 +5,7 @@
 
 use crate::keys::{SignatureVerifier, SigningKeypair};
 use anyhow::{bail, Context, Result};
+use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -13,6 +14,9 @@ pub const MANIFEST_VERSION: u32 = 1;
 
 /// Maximum manifest age before considered stale (7 days)
 pub const MAX_MANIFEST_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+
+/// ODoH/DoH publication grace period (cache fallback) — 24h
+pub const STALE_FALLBACK_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// Server endpoint entry in manifest
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -85,6 +89,12 @@ pub struct ManifestPayload {
     /// Optional comment/description
     #[serde(default)]
     pub comment: String,
+    /// Optional ODoH / DoH endpoints for fetching updates
+    #[serde(default)]
+    pub odoh_relays: Vec<String>,
+    /// Domain-fronting hosts for bootstrap when primary blocked
+    #[serde(default)]
+    pub front_domains: Vec<String>,
 }
 
 impl ManifestPayload {
@@ -101,6 +111,8 @@ impl ManifestPayload {
             expires_at: now + MAX_MANIFEST_AGE.as_secs(),
             servers,
             comment: String::new(),
+            odoh_relays: Vec::new(),
+            front_domains: Vec::new(),
         }
     }
 
@@ -117,6 +129,8 @@ impl ManifestPayload {
             expires_at: now + validity.as_secs(),
             servers,
             comment: String::new(),
+            odoh_relays: Vec::new(),
+            front_domains: Vec::new(),
         }
     }
 
@@ -130,14 +144,28 @@ impl ManifestPayload {
         now > self.expires_at
     }
 
+    /// Check if manifest is stale but usable (fallback to cached)
+    pub fn is_stale(&self) -> bool {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        now > self.expires_at && now <= self.expires_at + STALE_FALLBACK_AGE.as_secs()
+    }
+
     /// Get active servers only
     pub fn active_servers(&self) -> impl Iterator<Item = &ServerEndpoint> {
         self.servers.iter().filter(|s| s.active)
     }
 
     /// Get servers in a specific region
-    pub fn servers_in_region<'a>(&'a self, region: &'a str) -> impl Iterator<Item = &'a ServerEndpoint> {
-        self.servers.iter().filter(move |s| s.region == region && s.active)
+    pub fn servers_in_region<'a>(
+        &'a self,
+        region: &'a str,
+    ) -> impl Iterator<Item = &'a ServerEndpoint> {
+        self.servers
+            .iter()
+            .filter(move |s| s.region == region && s.active)
     }
 
     /// Serialize to JSON bytes for signing
@@ -160,6 +188,8 @@ pub struct SignedManifest {
     pub signature: String,
     /// Signer's public key (hex encoded)
     pub signer_pubkey: String,
+    /// Nonce to prevent replay; generated from OsRng
+    pub nonce: u64,
 }
 
 impl SignedManifest {
@@ -169,11 +199,13 @@ impl SignedManifest {
         let payload_bytes = payload_json.as_bytes();
 
         let signature = keypair.sign(payload_bytes);
+        let nonce = OsRng.next_u64();
 
         Ok(Self {
             payload: payload_json,
             signature: hex::encode(signature),
             signer_pubkey: hex::encode(keypair.public_bytes()),
+            nonce,
         })
     }
 
@@ -195,11 +227,16 @@ impl SignedManifest {
             .try_into()
             .map_err(|_| anyhow::anyhow!("invalid signature length"))?;
 
-        let verifier = SignatureVerifier::from_public_bytes(expected_pubkey)
-            .context("creating verifier")?;
+        let verifier =
+            SignatureVerifier::from_public_bytes(expected_pubkey).context("creating verifier")?;
         verifier
             .verify(self.payload.as_bytes(), &signature)
             .context("signature verification failed")?;
+
+        // Nonce must be non-zero (enforces OsRng use on signer side)
+        if self.nonce == 0 {
+            bail!("manifest nonce invalid (zero)");
+        }
 
         // Parse payload
         let payload: ManifestPayload =
@@ -267,12 +304,13 @@ mod tests {
 
         assert_eq!(payload.version, MANIFEST_VERSION);
         assert!(!payload.is_expired());
+        assert!(!payload.is_stale());
         assert_eq!(payload.servers.len(), 1);
     }
 
     #[test]
     fn test_manifest_active_servers() {
-        let mut srv1 = ServerEndpoint::new("srv1", "1.2.3.4", 443, "key1");
+        let srv1 = ServerEndpoint::new("srv1", "1.2.3.4", 443, "key1");
         let mut srv2 = ServerEndpoint::new("srv2", "5.6.7.8", 443, "key2");
         srv2.active = false;
 
@@ -306,6 +344,15 @@ mod tests {
 
         assert_eq!(verified.servers.len(), 1);
         assert_eq!(verified.servers[0].id, "srv1");
+    }
+
+    #[test]
+    fn manifest_nonce_non_zero() {
+        let kp = test_keypair();
+        let payload =
+            ManifestPayload::new(vec![ServerEndpoint::new("srv1", "1.2.3.4", 443, "key1")]);
+        let signed = SignedManifest::sign(&payload, &kp).unwrap();
+        assert!(signed.nonce != 0, "nonce must be non-zero");
     }
 
     #[test]
