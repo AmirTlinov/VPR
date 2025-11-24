@@ -1,0 +1,31 @@
+{
+  "server": {
+    "host": "YOUR_SERVER_IP",
+    "ssh_port": 22,
+    "user": "root",
+    "password": "YOUR_PASSWORD",
+    "vpn_port": 4433,
+    "remote_dir": "/opt/vpr"
+  },
+  "client": {
+    "tun_name": "vpr0",
+    "secrets_dir": "secrets",
+    "tls_profile": "chrome",
+    "insecure": true
+  },
+  "tests": {
+    "ping": true,
+    "dns": true,
+    "external": true,
+    "throughput": false,
+    "latency": true,
+    "timeout_secs": 30,
+    "ping_count": 5
+  },
+  "output": {
+    "dir": "logs/e2e",
+    "json": true,
+    "markdown": true,
+    "verbose": false
+  }
+}

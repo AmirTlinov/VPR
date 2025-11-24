@@ -1,0 +1,310 @@
+//! Server deployment and management
+
+use crate::config::E2eConfig;
+use anyhow::{Context, Result};
+use std::path::Path;
+use std::process::Stdio;
+use tokio::process::Command;
+
+/// Server deployer - handles SSH operations and binary deployment
+pub struct Deployer {
+    config: E2eConfig,
+}
+
+impl Deployer {
+    pub fn new(config: E2eConfig) -> Self {
+        Self { config }
+    }
+
+    /// Execute SSH command on remote server
+    pub async fn ssh_exec(&self, cmd: &str) -> Result<String> {
+        let password = self
+            .config
+            .server
+            .password
+            .as_ref()
+            .context("SSH password required")?;
+
+        let output = Command::new("sshpass")
+            .args([
+                "-p",
+                password,
+                "ssh",
+                "-o",
+                "StrictHostKeyChecking=no",
+                "-o",
+                "UserKnownHostsFile=/dev/null",
+                "-o",
+                "LogLevel=ERROR",
+                "-o",
+                "ConnectTimeout=30",
+                &format!("{}@{}", self.config.server.user, self.config.server.host),
+                cmd,
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .context("SSH command failed")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("SSH command failed: {}", stderr);
+        }
+
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    }
+
+    /// Check if SSH connection works
+    pub async fn test_connection(&self) -> Result<()> {
+        tracing::info!(host = %self.config.server.host, "Testing SSH connection");
+        let output = self.ssh_exec("echo 'OK'").await?;
+        if output.trim() != "OK" {
+            anyhow::bail!("Unexpected SSH response: {}", output);
+        }
+        tracing::info!("SSH connection successful");
+        Ok(())
+    }
+
+    /// Upload file via SCP
+    pub async fn upload_file(&self, local: &Path, remote: &str) -> Result<()> {
+        let password = self
+            .config
+            .server
+            .password
+            .as_ref()
+            .context("SSH password required")?;
+
+        tracing::info!(?local, remote, "Uploading file");
+
+        let status = Command::new("sshpass")
+            .args([
+                "-p",
+                password,
+                "scp",
+                "-o",
+                "StrictHostKeyChecking=no",
+                "-o",
+                "UserKnownHostsFile=/dev/null",
+                "-o",
+                "LogLevel=ERROR",
+                local.to_str().unwrap(),
+                &format!(
+                    "{}@{}:{}",
+                    self.config.server.user, self.config.server.host, remote
+                ),
+            ])
+            .status()
+            .await
+            .context("SCP failed")?;
+
+        if !status.success() {
+            anyhow::bail!("SCP upload failed");
+        }
+        Ok(())
+    }
+
+    /// Download file via SCP
+    pub async fn download_file(&self, remote: &str, local: &Path) -> Result<()> {
+        let password = self
+            .config
+            .server
+            .password
+            .as_ref()
+            .context("SSH password required")?;
+
+        tracing::info!(remote, ?local, "Downloading file");
+
+        let status = Command::new("sshpass")
+            .args([
+                "-p",
+                password,
+                "scp",
+                "-o",
+                "StrictHostKeyChecking=no",
+                "-o",
+                "UserKnownHostsFile=/dev/null",
+                "-o",
+                "LogLevel=ERROR",
+                &format!(
+                    "{}@{}:{}",
+                    self.config.server.user, self.config.server.host, remote
+                ),
+                local.to_str().unwrap(),
+            ])
+            .status()
+            .await
+            .context("SCP failed")?;
+
+        if !status.success() {
+            anyhow::bail!("SCP download failed");
+        }
+        Ok(())
+    }
+
+    /// Prepare server directory structure
+    pub async fn prepare_server(&self) -> Result<()> {
+        tracing::info!("Preparing server directory structure");
+        let remote_dir = &self.config.server.remote_dir;
+        self.ssh_exec(&format!(
+            "mkdir -p {remote_dir}/{{bin,secrets,logs,config}}"
+        ))
+        .await?;
+        Ok(())
+    }
+
+    /// Check if server binary exists
+    pub async fn server_binary_exists(&self) -> Result<bool> {
+        let remote_dir = &self.config.server.remote_dir;
+        let result = self
+            .ssh_exec(&format!("test -f {remote_dir}/bin/vpn-server && echo yes"))
+            .await;
+        Ok(result.map(|s| s.trim() == "yes").unwrap_or(false))
+    }
+
+    /// Deploy VPN server binary
+    pub async fn deploy_server_binary(&self, local_binary: &Path) -> Result<()> {
+        let remote_dir = &self.config.server.remote_dir;
+        self.upload_file(local_binary, &format!("{remote_dir}/bin/vpn-server"))
+            .await?;
+        self.ssh_exec(&format!("chmod +x {remote_dir}/bin/vpn-server"))
+            .await?;
+        Ok(())
+    }
+
+    /// Deploy keygen binary
+    pub async fn deploy_keygen_binary(&self, local_binary: &Path) -> Result<()> {
+        let remote_dir = &self.config.server.remote_dir;
+        self.upload_file(local_binary, &format!("{remote_dir}/bin/vpr-keygen"))
+            .await?;
+        self.ssh_exec(&format!("chmod +x {remote_dir}/bin/vpr-keygen"))
+            .await?;
+        Ok(())
+    }
+
+    /// Generate server keys if they don't exist
+    pub async fn ensure_server_keys(&self) -> Result<()> {
+        let remote_dir = &self.config.server.remote_dir;
+
+        // Check if keys exist
+        let keys_exist = self
+            .ssh_exec(&format!(
+                "test -f {remote_dir}/secrets/server.noise.key && echo yes"
+            ))
+            .await
+            .map(|s| s.trim() == "yes")
+            .unwrap_or(false);
+
+        if !keys_exist {
+            tracing::info!("Generating server Noise keys");
+            self.ssh_exec(&format!(
+                "cd {remote_dir} && ./bin/vpr-keygen gen-noise-key --name server --output secrets"
+            ))
+            .await?;
+        }
+
+        // Check if TLS cert exists
+        let cert_exists = self
+            .ssh_exec(&format!(
+                "test -f {remote_dir}/secrets/server.crt && echo yes"
+            ))
+            .await
+            .map(|s| s.trim() == "yes")
+            .unwrap_or(false);
+
+        if !cert_exists {
+            tracing::info!("Generating TLS certificate");
+            let host = &self.config.server.host;
+            self.ssh_exec(&format!(
+                "cd {remote_dir}/secrets && openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
+                 -subj '/CN={host}' -addext 'subjectAltName=IP:{host},DNS:{host}' \
+                 -keyout server.key -out server.crt"
+            ))
+            .await?;
+        }
+
+        Ok(())
+    }
+
+    /// Download server public key for client
+    pub async fn download_server_pubkey(&self, local_path: &Path) -> Result<()> {
+        let remote_dir = &self.config.server.remote_dir;
+        self.download_file(&format!("{remote_dir}/secrets/server.noise.pub"), local_path)
+            .await
+    }
+
+    /// Stop VPN server
+    pub async fn stop_server(&self) -> Result<()> {
+        tracing::info!("Stopping VPN server");
+        let _ = self.ssh_exec("pkill -9 -f vpn-server").await;
+        let _ = self.ssh_exec("ip link del vpr-srv 2>/dev/null").await;
+        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+        Ok(())
+    }
+
+    /// Start VPN server
+    pub async fn start_server(&self) -> Result<()> {
+        let remote_dir = &self.config.server.remote_dir;
+        let vpn_port = self.config.server.vpn_port;
+
+        tracing::info!("Starting VPN server on port {}", vpn_port);
+
+        // Enable IP forwarding
+        let _ = self.ssh_exec("sysctl -w net.ipv4.ip_forward=1").await;
+
+        // Start server in background
+        self.ssh_exec(&format!(
+            "cd {remote_dir} && \
+             RUST_LOG=info nohup ./bin/vpn-server \
+             --bind 0.0.0.0:{vpn_port} \
+             --tun-name vpr-srv \
+             --tun-addr 10.8.0.1 \
+             --pool-start 10.8.0.2 \
+             --pool-end 10.8.0.254 \
+             --mtu 1400 \
+             --noise-dir secrets \
+             --noise-name server \
+             --cert secrets/server.crt \
+             --key secrets/server.key \
+             --enable-forwarding \
+             --idle-timeout 300 \
+             > logs/server.log 2>&1 &"
+        ))
+        .await?;
+
+        // Wait and verify
+        tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+
+        let running = self
+            .ssh_exec("pgrep -f vpn-server")
+            .await
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false);
+
+        if !running {
+            let logs = self
+                .ssh_exec(&format!("tail -30 {remote_dir}/logs/server.log"))
+                .await
+                .unwrap_or_default();
+            anyhow::bail!("Server failed to start. Logs:\n{}", logs);
+        }
+
+        tracing::info!("VPN server started successfully");
+        Ok(())
+    }
+
+    /// Get server logs
+    pub async fn get_server_logs(&self, lines: u32) -> Result<String> {
+        let remote_dir = &self.config.server.remote_dir;
+        self.ssh_exec(&format!("tail -{lines} {remote_dir}/logs/server.log"))
+            .await
+    }
+
+    /// Check if server is running
+    pub async fn is_server_running(&self) -> bool {
+        self.ssh_exec("pgrep -f vpn-server")
+            .await
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false)
+    }
+}

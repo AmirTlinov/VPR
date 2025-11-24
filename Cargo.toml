@@ -8,5 +8,6 @@ members = [
   "src/vpr-crypto",
   "src/health-history",
   "src/vpr-tui",
-  "src/vpr-ai"
+  "src/vpr-ai",
+  "src/vpr-e2e"
 ]
