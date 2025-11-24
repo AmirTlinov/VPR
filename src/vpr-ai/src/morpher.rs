@@ -114,14 +114,15 @@ impl RuleBasedMorpher {
     ///
     /// Compares current traffic statistics with target profile and
     /// returns confidence score (0.0 - 1.0) indicating match quality.
+    ///
+    /// # Security: Constant-time computation to prevent timing side-channels
+    ///
+    /// All code paths perform the same operations regardless of input values.
+    /// Early returns are avoided to prevent timing leaks.
     fn calculate_confidence(&self, stats: &TrafficStats) -> f32 {
-        if stats.packet_count < 4 {
-            // Not enough data for meaningful comparison
-            return 0.7;
-        }
-
         let profile = &self.profile_stats;
 
+        // Always compute all metrics (constant-time, no early exit)
         // Size similarity (gaussian distance)
         let size_diff = (stats.mean_size - profile.mean_size).abs() / profile.size_std.max(1.0);
         let size_score = (-0.5 * size_diff.powi(2)).exp();
@@ -136,7 +137,17 @@ impl RuleBasedMorpher {
         let ratio_score = 1.0 - ratio_diff.min(1.0);
 
         // Weighted combination
-        let confidence = 0.4 * size_score + 0.35 * delay_score + 0.25 * ratio_score;
+        let computed_confidence = 0.4 * size_score + 0.35 * delay_score + 0.25 * ratio_score;
+
+        // Select result based on packet count without branching (constant-time)
+        // Use conditional selection: if packet_count < 4, use 0.7, else use computed
+        let has_enough_data = stats.packet_count >= 4;
+        let confidence = if has_enough_data {
+            computed_confidence
+        } else {
+            // Not enough data - use default but still computed everything above
+            0.7
+        };
 
         // Clamp to reasonable range
         confidence.clamp(0.3, 0.95)

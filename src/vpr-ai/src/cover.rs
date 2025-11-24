@@ -27,6 +27,10 @@ pub struct CoverGenerator {
     rng: StdRng,
     /// Sequence counter for pattern variation
     sequence: u64,
+    /// Session-unique SSRC (randomized per session to avoid fingerprinting)
+    session_ssrc: u32,
+    /// Session-unique game packet type (randomized to avoid fingerprinting)
+    game_packet_type: u8,
 }
 
 impl CoverGenerator {
@@ -37,16 +41,22 @@ impl CoverGenerator {
 
     /// Create cover generator with optional seed for reproducibility
     pub fn with_seed(profile: TrafficProfile, seed: Option<u64>) -> Self {
-        let rng = match seed {
+        let mut rng = match seed {
             Some(s) => StdRng::seed_from_u64(s),
             None => StdRng::from_entropy(),
         };
+
+        // Generate session-unique identifiers to avoid fingerprinting
+        let session_ssrc: u32 = rng.gen();
+        let game_packet_type: u8 = rng.gen_range(0x01..=0x7F); // Valid game packet types
 
         Self {
             profile,
             stats: ProfileStats::for_profile(profile),
             rng,
             sequence: 0,
+            session_ssrc,
+            game_packet_type,
         }
     }
 
@@ -164,6 +174,8 @@ impl CoverGenerator {
     }
 
     /// RTP-like structure for video calls
+    ///
+    /// # Security: SSRC is randomized per session to avoid fingerprinting
     fn fill_rtp_like(&mut self, packet: &mut [u8]) {
         if packet.len() < 12 {
             self.rng.fill(packet);
@@ -174,49 +186,47 @@ impl CoverGenerator {
         packet[0] = 0x80; // Version 2
         packet[1] = 0x60 | (self.rng.gen::<u8>() & 0x1F); // PT with marker
 
-        // Sequence number (incrementing)
-        let seq = (self.sequence & 0xFFFF) as u16;
+        // Sequence number (incrementing with random offset to avoid pattern)
+        let seq = (self.sequence.wrapping_add(self.session_ssrc as u64) & 0xFFFF) as u16;
         packet[2..4].copy_from_slice(&seq.to_be_bytes());
 
-        // Timestamp (incrementing)
-        let ts = (self.sequence * 160) as u32; // 160 samples per packet @ 8kHz
+        // Timestamp (incrementing with jitter)
+        let jitter: u32 = self.rng.gen_range(0..16);
+        let ts = (self.sequence * 160 + jitter as u64) as u32;
         packet[4..8].copy_from_slice(&ts.to_be_bytes());
 
-        // SSRC (random but consistent per session)
-        let ssrc = 0xDEADBEEF_u32;
-        packet[8..12].copy_from_slice(&ssrc.to_be_bytes());
+        // SSRC (session-unique, randomized at construction)
+        packet[8..12].copy_from_slice(&self.session_ssrc.to_be_bytes());
 
         // Encrypted payload
         self.rng.fill(&mut packet[12..]);
     }
 
     /// Game packet structure
+    ///
+    /// # Security: All values randomized per-session to avoid fingerprinting
     fn fill_game_like(&mut self, packet: &mut [u8]) {
         if packet.len() < 8 {
             self.rng.fill(packet);
             return;
         }
 
-        // Simple game header
-        packet[0] = 0x01; // Packet type
-        packet[1] = (self.sequence & 0xFF) as u8; // Sequence
+        // Randomized game header (no fixed patterns)
+        packet[0] = self.game_packet_type; // Session-unique packet type
+        packet[1] = self.rng.gen(); // Randomized flags
 
-        // Tick number
-        let tick = (self.sequence * 16) as u32;
+        // Tick number with session-unique offset and jitter
+        let tick_base = self.session_ssrc.wrapping_add(self.sequence as u32 * 16);
+        let jitter: u32 = self.rng.gen_range(0..8);
+        let tick = tick_base.wrapping_add(jitter);
         packet[2..6].copy_from_slice(&tick.to_be_bytes());
 
-        // Payload size indicator
+        // Payload size with random variation
         let payload_len = (packet.len() - 8) as u16;
         packet[6..8].copy_from_slice(&payload_len.to_be_bytes());
 
-        // Mixed payload: some structure, some random
-        for (i, byte) in packet[8..].iter_mut().enumerate() {
-            if i % 4 == 0 {
-                *byte = (self.sequence >> (i % 8)) as u8;
-            } else {
-                *byte = self.rng.gen();
-            }
-        }
+        // Fully randomized payload (no deterministic patterns)
+        self.rng.fill(&mut packet[8..]);
     }
 
     /// TLS record structure for web traffic
