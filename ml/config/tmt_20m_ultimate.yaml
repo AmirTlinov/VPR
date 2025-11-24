@@ -1,0 +1,47 @@
+# TMT-20M Ultimate Training Config
+seed: 42
+deterministic: true
+
+model:
+  input_dim: 4
+  context_size: 16
+  embed_dim: 512
+  num_layers: 6
+  num_heads: 8
+  ffn_dim: 2048
+  dropout: 0.1
+  num_profiles: 5
+
+data:
+  train_path: data/ultimate/train.parquet
+  val_path: data/ultimate/val.parquet
+  test_path: data/ultimate/test.parquet
+  context_size: 16
+  num_workers: 4
+  pin_memory: true
+
+training:
+  batch_size: 256
+  epochs: 15
+  lr: 0.0003
+  weight_decay: 0.01
+  warmup_steps: 500
+  max_grad_norm: 1.0
+  val_every: 1
+  save_every: 3
+  patience: 5
+
+optimizer:
+  betas: [0.9, 0.999]
+  eps: 0.00000001
+
+loss:
+  kl_weight: 0.1
+  latency_weight: 1.0
+  bandwidth_weight: 1.0
+  confidence_weight: 0.5
+
+output:
+  dir: models/tmt-20m-ultimate
+  save_every: 3
+  log_every: 100
