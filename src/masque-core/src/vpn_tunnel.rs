@@ -99,10 +99,7 @@ pub struct TunnelStats {
 }
 
 /// Async task for reading TUN and sending to channel
-pub async fn tun_to_channel(
-    mut tun_reader: TunReader,
-    tx: mpsc::Sender<Bytes>,
-) -> Result<()> {
+pub async fn tun_to_channel(mut tun_reader: TunReader, tx: mpsc::Sender<Bytes>) -> Result<()> {
     loop {
         match tun_reader.read_packet().await {
             Ok(packet) => {
@@ -173,19 +170,17 @@ pub async fn forward_quic_to_tun(
 ) -> Result<()> {
     loop {
         match connection.read_datagram().await {
-            Ok(datagram) => {
-                match encapsulator.decapsulate(datagram) {
-                    Ok(packet) => {
-                        if tx.send(packet).await.is_err() {
-                            debug!("QUIC reader: TUN channel closed");
-                            break;
-                        }
-                    }
-                    Err(e) => {
-                        warn!(%e, "decapsulation error");
+            Ok(datagram) => match encapsulator.decapsulate(datagram) {
+                Ok(packet) => {
+                    if tx.send(packet).await.is_err() {
+                        debug!("QUIC reader: TUN channel closed");
+                        break;
                     }
                 }
-            }
+                Err(e) => {
+                    warn!(%e, "decapsulation error");
+                }
+            },
             Err(quinn::ConnectionError::ApplicationClosed { .. }) => {
                 info!("QUIC connection closed by application");
                 break;

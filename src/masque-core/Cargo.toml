@@ -34,6 +34,10 @@ vpr-crypto = { path = "../vpr-crypto" }
 name = "vpn-client"
 path = "src/bin/vpn_client.rs"
 
+[[bin]]
+name = "vpn-server"
+path = "src/bin/vpn_server.rs"
+
 [dev-dependencies]
 assert_cmd = "2"
 predicates = "3"

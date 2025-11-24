@@ -18,7 +18,7 @@ use tracing::{error, info, Level};
 use tracing_subscriber::FmtSubscriber;
 
 use masque_core::hybrid_handshake::HybridClient;
-use masque_core::masque::UdpCapsule;
+use masque_core::quic_stream::QuicBiStream;
 use masque_core::tun::{setup_routing, TunConfig, TunDevice};
 use masque_core::vpn_tunnel::{
     channel_to_tun, forward_quic_to_tun, forward_tun_to_quic, tun_to_channel, PacketEncapsulator,
@@ -153,10 +153,7 @@ async fn run_vpn_client(args: Args) -> Result<()> {
     info!(server = %server_addr, "Connecting to VPN server...");
 
     let connection = endpoint
-        .connect(
-            server_addr,
-            &args.server_name,
-        )?
+        .connect(server_addr, &args.server_name)?
         .await
         .context("QUIC connection failed")?;
 
@@ -171,10 +168,7 @@ async fn run_vpn_client(args: Args) -> Result<()> {
         .try_into()
         .context("server public key must be 32 bytes")?;
 
-    let hybrid_client = HybridClient::new_ik(
-        &client_keypair.secret_bytes(),
-        &server_pub_bytes,
-    );
+    let hybrid_client = HybridClient::new_ik(&client_keypair.secret_bytes(), &server_pub_bytes);
 
     // Open bidirectional stream for handshake
     let (send, recv) = connection
@@ -334,69 +328,5 @@ impl ServerCertVerifier for InsecureVerifier {
             SignatureScheme::RSA_PSS_SHA384,
             SignatureScheme::RSA_PSS_SHA512,
         ]
-    }
-}
-
-/// Bidirectional QUIC stream adapter for Noise handshake
-struct QuicBiStream {
-    send: quinn::SendStream,
-    recv: quinn::RecvStream,
-}
-
-impl QuicBiStream {
-    fn new(send: quinn::SendStream, recv: quinn::RecvStream) -> Self {
-        Self { send, recv }
-    }
-}
-
-impl tokio::io::AsyncRead for QuicBiStream {
-    fn poll_read(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &mut tokio::io::ReadBuf<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        std::pin::Pin::new(&mut self.recv).poll_read(cx, buf)
-    }
-}
-
-impl tokio::io::AsyncWrite for QuicBiStream {
-    fn poll_write(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &[u8],
-    ) -> std::task::Poll<std::io::Result<usize>> {
-        match std::pin::Pin::new(&mut self.send).poll_write(cx, buf) {
-            std::task::Poll::Ready(Ok(n)) => std::task::Poll::Ready(Ok(n)),
-            std::task::Poll::Ready(Err(e)) => {
-                std::task::Poll::Ready(Err(std::io::Error::new(std::io::ErrorKind::Other, e)))
-            }
-            std::task::Poll::Pending => std::task::Poll::Pending,
-        }
-    }
-
-    fn poll_flush(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        match std::pin::Pin::new(&mut self.send).poll_flush(cx) {
-            std::task::Poll::Ready(Ok(())) => std::task::Poll::Ready(Ok(())),
-            std::task::Poll::Ready(Err(e)) => {
-                std::task::Poll::Ready(Err(std::io::Error::new(std::io::ErrorKind::Other, e)))
-            }
-            std::task::Poll::Pending => std::task::Poll::Pending,
-        }
-    }
-
-    fn poll_shutdown(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        match std::pin::Pin::new(&mut self.send).poll_shutdown(cx) {
-            std::task::Poll::Ready(Ok(())) => std::task::Poll::Ready(Ok(())),
-            std::task::Poll::Ready(Err(e)) => {
-                std::task::Poll::Ready(Err(std::io::Error::new(std::io::ErrorKind::Other, e)))
-            }
-            std::task::Poll::Pending => std::task::Poll::Pending,
-        }
     }
 }
