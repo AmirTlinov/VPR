@@ -2,13 +2,9 @@
 //!
 //! Provides HTTP/3 Extended CONNECT handling for UDP proxying.
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{bail, Context, Result};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
-use h3::server::RequestStream;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::sync::Arc;
-use tokio::net::UdpSocket;
-use tracing::{debug, error, info, warn};
+use std::net::{IpAddr, Ipv4Addr};
 
 /// Maximum UDP payload size per RFC 9298
 pub const MAX_UDP_PAYLOAD: usize = 65_527;

@@ -3,12 +3,10 @@
 //! Provides HTTP/3 Extended CONNECT handling using h3 and h3-quinn.
 
 use crate::hybrid_handshake::HybridServer;
-use crate::masque::{extract_connect_udp_target, is_connect_udp, ConnectUdpTarget, UdpCapsule};
-use anyhow::{bail, Context, Result};
+use crate::masque::{extract_connect_udp_target, is_connect_udp, UdpCapsule};
+use anyhow::{Context, Result};
 use bytes::Bytes;
-use h3::quic::BidiStream;
 use h3::server::Connection as H3Connection;
-use h3_quinn::Connection as QuinnConnection;
 use quinn::{Endpoint, TransportConfig};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use std::net::SocketAddr;
@@ -193,13 +191,13 @@ async fn handle_connect_udp(
 async fn forward_datagrams(
     connection: quinn::Connection,
     socket: Arc<UdpSocket>,
-    mut stream: h3::server::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>,
+    stream: h3::server::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>,
 ) -> Result<()> {
     // Client -> Target (QUIC datagrams -> UDP)
     let conn_clone = connection.clone();
     let socket_clone = socket.clone();
     let to_target = tokio::spawn(async move {
-        let mut buf = vec![0u8; 65536];
+        let buf = vec![0u8; 65536];
         loop {
             match conn_clone.read_datagram().await {
                 Ok(datagram) => {

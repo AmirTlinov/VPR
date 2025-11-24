@@ -74,6 +74,11 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Install rustls crypto provider (required for rustls 0.23+)
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .ok();
+
     let subscriber = FmtSubscriber::builder()
         .with_max_level(Level::INFO)
         .finish();
@@ -224,7 +229,7 @@ async fn run_quic_flow(args: Args) -> Result<()> {
         "QUIC hybrid PQ handshake complete"
     );
 
-    let (mut send, mut recv) = stream.into_parts();
+    let (mut send, recv) = stream.into_parts();
 
     // Send connect request
     let frame = build_connect_frame(&ConnectRequest {

@@ -28,7 +28,7 @@ use tracing_subscriber::EnvFilter;
 
 use masque_core::h3_server::{run_h3_server, H3ServerConfig};
 use masque_core::hybrid_handshake::HybridServer;
-use masque_core::tunnel::{read_connect_request, read_frame, write_frame, Proto};
+use masque_core::tunnel::{read_frame, write_frame, Proto};
 
 #[derive(Parser, Debug)]
 #[command(name = "masque-core", about = "MASQUE stealth VPN server")]
