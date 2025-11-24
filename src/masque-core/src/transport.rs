@@ -346,7 +346,9 @@ impl Transport for WebRtcTransport {
     }
 
     fn rtt(&self) -> Option<Duration> {
-        self.stats.current_rtt_ms.map(|ms| Duration::from_millis(ms as u64))
+        self.stats
+            .current_rtt_ms
+            .map(|ms| Duration::from_millis(ms as u64))
     }
 }
 
@@ -400,7 +402,10 @@ impl Transport for WebSocketTransport {
         // 2. HTTP Upgrade request
         // 3. WebSocket frame handling
 
-        let url = self.url.clone().unwrap_or_else(|| format!("wss://{}/ws", addr));
+        let url = self
+            .url
+            .clone()
+            .unwrap_or_else(|| format!("wss://{}/ws", addr));
         debug!(url = %url, "WebSocket connection attempt");
 
         bail!("WebSocket transport not yet implemented - requires tokio-tungstenite")
@@ -430,7 +435,9 @@ impl Transport for WebSocketTransport {
     }
 
     fn rtt(&self) -> Option<Duration> {
-        self.stats.current_rtt_ms.map(|ms| Duration::from_millis(ms as u64))
+        self.stats
+            .current_rtt_ms
+            .map(|ms| Duration::from_millis(ms as u64))
     }
 }
 

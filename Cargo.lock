@@ -2993,6 +2993,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
+ "async-trait",
  "bytes",
  "clap",
  "h3",
@@ -6497,6 +6498,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "snow",
+ "subtle",
  "tempfile",
  "thiserror 2.0.17",
  "time",

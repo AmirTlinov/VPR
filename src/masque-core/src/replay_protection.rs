@@ -4,11 +4,11 @@
 //! Uses SHA-256 hash of the first N bytes of each message for deduplication.
 
 use sha2::{Digest, Sha256};
-use tracing::{trace, warn};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::RwLock;
 use std::time::{Duration, Instant};
+use tracing::{trace, warn};
 
 /// Default time-to-live for nonces (5 minutes)
 pub const DEFAULT_TTL: Duration = Duration::from_secs(300);

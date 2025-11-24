@@ -73,6 +73,31 @@ impl ServerEndpoint {
         self.capabilities = caps;
         self
     }
+
+    /// Validate the noise_pubkey field
+    ///
+    /// Returns Ok if the pubkey is valid hex-encoded 32-byte X25519 public key,
+    /// Err with description otherwise.
+    pub fn validate_pubkey(&self) -> Result<[u8; 32]> {
+        let bytes = hex::decode(&self.noise_pubkey)
+            .context("noise_pubkey is not valid hex")?;
+
+        if bytes.len() != 32 {
+            bail!(
+                "noise_pubkey must be 32 bytes, got {} bytes",
+                bytes.len()
+            );
+        }
+
+        let mut arr = [0u8; 32];
+        arr.copy_from_slice(&bytes);
+        Ok(arr)
+    }
+
+    /// Check if pubkey is valid without returning the bytes
+    pub fn is_pubkey_valid(&self) -> bool {
+        self.validate_pubkey().is_ok()
+    }
 }
 
 /// Unsigned manifest payload

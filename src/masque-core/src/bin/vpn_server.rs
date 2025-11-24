@@ -548,23 +548,22 @@ async fn tun_reader_task(
 ) {
     loop {
         match tun_reader.read_packet().await {
-            Ok(packet) => {
-                // Parse destination IP from packet
-                if packet.len() >= 20 {
-                    let dst_ip = Ipv4Addr::new(packet[16], packet[17], packet[18], packet[19]);
-
-                    // Find client with this IP
+            Ok(packet) => match masque_core::tun::IpPacketInfo::parse(&packet) {
+                Ok(info) => {
+                    let dst_ip = info.dst_addr;
                     let st = state.read().await;
                     if let Some(session) = st.clients.get(&dst_ip) {
                         if session.tx.send(packet).await.is_err() {
                             debug!(dst = %dst_ip, "Client channel closed");
                         }
                     } else {
-                        // Packet for unknown destination, drop silently
                         debug!(dst = %dst_ip, "No client for destination");
                     }
                 }
-            }
+                Err(e) => {
+                    warn!(%e, packet_len = packet.len(), "Invalid IP packet from TUN, dropping");
+                }
+            },
             Err(e) => {
                 error!(%e, "TUN read error");
                 break;

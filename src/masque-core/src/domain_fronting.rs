@@ -182,7 +182,10 @@ impl DomainFronter {
 
     /// Get number of available fronts
     pub fn available_count(&self) -> usize {
-        self.fronts.iter().filter(|f| f.enabled && !self.is_blocked(&f.front_domain)).count()
+        self.fronts
+            .iter()
+            .filter(|f| f.enabled && !self.is_blocked(&f.front_domain))
+            .count()
     }
 
     /// Check if a front is temporarily blocked
@@ -236,7 +239,10 @@ impl DomainFronter {
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36".to_string(),
             ),
             ("Accept".to_string(), "*/*".to_string()),
-            ("Accept-Encoding".to_string(), "gzip, deflate, br".to_string()),
+            (
+                "Accept-Encoding".to_string(),
+                "gzip, deflate, br".to_string(),
+            ),
             ("Connection".to_string(), "keep-alive".to_string()),
         ]
     }
@@ -334,7 +340,9 @@ impl ReflectorConfig {
 
     /// Check if Host header is allowed
     pub fn is_host_allowed(&self, host: &str) -> bool {
-        self.allowed_hosts.iter().any(|h| h == host || host.ends_with(&format!(".{}", h)))
+        self.allowed_hosts
+            .iter()
+            .any(|h| h == host || host.ends_with(&format!(".{}", h)))
     }
 }
 
@@ -360,15 +368,23 @@ mod tests {
 
     #[test]
     fn test_front_config_new() {
-        let config = FrontConfig::new(CdnProvider::Cloudflare, "cdn.example.com", "real.target.com");
+        let config = FrontConfig::new(
+            CdnProvider::Cloudflare,
+            "cdn.example.com",
+            "real.target.com",
+        );
         assert_eq!(config.tls_domain(), "cdn.example.com");
         assert_eq!(config.host_header(), "real.target.com");
     }
 
     #[test]
     fn test_front_config_build_url() {
-        let config = FrontConfig::new(CdnProvider::Cloudflare, "cdn.example.com", "real.target.com")
-            .with_path_prefix("/proxy");
+        let config = FrontConfig::new(
+            CdnProvider::Cloudflare,
+            "cdn.example.com",
+            "real.target.com",
+        )
+        .with_path_prefix("/proxy");
 
         assert_eq!(
             config.build_url("/api/data"),
@@ -381,8 +397,7 @@ mod tests {
         let fronts = vec![
             FrontConfig::new(CdnProvider::Cloudflare, "cf.example.com", "target.com")
                 .with_priority(10),
-            FrontConfig::new(CdnProvider::Fastly, "fs.example.com", "target.com")
-                .with_priority(20),
+            FrontConfig::new(CdnProvider::Fastly, "fs.example.com", "target.com").with_priority(20),
         ];
 
         let fronter = DomainFronter::new(fronts);
@@ -391,9 +406,11 @@ mod tests {
 
     #[test]
     fn test_fronter_next_front() {
-        let fronts = vec![
-            FrontConfig::new(CdnProvider::Cloudflare, "cf.example.com", "target.com"),
-        ];
+        let fronts = vec![FrontConfig::new(
+            CdnProvider::Cloudflare,
+            "cf.example.com",
+            "target.com",
+        )];
 
         let mut fronter = DomainFronter::new(fronts);
         let front = fronter.next_front();
@@ -428,8 +445,8 @@ mod tests {
     #[test]
     fn test_fronted_request_with_header() {
         let front = FrontConfig::new(CdnProvider::Cloudflare, "cdn.example.com", "target.com");
-        let request = FrontedRequest::post(front, "/api")
-            .header("Content-Type", "application/json");
+        let request =
+            FrontedRequest::post(front, "/api").header("Content-Type", "application/json");
 
         assert!(request.headers.contains_key("Content-Type"));
     }

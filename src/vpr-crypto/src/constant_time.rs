@@ -11,17 +11,50 @@ use subtle::{Choice, ConstantTimeEq};
 /// Returns true if both slices are equal, false otherwise.
 /// The comparison time is independent of where the first difference occurs.
 ///
-/// # Security
+/// # Security Warning
 ///
-/// This function is designed to prevent timing side-channel attacks where
-/// an attacker could measure how long comparisons take to determine
-/// how many bytes match.
+/// **Length comparison is NOT constant-time!** An attacker can distinguish
+/// "wrong length" from "wrong content" by timing. For comparing secrets:
+/// - Use `ct_eq_32` or `ct_eq_64` for fixed-size secrets (preferred)
+/// - Use `ct_eq_padded` for variable-length secrets with known max size
+///
+/// This function is safe when comparing values where length is not secret
+/// (e.g., comparing received data against expected fixed-size values).
 #[inline]
 pub fn ct_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
     }
     a.ct_eq(b).into()
+}
+
+/// Constant-time comparison with padding for variable-length secrets.
+///
+/// Both slices are compared up to `max_len` bytes. Shorter slices are
+/// treated as if padded with zeros. Returns true only if both slices
+/// have the same length AND same content.
+///
+/// # Security
+///
+/// This function is fully constant-time - comparison time depends only
+/// on `max_len`, not on actual slice lengths or content.
+#[inline]
+pub fn ct_eq_padded(a: &[u8], b: &[u8], max_len: usize) -> bool {
+    use subtle::ConstantTimeEq;
+
+    // Length equality check via XOR (constant-time)
+    let len_eq = ct_select_u8(a.len() == b.len(), 1, 0);
+
+    // Compare bytes, treating out-of-bounds as 0
+    let mut acc: u8 = 0;
+    for i in 0..max_len {
+        let byte_a = if i < a.len() { a[i] } else { 0 };
+        let byte_b = if i < b.len() { b[i] } else { 0 };
+        acc |= byte_a ^ byte_b;
+    }
+
+    // Both length must match AND content must match
+    len_eq == 1 && acc == 0
 }
 
 /// Constant-time comparison of two fixed-size byte arrays.
@@ -38,14 +71,22 @@ pub fn ct_eq_64(a: &[u8; 64], b: &[u8; 64]) -> bool {
     a.ct_eq(b).into()
 }
 
-/// Constant-time selection between two values based on a condition.
+/// **WARNING: NOT CONSTANT-TIME!** Generic selection using branching.
 ///
-/// If `condition` is true, returns `a`; otherwise returns `b`.
-/// The selection time is independent of the condition.
+/// For constant-time selection of primitives, use:
+/// - `ct_select_u8` for bytes
+/// - `ct_select_u32` for 32-bit values
+/// - `ct_select_u64` for 64-bit values
+///
+/// This function exists only for non-secret conditions where timing doesn't matter.
 #[inline]
-pub fn ct_select<T: Copy>(condition: bool, a: T, b: T) -> T {
-    // For generic types we use branching, but for primitives use ct_select_*
-    if condition { a } else { b }
+#[deprecated(since = "0.1.0", note = "Use ct_select_u8/u32/u64 for constant-time selection")]
+pub fn select<T: Copy>(condition: bool, a: T, b: T) -> T {
+    if condition {
+        a
+    } else {
+        b
+    }
 }
 
 /// Constant-time byte selection
@@ -219,5 +260,34 @@ mod tests {
         let bytes = [42u8; 16];
         let secret: SecretBytes<16> = bytes.into();
         assert_eq!(secret.as_ref(), &bytes);
+    }
+
+    #[test]
+    fn test_ct_eq_padded_equal() {
+        let a = [1u8, 2, 3, 4, 5];
+        let b = [1u8, 2, 3, 4, 5];
+        assert!(ct_eq_padded(&a, &b, 10));
+    }
+
+    #[test]
+    fn test_ct_eq_padded_different() {
+        let a = [1u8, 2, 3, 4, 5];
+        let b = [1u8, 2, 3, 4, 6];
+        assert!(!ct_eq_padded(&a, &b, 10));
+    }
+
+    #[test]
+    fn test_ct_eq_padded_different_length() {
+        let a = [1u8, 2, 3, 4];
+        let b = [1u8, 2, 3, 4, 5];
+        // Different length should fail even with same prefix
+        assert!(!ct_eq_padded(&a, &b, 10));
+    }
+
+    #[test]
+    fn test_ct_eq_padded_empty() {
+        let a: [u8; 0] = [];
+        let b: [u8; 0] = [];
+        assert!(ct_eq_padded(&a, &b, 10));
     }
 }

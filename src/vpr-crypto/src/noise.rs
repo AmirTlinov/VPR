@@ -6,7 +6,7 @@ use pqcrypto_traits::kem::{
 };
 use sha2::Sha256;
 use snow::{Builder, HandshakeState, TransportState};
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 /// Noise pattern for known server (IK)
 pub const PATTERN_IK: &str = "Noise_IK_25519_ChaChaPoly_SHA256";
@@ -166,7 +166,8 @@ pub struct HybridSecret {
 impl HybridSecret {
     /// Combine X25519 and ML-KEM shared secrets using HKDF
     pub fn combine(x25519: &[u8; 32], mlkem: &[u8]) -> Self {
-        let mut ikm = Vec::with_capacity(32 + mlkem.len());
+        // Use Zeroizing to ensure intermediate key material is cleared
+        let mut ikm: Zeroizing<Vec<u8>> = Zeroizing::new(Vec::with_capacity(32 + mlkem.len()));
         ikm.extend_from_slice(x25519);
         ikm.extend_from_slice(mlkem);
 
@@ -175,6 +176,7 @@ impl HybridSecret {
         hk.expand(b"hybrid-secret", &mut combined)
             .expect("32 bytes is valid output length");
 
+        // ikm is zeroized when dropped here
         Self { combined }
     }
 }

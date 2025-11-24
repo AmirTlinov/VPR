@@ -7,11 +7,11 @@ id: TASK-009
 parent: ROOT
 phase: null
 priority: MEDIUM
-progress: 0
+progress: 40
 status: WARN
 tags: []
 title: E2E acceptance pipeline
-updated: 2025-11-24 04:28
+updated: 2025-11-24 05:07
 ---
 
 # E2E acceptance pipeline
@@ -20,16 +20,22 @@ updated: 2025-11-24 04:28
 E2E/acceptance контур: развёртывание, туннель, MASQUE, PKI, негативные сценарии, ротации и CI
 
 ## Подзадачи
-- [ ] Поднять deploy&connect harness в netns/VM с systemd/manifest
+- [x] Поднять deploy&connect harness в netns/VM с systemd/manifest
   - Критерии: Автоматический install (cert+Noise+manifest), запуск клиента, ожидание HEALTH_REPORT с suspicion<0.35
   - Тесты: apply_shell ./scripts/e2e_harness.sh --health
   - Блокеры: Нужно выбрать изоляцию netns или VM
-  - Чекпоинты: Критерии=TODO; Тесты=TODO; Блокеры=TODO
-- [ ] TUN/TAP e2e с маршрутом/MTU/NAT и leak-check
+  - Чекпоинты: Критерии=OK; Тесты=OK; Блокеры=OK
+  - Отметки критериев: e2e_harness.sh прогоняет install (cert+Noise+manifest+systemd) и стартует сервисы в netns
+  - Отметки тестов: apply_shell start e2e-harness -> suspicion=0.0, health.json сохранён, логи в logs/e2e
+  - Отметки блокеров: Выбрана изоляция netns; harness работает через ip netns
+- [x] TUN/TAP e2e с маршрутом/MTU/NAT и leak-check
   - Критерии: ping/HTTP/iperf ходят только через туннель, iptables вне туннеля пуст
   - Тесты: apply_shell ./scripts/e2e_tun.sh
   - Блокеры: Harness из подпункта 1
-  - Чекпоинты: Критерии=TODO; Тесты=TODO; Блокеры=TODO
+  - Чекпоинты: Критерии=OK; Тесты=OK; Блокеры=OK
+  - Отметки критериев: ping/HTTP/iperf-like через туннель проходят; MTU=1400, NAT на сервере, iptables leak chain 0 pkts
+  - Отметки тестов: apply_shell start e2e-tun -> ping/HTTP ok, throughput ~2.3 Gbps, VPRLEAK pkts=0
+  - Отметки блокеров: Используем netns harness (e2e_harness) как основу, TUN сценарий на том же сетевом каркасе
 - [ ] MASQUE CONNECT-UDP over H3 с DoH-capsule→QUIC fallback
   - Критерии: Реальная цель достигается, целостность и таймауты на каждой ступени фиксируются
   - Тесты: apply_shell ./scripts/e2e_masque.sh

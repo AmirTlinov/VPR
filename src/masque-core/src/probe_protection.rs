@@ -224,7 +224,9 @@ impl ProbeProtector {
 
     /// Check if IP is allowed to connect
     pub fn check_ip(&self, ip: IpAddr) -> ProbeDetection {
-        self.metrics.connections_checked.fetch_add(1, Ordering::Relaxed);
+        self.metrics
+            .connections_checked
+            .fetch_add(1, Ordering::Relaxed);
 
         let tracking = self.ip_tracking.read().unwrap();
         if let Some(entry) = tracking.get(&ip) {
@@ -238,7 +240,9 @@ impl ProbeProtector {
 
             // Check failed attempts
             if entry.failed_attempts >= self.config.max_failed_attempts {
-                self.metrics.suspicious_detected.fetch_add(1, Ordering::Relaxed);
+                self.metrics
+                    .suspicious_detected
+                    .fetch_add(1, Ordering::Relaxed);
                 return ProbeDetection::Suspicious(format!(
                     "IP {} has {} failed attempts",
                     ip, entry.failed_attempts
@@ -276,7 +280,9 @@ impl ProbeProtector {
 
     /// Issue a challenge for an IP
     pub fn issue_challenge(&self, _ip: IpAddr) -> Challenge {
-        self.metrics.challenges_issued.fetch_add(1, Ordering::Relaxed);
+        self.metrics
+            .challenges_issued
+            .fetch_add(1, Ordering::Relaxed);
 
         let challenge = Challenge::new(self.config.challenge_difficulty);
 
@@ -293,7 +299,9 @@ impl ProbeProtector {
 
         if let Some(challenge) = pending.remove(nonce) {
             if challenge.verify(response) {
-                self.metrics.challenges_passed.fetch_add(1, Ordering::Relaxed);
+                self.metrics
+                    .challenges_passed
+                    .fetch_add(1, Ordering::Relaxed);
                 return true;
             }
         }
@@ -308,7 +316,9 @@ impl ProbeProtector {
         }
 
         if handshake_duration < self.config.min_handshake_time {
-            self.metrics.suspicious_detected.fetch_add(1, Ordering::Relaxed);
+            self.metrics
+                .suspicious_detected
+                .fetch_add(1, Ordering::Relaxed);
             return ProbeDetection::Suspicious(format!(
                 "Handshake too fast: {:?}",
                 handshake_duration
@@ -316,10 +326,7 @@ impl ProbeProtector {
         }
 
         if handshake_duration > self.config.max_handshake_time {
-            return ProbeDetection::Blocked(format!(
-                "Handshake timeout: {:?}",
-                handshake_duration
-            ));
+            return ProbeDetection::Blocked(format!("Handshake timeout: {:?}", handshake_duration));
         }
 
         ProbeDetection::Legitimate

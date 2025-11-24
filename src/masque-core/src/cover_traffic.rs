@@ -177,8 +177,8 @@ impl CoverTrafficGenerator {
         let mut data = vec![0u8; size];
         OsRng.fill(&mut data[..]);
 
-        // Add cover traffic marker in first byte (for debugging)
-        data[0] = 0xCC; // Cover traffic marker
+        // NOTE: No marker byte - cover traffic must be indistinguishable
+        // from real encrypted traffic to resist traffic analysis
 
         CoverPacket {
             data,
@@ -247,9 +247,14 @@ pub struct CoverPacket {
 }
 
 impl CoverPacket {
-    /// Check if this is a cover packet (by marker)
-    pub fn is_cover_packet(data: &[u8]) -> bool {
-        !data.is_empty() && data[0] == 0xCC
+    /// Get packet size
+    pub fn len(&self) -> usize {
+        self.data.len()
+    }
+
+    /// Check if packet is empty
+    pub fn is_empty(&self) -> bool {
+        self.data.is_empty()
     }
 }
 
@@ -319,8 +324,8 @@ mod tests {
         let mut gen = CoverTrafficGenerator::new(CoverTrafficConfig::default());
         let packet = gen.generate_packet();
 
-        assert!(!packet.data.is_empty());
-        assert!(CoverPacket::is_cover_packet(&packet.data));
+        assert!(!packet.is_empty());
+        assert!(packet.len() >= gen.config.min_packet_size);
     }
 
     #[test]
