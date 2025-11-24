@@ -71,7 +71,7 @@ pub const YOUTUBE_PROFILE: ProfileStats = ProfileStats {
     name: TrafficProfile::YouTube,
     mean_size: 1100.0,
     size_std: 400.0,
-    mean_delay_log: 2.5,  // ~11ms average
+    mean_delay_log: 2.5, // ~11ms average
     delay_std: 1.5,
     outbound_ratio: 0.15, // Mostly inbound (video data)
     common_sizes: &[64, 128, 576, 1200, 1400, 1500],
@@ -84,7 +84,7 @@ pub const ZOOM_PROFILE: ProfileStats = ProfileStats {
     name: TrafficProfile::Zoom,
     mean_size: 800.0,
     size_std: 300.0,
-    mean_delay_log: 2.0,  // ~6ms average (for 30fps video)
+    mean_delay_log: 2.0, // ~6ms average (for 30fps video)
     delay_std: 0.8,
     outbound_ratio: 0.45, // Nearly symmetric
     common_sizes: &[64, 200, 400, 800, 1200],
@@ -97,7 +97,7 @@ pub const GAMING_PROFILE: ProfileStats = ProfileStats {
     name: TrafficProfile::Gaming,
     mean_size: 150.0,
     size_std: 80.0,
-    mean_delay_log: 1.5,  // ~3.5ms average (high tick rate)
+    mean_delay_log: 1.5, // ~3.5ms average (high tick rate)
     delay_std: 0.5,
     outbound_ratio: 0.50, // Symmetric
     common_sizes: &[32, 64, 128, 256, 512],
@@ -110,7 +110,7 @@ pub const BROWSING_PROFILE: ProfileStats = ProfileStats {
     name: TrafficProfile::Browsing,
     mean_size: 600.0,
     size_std: 500.0,
-    mean_delay_log: 3.5,  // ~32ms average (includes think time)
+    mean_delay_log: 3.5, // ~32ms average (includes think time)
     delay_std: 2.0,
     outbound_ratio: 0.25, // Mostly downloads
     common_sizes: &[64, 256, 512, 1024, 1400, 1500],
@@ -123,7 +123,7 @@ pub const NETFLIX_PROFILE: ProfileStats = ProfileStats {
     name: TrafficProfile::Netflix,
     mean_size: 1200.0,
     size_std: 350.0,
-    mean_delay_log: 2.3,  // ~9ms average
+    mean_delay_log: 2.3, // ~9ms average
     delay_std: 1.2,
     outbound_ratio: 0.10, // Almost all inbound
     common_sizes: &[64, 576, 1200, 1400, 1500],
@@ -138,10 +138,10 @@ mod tests {
     fn test_profile_padding() {
         let youtube = ProfileStats::for_profile(TrafficProfile::YouTube);
 
-        assert_eq!(youtube.suggested_padding(50), 14);   // -> 64
-        assert_eq!(youtube.suggested_padding(64), 0);    // already aligned
-        assert_eq!(youtube.suggested_padding(100), 28);  // -> 128
-        assert_eq!(youtube.suggested_padding(1400), 0);  // exactly on boundary
+        assert_eq!(youtube.suggested_padding(50), 14); // -> 64
+        assert_eq!(youtube.suggested_padding(64), 0); // already aligned
+        assert_eq!(youtube.suggested_padding(100), 28); // -> 128
+        assert_eq!(youtube.suggested_padding(1400), 0); // exactly on boundary
     }
 
     #[test]

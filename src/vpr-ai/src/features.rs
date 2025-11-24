@@ -35,7 +35,11 @@ pub struct PacketFeatures {
 
 impl PacketFeatures {
     /// Create features from raw packet data
-    pub fn from_packet(packet: &[u8], direction: Direction, prev_timestamp: Option<Instant>) -> Self {
+    pub fn from_packet(
+        packet: &[u8],
+        direction: Direction,
+        prev_timestamp: Option<Instant>,
+    ) -> Self {
         let now = Instant::now();
         let size_raw = packet.len();
 
@@ -91,13 +95,22 @@ impl Default for PacketContext {
 }
 
 impl PacketContext {
-    /// Create new empty context
+    /// Create new empty context with default burst threshold
     pub fn new() -> Self {
+        Self::with_burst_threshold(50.0)
+    }
+
+    /// Create context with custom burst threshold
+    ///
+    /// # Arguments
+    /// * `burst_threshold_ms` - Time gap (ms) that defines a new burst.
+    ///   Lower values detect smaller gaps as burst boundaries.
+    pub fn with_burst_threshold(burst_threshold_ms: f32) -> Self {
         Self {
             packets: VecDeque::with_capacity(CONTEXT_WINDOW_SIZE),
             burst_counter: 0,
             last_direction: None,
-            burst_threshold_ms: 50.0, // 50ms gap = new burst
+            burst_threshold_ms,
         }
     }
 
@@ -171,8 +184,10 @@ impl PacketContext {
         let mean_size = sizes.iter().sum::<f32>() / sizes.len() as f32;
         let mean_delay = delays.iter().sum::<f32>() / delays.len() as f32;
 
-        let size_variance = sizes.iter().map(|s| (s - mean_size).powi(2)).sum::<f32>() / sizes.len() as f32;
-        let delay_variance = delays.iter().map(|d| (d - mean_delay).powi(2)).sum::<f32>() / delays.len() as f32;
+        let size_variance =
+            sizes.iter().map(|s| (s - mean_size).powi(2)).sum::<f32>() / sizes.len() as f32;
+        let delay_variance =
+            delays.iter().map(|d| (d - mean_delay).powi(2)).sum::<f32>() / delays.len() as f32;
 
         let outbound_ratio = self
             .packets

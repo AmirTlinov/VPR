@@ -3,7 +3,47 @@
 //! This crate provides AI-powered traffic morphing to evade deep packet inspection.
 //! It transforms VPN traffic patterns to resemble legitimate applications like
 //! YouTube streaming, Zoom calls, or web browsing.
+//!
+//! # Architecture
+//!
+//! ```text
+//! ┌─────────────────────────────────────────────────────────────┐
+//! │                    TrafficMorpher                           │
+//! │  ┌─────────────────┐        ┌─────────────────────────────┐ │
+//! │  │ RuleBasedMorpher│        │      OnnxMorpher            │ │
+//! │  │ (fallback)      │   OR   │ (AI-powered, ~20M params)   │ │
+//! │  └────────┬────────┘        └──────────────┬──────────────┘ │
+//! │           │                                │                │
+//! │           ▼                                ▼                │
+//! │  ┌─────────────────────────────────────────────────────────┐│
+//! │  │              CoverGenerator                             ││
+//! │  │  - Profile-aware packet synthesis                       ││
+//! │  │  - Realistic payload patterns (RTP/TLS/Game)            ││
+//! │  │  - Cryptographically random content                     ││
+//! │  └─────────────────────────────────────────────────────────┘│
+//! └─────────────────────────────────────────────────────────────┘
+//! ```
+//!
+//! # Security Model
+//!
+//! Cover traffic is designed to be indistinguishable from legitimate traffic:
+//! - **Size distribution**: Matches target profile statistics
+//! - **Payload entropy**: High entropy (encrypted) with protocol-like headers
+//! - **Timing patterns**: Follows profile delay distributions
+//!
+//! # Example
+//!
+//! ```rust,ignore
+//! use vpr_ai::{TrafficProfile, TrafficMorpher, morpher::create_morpher};
+//!
+//! let mut morpher = create_morpher(TrafficProfile::YouTube, None);
+//!
+//! // Process outgoing packet
+//! let decision = morpher.morph_outgoing(&packet)?;
+//! // Apply padding, delay, and potentially inject cover traffic
+//! ```
 
+pub mod cover;
 pub mod features;
 pub mod morpher;
 pub mod profiles;
@@ -128,9 +168,18 @@ mod tests {
 
     #[test]
     fn test_profile_parsing() {
-        assert_eq!("youtube".parse::<TrafficProfile>().unwrap(), TrafficProfile::YouTube);
-        assert_eq!("ZOOM".parse::<TrafficProfile>().unwrap(), TrafficProfile::Zoom);
-        assert_eq!("gaming".parse::<TrafficProfile>().unwrap(), TrafficProfile::Gaming);
+        assert_eq!(
+            "youtube".parse::<TrafficProfile>().unwrap(),
+            TrafficProfile::YouTube
+        );
+        assert_eq!(
+            "ZOOM".parse::<TrafficProfile>().unwrap(),
+            TrafficProfile::Zoom
+        );
+        assert_eq!(
+            "gaming".parse::<TrafficProfile>().unwrap(),
+            TrafficProfile::Gaming
+        );
         assert!("unknown".parse::<TrafficProfile>().is_err());
     }
 
