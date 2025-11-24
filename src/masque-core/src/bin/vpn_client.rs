@@ -84,6 +84,11 @@ struct Args {
     /// Enable DNS leak protection (overwrites /etc/resolv.conf)
     #[arg(long)]
     dns_protection: bool,
+
+    /// Custom DNS servers to use with DNS protection (comma-separated)
+    /// If not specified, uses DNS servers from VPN config
+    #[arg(long, value_delimiter = ',')]
+    dns_servers: Vec<Ipv4Addr>,
 }
 
 #[tokio::main]
@@ -214,10 +219,21 @@ async fn run_vpn_client(args: Args) -> Result<()> {
 
     // Enable DNS leak protection if requested
     let mut dns_protection = DnsProtection::new();
-    if args.dns_protection && !vpn_config.dns_servers.is_empty() {
-        dns_protection
-            .enable(&vpn_config.dns_servers)
-            .context("enabling DNS protection")?;
+    if args.dns_protection {
+        // Use custom DNS servers if provided, otherwise use VPN config
+        let dns_servers = if !args.dns_servers.is_empty() {
+            &args.dns_servers
+        } else {
+            &vpn_config.dns_servers
+        };
+
+        if !dns_servers.is_empty() {
+            dns_protection
+                .enable(dns_servers)
+                .context("enabling DNS protection")?;
+        } else {
+            tracing::warn!("DNS protection enabled but no DNS servers configured");
+        }
     }
 
     // Start VPN tunnel (dns_protection will auto-restore on drop)

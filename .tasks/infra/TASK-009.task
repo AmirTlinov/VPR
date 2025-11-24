@@ -1,0 +1,55 @@
+---
+assignee: ai
+component: null
+created: 2025-11-24 04:28
+domain: infra
+id: TASK-009
+parent: ROOT
+phase: null
+priority: MEDIUM
+progress: 0
+status: FAIL
+tags: []
+title: E2E acceptance pipeline
+updated: 2025-11-24 04:28
+---
+
+# E2E acceptance pipeline
+
+## Описание
+E2E/acceptance контур: развёртывание, туннель, MASQUE, PKI, негативные сценарии, ротации и CI
+
+## Подзадачи
+- [ ] Поднять deploy&connect harness в netns/VM с systemd/manifest
+  - Критерии: Автоматический install (cert+Noise+manifest), запуск клиента, ожидание HEALTH_REPORT с suspicion<0.35
+  - Тесты: apply_shell ./scripts/e2e_harness.sh --health
+  - Блокеры: Нужно выбрать изоляцию netns или VM
+  - Чекпоинты: Критерии=TODO; Тесты=TODO; Блокеры=TODO
+- [ ] TUN/TAP e2e с маршрутом/MTU/NAT и leak-check
+  - Критерии: ping/HTTP/iperf ходят только через туннель, iptables вне туннеля пуст
+  - Тесты: apply_shell ./scripts/e2e_tun.sh
+  - Блокеры: Harness из подпункта 1
+  - Чекпоинты: Критерии=TODO; Тесты=TODO; Блокеры=TODO
+- [ ] MASQUE CONNECT-UDP over H3 с DoH-capsule→QUIC fallback
+  - Критерии: Реальная цель достигается, целостность и таймауты на каждой ступени фиксируются
+  - Тесты: apply_shell ./scripts/e2e_masque.sh
+  - Блокеры: Harness из подпункта 1
+  - Чекпоинты: Критерии=TODO; Тесты=TODO; Блокеры=TODO
+- [ ] PKI/bootstrap happy+negative кейсы
+  - Критерии: root/intermediate выпуск, manifest проверяется; подмена/старая версия/битая подпись приводит к отказу
+  - Тесты: apply_shell ./scripts/e2e_pki.sh
+  - Блокеры: Готовность openssl/rcgen артефактов
+  - Чекпоинты: Критерии=TODO; Тесты=TODO; Блокеры=TODO
+- [ ] Ротации+мультилинк+CI метки e2e/smoke
+  - Критерии: Ротация фронта/серта/Noise/ODoH без разрыва; дроп одного veth даёт failover <3с; CI публикует pcap/логи/health.json
+  - Тесты: apply_shell ./scripts/e2e_failover.sh; ci e2e
+  - Блокеры: Предыдущие подпункты
+  - Чекпоинты: Критерии=TODO; Тесты=TODO; Блокеры=TODO
+
+## Критерии успеха
+- cargo test --workspace
+- make lint
+
+## Риски
+- Высокая сложность сетевых сценариев
+- Длительные e2e тесты

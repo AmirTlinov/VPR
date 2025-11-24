@@ -392,6 +392,24 @@ impl DnsProtection {
         let resolv_path = std::path::Path::new("/etc/resolv.conf");
         let backup_path = std::path::PathBuf::from("/tmp/vpr-resolv.conf.bak");
 
+        // Check if we have write permissions (typically requires root)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if let Ok(meta) = resolv_path.metadata() {
+                // Check if we're root (uid 0) or owner
+                let euid = unsafe { libc::geteuid() };
+                let file_uid = meta.uid();
+                if euid != 0 && euid != file_uid {
+                    bail!(
+                        "DNS protection requires root privileges (euid={}, file owner={})",
+                        euid,
+                        file_uid
+                    );
+                }
+            }
+        }
+
         // Backup original resolv.conf
         if resolv_path.exists() {
             std::fs::copy(resolv_path, &backup_path).context("backing up resolv.conf")?;

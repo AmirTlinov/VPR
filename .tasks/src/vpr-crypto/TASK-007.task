@@ -7,8 +7,8 @@ id: TASK-007
 parent: ROOT
 phase: null
 priority: HIGH
-progress: 0
-status: FAIL
+progress: 33
+status: WARN
 tags: []
 title: 'CRIT-001..002: crypto hygiene'
 updated: 2025-11-24 04:26
@@ -20,7 +20,7 @@ updated: 2025-11-24 04:26
 Замена RNG на OsRng и Zeroize ML-KEM секрета в HybridKeypair
 
 ## Подзадачи
-- [ ] CRIT-001: заменить все rand::random()/thread_rng на OsRng в vpr-crypto
+- [x] CRIT-001: заменить все rand::random()/thread_rng на OsRng в vpr-crypto
   - Критерии: Генерация X25519/Noise использует только rand::rngs::OsRng; Нет вызовов rand::random()/thread_rng в prod-коде модуля; cargo test -p vpr-crypto проходит без флапов
   - Тесты: cargo test -p vpr-crypto --lib; rg "thread_rng\|rand::random" src/vpr-crypto -g'*.rs' --quiet && false || true
   - Блокеры: Убедиться в совместимости API OsRng с существующими вызовами; Проверить влияние на deterministic тесты

@@ -2999,6 +2999,7 @@ dependencies = [
  "h3-quinn",
  "hex",
  "http",
+ "libc",
  "nix",
  "predicates",
  "quinn",
