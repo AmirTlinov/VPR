@@ -8,7 +8,7 @@ parent: ROOT
 phase: null
 priority: MEDIUM
 progress: 0
-status: FAIL
+status: WARN
 tags: []
 title: E2E acceptance pipeline
 updated: 2025-11-24 04:28

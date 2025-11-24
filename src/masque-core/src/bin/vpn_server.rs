@@ -22,6 +22,7 @@ use tracing_subscriber::FmtSubscriber;
 
 use masque_core::hybrid_handshake::HybridServer;
 use masque_core::quic_stream::QuicBiStream;
+use masque_core::rng;
 use masque_core::tun::{enable_ip_forwarding, setup_nat, TunConfig, TunDevice};
 use masque_core::vpn_config::{ConfigAck, VpnConfig};
 use masque_core::vpn_tunnel::PacketEncapsulator;
@@ -230,9 +231,7 @@ fn generate_session_id() -> String {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    use rand::rngs::OsRng;
-    use rand::RngCore;
-    let random: u64 = OsRng.next_u64();
+    let random: u64 = rng::random_u64();
     format!("{:x}{:016x}", timestamp, random)
 }
 
@@ -605,4 +604,22 @@ fn load_key(path: &PathBuf) -> Result<PrivateKeyDer<'static>> {
     private_key(&mut reader)
         .context("parsing private key")?
         .ok_or_else(|| anyhow::anyhow!("no private key found in {:?}", path))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generate_session_id_uses_osrng() {
+        rng::enable_counting();
+        rng::reset_osrng_calls();
+        let id = generate_session_id();
+        assert!(
+            rng::osrng_call_count() >= 1,
+            "Session ID generator must draw from OsRng"
+        );
+        // Ensure formatting produced non-empty hex string
+        assert!(id.len() >= 24);
+    }
 }

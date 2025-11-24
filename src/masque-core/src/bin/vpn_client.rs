@@ -19,6 +19,7 @@ use tracing_subscriber::FmtSubscriber;
 
 use masque_core::hybrid_handshake::HybridClient;
 use masque_core::quic_stream::QuicBiStream;
+use masque_core::tls_fingerprint::{Ja3Fingerprint, TlsProfile};
 use masque_core::tun::{setup_routing, DnsProtection, TunConfig, TunDevice};
 use masque_core::vpn_config::{ConfigAck, VpnConfig};
 use masque_core::vpn_tunnel::{
@@ -89,6 +90,10 @@ struct Args {
     /// If not specified, uses DNS servers from VPN config
     #[arg(long, value_delimiter = ',')]
     dns_servers: Vec<Ipv4Addr>,
+
+    /// TLS fingerprint profile to mimic (chrome, firefox, safari, random)
+    #[arg(long, default_value = "chrome")]
+    tls_profile: String,
 }
 
 #[tokio::main]
@@ -126,6 +131,20 @@ async fn run_vpn_client(args: Args) -> Result<()> {
         .server
         .parse()
         .with_context(|| format!("parsing server address: {}", args.server))?;
+
+    // Parse TLS profile
+    let tls_profile: TlsProfile = args.tls_profile.parse().unwrap_or_else(|_| {
+        tracing::warn!(profile = %args.tls_profile, "Unknown TLS profile, using Chrome");
+        TlsProfile::Chrome
+    });
+
+    // Log JA3 fingerprint for debugging
+    let ja3 = Ja3Fingerprint::from_profile(&tls_profile);
+    info!(
+        profile = %tls_profile,
+        ja3_hash = %ja3.to_ja3_hash(),
+        "TLS fingerprint configured"
+    );
 
     // Build QUIC client config
     let quic_config = build_quic_config(args.insecure, args.idle_timeout)?;
