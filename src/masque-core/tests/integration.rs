@@ -32,13 +32,11 @@ fn spawn_echo_tcp() -> SocketAddr {
     let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
     std::thread::spawn(move || {
         let listener = TcpListener::bind(addr).unwrap();
-        for stream in listener.incoming() {
-            if let Ok(mut stream) = stream {
-                let mut buf = [0u8; 1024];
-                if let Ok(n) = stream.read(&mut buf) {
-                    if n > 0 {
-                        let _ = stream.write_all(&buf[..n]);
-                    }
+        for mut stream in listener.incoming().flatten() {
+            let mut buf = [0u8; 1024];
+            if let Ok(n) = stream.read(&mut buf) {
+                if n > 0 {
+                    let _ = stream.write_all(&buf[..n]);
                 }
             }
         }
@@ -160,6 +158,7 @@ async fn tls_tcp_end_to_end() {
     assert!(predicates::str::contains("hello world").eval(&stdout));
 
     let _ = server.kill();
+    let _ = server.wait();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -216,6 +215,7 @@ async fn quic_tcp_end_to_end() {
     assert!(predicates::str::contains("quic echo").eval(&stdout));
 
     let _ = server.kill();
+    let _ = server.wait();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -286,4 +286,5 @@ async fn quic_udp_end_to_end() {
 
     let _ = client.kill();
     let _ = server.kill();
+    let _ = server.wait();
 }

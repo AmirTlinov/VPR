@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 use assert_cmd::cargo::cargo_bin;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use quinn::{ClientConfig, Endpoint};
@@ -9,7 +10,6 @@ use std::process::{Child, Stdio};
 use std::sync::Arc;
 use std::time::Duration;
 use tempfile::TempDir;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::time::{sleep, timeout};
 
 fn next_port() -> u16 {
@@ -130,6 +130,7 @@ async fn doh_roundtrip_basic() {
     assert!(body.windows(4).any(|w| w == [1, 2, 3, 4]));
 
     let _ = gateway.kill();
+    let _ = gateway.wait();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -166,14 +167,11 @@ async fn doq_roundtrip_basic() {
     let connection = {
         let mut attempt = None;
         for _ in 0..12 {
-            match endpoint.connect(server_addr, "localhost") {
-                Ok(conn) => {
-                    if let Ok(Ok(c)) = timeout(Duration::from_millis(500), conn).await {
-                        attempt = Some(c);
-                        break;
-                    }
+            if let Ok(conn) = endpoint.connect(server_addr, "localhost") {
+                if let Ok(Ok(c)) = timeout(Duration::from_millis(500), conn).await {
+                    attempt = Some(c);
+                    break;
                 }
-                Err(_) => {}
             }
             sleep(Duration::from_millis(100)).await;
         }
@@ -204,6 +202,7 @@ async fn doq_roundtrip_basic() {
     assert!(resp.windows(4).any(|w| w == [1, 2, 3, 4]));
 
     let _ = gateway.kill();
+    let _ = gateway.wait();
 }
 
 /// Insecure verifier for test purposes (DoQ self-signed)

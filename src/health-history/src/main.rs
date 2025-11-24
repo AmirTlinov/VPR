@@ -71,7 +71,7 @@ fn main() -> Result<()> {
             .and_then(|v| v.as_array())
             .map(|arr| {
                 arr.iter()
-                    .map(|entry| format_transport(entry))
+                    .map(format_transport)
                     .collect::<Vec<_>>()
                     .join(", ")
             })

@@ -3,6 +3,7 @@
 //! Tests the model's ability to evade detection by paranoid ISPs.
 
 use crate::dpi_simulator::{DpiConfig, DpiVerdict, ParanoidDpi};
+#[allow(unused_imports)] // Used in test functions within this module
 use crate::morpher::{create_morpher_with_config, MorpherConfig, RuleBasedMorpher};
 use crate::{MorphDecision, TrafficMorpher, TrafficProfile};
 
@@ -453,7 +454,7 @@ mod tests {
         let (passed, msg) = harness.quick_test();
         println!("{}", msg);
         // Note: We don't assert pass here - this is for evaluation
-        assert!(passed || !passed); // Always passes - for diagnostics only
+        let _ = passed; // Diagnostic only - result is logged above
     }
 
     #[test]
@@ -617,7 +618,12 @@ mod tests {
 
         // Final verdict: YouTube vs Paranoid DPI should have <50% detection
         let youtube = TrafficScenario::youtube_streaming();
-        let final_result = test_with_morpher(&youtube, morpher.as_mut(), DpiConfig::paranoid(), "Paranoid");
+        let final_result = test_with_morpher(
+            &youtube,
+            morpher.as_mut(),
+            DpiConfig::paranoid(),
+            "Paranoid",
+        );
 
         println!("\n📊 Final Score:");
         println!(
@@ -647,11 +653,8 @@ mod tests {
 
         let config = MorpherConfig::high_anonymity();
         let mut rule_morpher = RuleBasedMorpher::with_config(TrafficProfile::YouTube, config);
-        let mut onnx_morpher = create_morpher_with_config(
-            TrafficProfile::YouTube,
-            Some(&model_path),
-            config,
-        );
+        let mut onnx_morpher =
+            create_morpher_with_config(TrafficProfile::YouTube, Some(&model_path), config);
 
         let scenario = TrafficScenario::youtube_streaming();
         let dpi = DpiConfig::china_gfw();
