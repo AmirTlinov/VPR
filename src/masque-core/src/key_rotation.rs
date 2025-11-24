@@ -179,6 +179,13 @@ impl SessionKeyState {
 
         let _guard = self.rekey_lock.lock().expect("rekey lock poisoned");
         if let Some(reason) = self.rotation_reason() {
+            info!(
+                target: "telemetry.rotation.session",
+                ?reason,
+                bytes = self.bytes_processed(),
+                age_secs = self.age().as_secs_f64(),
+                "Session key rotation triggered"
+            );
             on_rotate(reason);
             self.reset_unlocked();
         }
@@ -339,12 +346,14 @@ impl KeyRotationManager {
     /// Mark Noise key as rotated
     pub async fn rotate_noise_key(&self) {
         self.noise_state.write().await.reset();
+        info!(target: "telemetry.rotation.noise", "Noise static key rotated");
         let _ = self.event_tx.send(RotationEvent::NoiseKey);
     }
 
     /// Mark TLS cert as rotated
     pub async fn rotate_tls_cert(&self) {
         self.tls_state.write().await.reset();
+        info!(target: "telemetry.rotation.tls", "TLS certificate rotated");
         let _ = self.event_tx.send(RotationEvent::TlsCert);
     }
 
@@ -406,6 +415,15 @@ pub async fn rotation_check_task(
     loop {
         tokio::select! {
             _ = interval.tick() => {
+                let rotated_sessions = manager.check_sessions().await;
+                if !rotated_sessions.is_empty() {
+                    info!(
+                        target: "telemetry.rotation.session",
+                        count = rotated_sessions.len(),
+                        "Sessions reached rotation threshold"
+                    );
+                }
+
                 // Check long-term keys
                 if manager.check_noise_key().await {
                     warn!("Noise static key rotation is DUE - manual rotation required");

@@ -10,14 +10,15 @@ use quinn::{Endpoint, ServerConfig, TransportConfig};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls_pemfile::{certs, private_key};
 use std::collections::HashMap;
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::BufReader;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{broadcast, mpsc, RwLock};
+use tokio::time::interval;
 use tokio::time::sleep;
 use tracing::{debug, error, info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
@@ -31,8 +32,8 @@ use masque_core::padding::{Padder, PaddingConfig, PaddingStrategy};
 use masque_core::probe_protection::{ProbeDetection, ProbeProtectionConfig, ProbeProtector};
 use masque_core::quic_stream::QuicBiStream;
 use masque_core::replay_protection::NonceCache;
+use masque_core::tls_fingerprint::TlsProfile;
 use masque_core::rng;
-use masque_core::tls_fingerprint::{GreaseMode, Ja3Fingerprint, Ja3sFingerprint, Ja4Fingerprint, TlsProfile};
 use masque_core::tun::{enable_ip_forwarding, setup_nat, TunConfig, TunDevice};
 use masque_core::vpn_config::{ConfigAck, VpnConfig};
 use masque_core::vpn_tunnel::PacketEncapsulator;
@@ -114,6 +115,14 @@ struct Args {
     #[arg(long, default_value = "10000")]
     probe_max_handshake_ms: u64,
 
+    /// Write probe metrics to this path in Prometheus text format
+    #[arg(long)]
+    probe_metrics_path: Option<PathBuf>,
+
+    /// Interval for probe metrics export (seconds)
+    #[arg(long, default_value = "30")]
+    probe_metrics_interval: u64,
+
     /// Directory containing Noise keys
     #[arg(long, default_value = ".")]
     noise_dir: PathBuf,
@@ -150,15 +159,18 @@ struct Args {
     #[arg(long, default_value = "1073741824")]
     session_rekey_bytes: u64,
 
-    /// TLS fingerprint profile to mimic (chrome, firefox, safari, random)
+    /// TLS fingerprint profile to mimic (unused placeholder)
+    #[allow(dead_code)]
     #[arg(long, default_value = "chrome")]
     tls_profile: String,
 
-    /// GREASE mode: random|deterministic
+    /// GREASE mode: random|deterministic (unused placeholder)
+    #[allow(dead_code)]
     #[arg(long, default_value = "random")]
     tls_grease_mode: String,
 
-    /// GREASE seed used when deterministic mode is selected
+    /// GREASE seed used when deterministic mode is selected (unused placeholder)
+    #[allow(dead_code)]
     #[arg(long, default_value_t = 0)]
     tls_grease_seed: u64,
 }
@@ -307,7 +319,6 @@ impl ServerState {
 
 /// Generate cryptographically secure session ID
 fn generate_session_id() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
     // Use 0 as fallback if system time is before UNIX epoch (should never happen)
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -315,22 +326,6 @@ fn generate_session_id() -> String {
         .unwrap_or(0);
     let random: u64 = rng::random_u64();
     format!("{:x}{:016x}", timestamp, random)
-}
-
-fn parse_grease_mode(mode: &str, seed: u64) -> GreaseMode {
-    match mode.to_ascii_lowercase().as_str() {
-        "deterministic" | "det" | "fixed" => GreaseMode::Deterministic(seed),
-        _ => GreaseMode::Random,
-    }
-}
-
-fn preferred_tls13_cipher(profile: &TlsProfile) -> u16 {
-    profile
-        .cipher_suites()
-        .into_iter()
-        .find(|c| (*c & 0xff00) == 0x1300)
-        .or_else(|| profile.cipher_suites().first().copied())
-        .unwrap_or(0x1301)
 }
 
 #[tokio::main]
@@ -371,6 +366,12 @@ async fn run_vpn_server(args: Args) -> Result<()> {
 
     let probe_protector = Arc::new(build_probe_protector(&args));
 
+    if let Some(path) = args.probe_metrics_path.clone() {
+        let pp = probe_protector.clone();
+        let interval = args.probe_metrics_interval;
+        tokio::spawn(async move { probe_metrics_task(pp, path, interval).await });
+    }
+
     let hybrid_server = Arc::new(
         HybridServer::from_secret(&noise_keypair.secret_bytes())
             .with_replay_protection(replay_cache.clone()),
@@ -396,6 +397,12 @@ async fn run_vpn_server(args: Args) -> Result<()> {
     // Load TLS certificates
     let certs = load_certs(&args.cert)?;
     let key = load_key(&args.key)?;
+
+    let tls_profile: TlsProfile = args
+        .tls_profile
+        .parse()
+        .unwrap_or(TlsProfile::Chrome);
+    info!(profile = %tls_profile, "TLS profile configured (server)");
 
     // Create TUN device
     let tun_config = TunConfig {
@@ -426,27 +433,14 @@ async fn run_vpn_server(args: Args) -> Result<()> {
         setup_nat(tun.name(), iface).context("setting up NAT")?;
     }
 
-    // Build QUIC server config
+    // TLS fingerprint profile
     let tls_profile: TlsProfile = args
         .tls_profile
         .parse()
         .unwrap_or_else(|_| TlsProfile::Chrome);
-    let grease_mode = parse_grease_mode(&args.tls_grease_mode, args.tls_grease_seed);
+    info!(profile = %tls_profile, "TLS server fingerprint configured");
 
-    let ja3 = Ja3Fingerprint::from_profile_with_grease(&tls_profile, grease_mode);
-    let selected_cipher = preferred_tls13_cipher(&tls_profile);
-    let ja3s = Ja3sFingerprint::from_profile_with_grease(&tls_profile, selected_cipher, grease_mode);
-    let ja4 = Ja4Fingerprint::from_profile(&tls_profile);
-    info!(
-        profile = %tls_profile,
-        grease = ?grease_mode,
-        ja3 = %ja3.to_ja3_hash(),
-        ja3s = %ja3s.to_ja3s_hash(),
-        ja4 = %ja4.to_string(),
-        selected_cipher = format!("0x{selected_cipher:04x}"),
-        "TLS server fingerprint configured"
-    );
-
+    // Build QUIC server config
     let server_config = build_server_config(certs, key, args.idle_timeout, tls_profile)?;
 
     // Create server endpoint
@@ -486,9 +480,6 @@ async fn run_vpn_server(args: Args) -> Result<()> {
         let rotation = rotation_manager.clone();
         let probe = probe_protector.clone();
         let padding_strategy = padding_strategy.clone();
-        let padding_max_jitter_us = padding_max_jitter_us;
-        let padding_min_size = padding_min_size;
-        let padding_mtu = padding_mtu;
         let cover_rate = args.cover_traffic_rate;
         let cover_pattern = args.cover_traffic_pattern.clone();
         let session_rekey_seconds = args.session_rekey_seconds;
@@ -543,6 +534,7 @@ async fn run_vpn_server(args: Args) -> Result<()> {
 }
 
 /// Handle a single VPN client connection
+#[allow(clippy::too_many_arguments)]
 async fn handle_vpn_client_with_config(
     connection: quinn::Connection,
     hybrid_server: Arc<HybridServer>,
@@ -940,19 +932,21 @@ fn build_server_config(
     transport_config.datagram_receive_buffer_size(Some(65536));
     transport_config.datagram_send_buffer_size(65536);
 
-    let mut rustls_config = rustls::ServerConfig::builder_with_provider(
-        rustls::crypto::ring::default_provider(),
-    )
-    .with_cipher_suites(tls_profile.rustls_cipher_suites())
-    .with_kx_groups(&tls_profile.rustls_kx_groups())
-    .with_protocol_versions(&[&rustls::version::TLS13])?
-    .with_no_client_auth()
-    .with_single_cert(certs, key)?;
+    let provider = rustls::crypto::CryptoProvider {
+        cipher_suites: tls_profile.rustls_cipher_suites(),
+        kx_groups: tls_profile.rustls_kx_groups(),
+        ..rustls::crypto::ring::default_provider()
+    };
+
+    let mut rustls_config = rustls::ServerConfig::builder_with_provider(Arc::new(provider))
+        .with_protocol_versions(&[&rustls::version::TLS13])?
+        .with_no_client_auth()
+        .with_single_cert(certs, key)?;
 
     rustls_config.alpn_protocols = vec![b"h3".to_vec(), b"masque".to_vec()];
     rustls_config.max_early_data_size = u32::MAX;
 
-    let crypto = quinn::crypto::rustls::ServerConfig::try_from(Arc::new(rustls_config))
+    let crypto = quinn::crypto::rustls::QuicServerConfig::try_from(Arc::new(rustls_config))
         .context("building rustls QUIC server config")?;
 
     let mut server_config = ServerConfig::with_crypto(Arc::new(crypto));
@@ -1046,6 +1040,27 @@ fn build_probe_protector(args: &Args) -> ProbeProtector {
     };
 
     ProbeProtector::new(config)
+}
+
+async fn probe_metrics_task(protector: Arc<ProbeProtector>, path: PathBuf, interval_secs: u64) {
+    let mut ticker = interval(Duration::from_secs(interval_secs.max(1)));
+    loop {
+        ticker.tick().await;
+        let path = path.clone();
+        let protector_clone = protector.clone();
+        if let Err(e) = tokio::task::spawn_blocking(move || {
+            let content = protector_clone.metrics().to_prometheus("probe");
+            let tmp = path.with_extension(".tmp");
+            fs::write(&tmp, content.as_bytes())?;
+            fs::rename(&tmp, &path)?;
+            Ok::<(), std::io::Error>(())
+        })
+        .await
+        .unwrap_or_else(|e| Err(std::io::Error::new(std::io::ErrorKind::Other, e)))
+        {
+            warn!(%e, "Failed to persist probe metrics");
+        }
+    }
 }
 
 fn load_certs(path: &PathBuf) -> Result<Vec<CertificateDer<'static>>> {
