@@ -15,7 +15,7 @@ use crate::{MorphDecision, Result, TrafficMorpher, TrafficProfile};
 use ort::session::{builder::GraphOptimizationLevel, Session};
 
 /// Configuration for morpher behavior
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct MorpherConfig {
     /// Threshold for burst detection (ms gap = new burst)
     pub burst_threshold_ms: f32,
@@ -115,10 +115,9 @@ impl RuleBasedMorpher {
     /// Compares current traffic statistics with target profile and
     /// returns confidence score (0.0 - 1.0) indicating match quality.
     ///
-    /// # Security: Constant-time computation to prevent timing side-channels
-    ///
-    /// All code paths perform the same operations regardless of input values.
-    /// Early returns are avoided to prevent timing leaks.
+    /// Note: This uses data-independent control flow (no early returns),
+    /// but is not cryptographically constant-time. Timing side-channels
+    /// are not a concern here as confidence scores are not secret.
     fn calculate_confidence(&self, stats: &TrafficStats) -> f32 {
         let profile = &self.profile_stats;
 
