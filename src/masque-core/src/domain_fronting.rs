@@ -4,7 +4,6 @@
 //! The client connects to a CDN using the CDN's domain in TLS SNI,
 //! but sends the real target domain in the HTTP Host header.
 
-use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::Duration;

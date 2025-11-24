@@ -6,12 +6,11 @@
 //! - WebSocket over TLS (fallback for restrictive networks)
 //! - WebRTC DataChannel (fallback, penetrates most firewalls)
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 use async_trait::async_trait;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 

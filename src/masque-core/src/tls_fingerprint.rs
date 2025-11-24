@@ -8,7 +8,10 @@
 //!
 //! Example Chrome JA3: `771,4865-4866-4867-49195-49199-49196-49200-52393-52392-49171-49172-156-157-47-53,0-23-65281-10-11-35-16-5-13-18-51-45-43-27-17513,29-23-24,0`
 
-use md5::Context as Md5Context;
+use rustls::crypto::ring::cipher_suite::*;
+use rustls::crypto::ring::kx_group;
+use rustls::crypto::SupportedKxGroup;
+use rustls::SupportedCipherSuite;
 use std::fmt;
 
 /// TLS version constants
@@ -290,6 +293,81 @@ impl TlsProfile {
     /// Get EC point formats for this profile
     pub fn ec_point_formats(&self) -> Vec<u8> {
         vec![0] // uncompressed for all browsers
+    }
+}
+
+impl TlsProfile {
+    pub fn rustls_cipher_suites(&self) -> Vec<SupportedCipherSuite> {
+        let suites = match self {
+            TlsProfile::Chrome => vec![
+                TLS13_AES_128_GCM_SHA256,
+                TLS13_AES_256_GCM_SHA384,
+                TLS13_CHACHA20_POLY1305_SHA256,
+                TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+                TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+                TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+                TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+                TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+                TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
+            ],
+            TlsProfile::Firefox => vec![
+                TLS13_AES_128_GCM_SHA256,
+                TLS13_CHACHA20_POLY1305_SHA256,
+                TLS13_AES_256_GCM_SHA384,
+                TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+                TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+                TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+                TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
+                TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+                TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+            ],
+            TlsProfile::Safari => vec![
+                TLS13_AES_128_GCM_SHA256,
+                TLS13_AES_256_GCM_SHA384,
+                TLS13_CHACHA20_POLY1305_SHA256,
+                TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+                TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+                TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+                TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+                TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+                TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
+            ],
+            TlsProfile::Random | TlsProfile::Custom => vec![
+                TLS13_AES_128_GCM_SHA256,
+                TLS13_AES_256_GCM_SHA384,
+                TLS13_CHACHA20_POLY1305_SHA256,
+                TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+                TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+                TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+                TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
+            ],
+        };
+        suites
+    }
+
+    pub fn rustls_kx_groups(&self) -> Vec<&'static dyn SupportedKxGroup> {
+        match self {
+            TlsProfile::Chrome => vec![
+                kx_group::X25519,
+                kx_group::SECP256R1,
+                kx_group::SECP384R1,
+            ],
+            TlsProfile::Firefox => vec![
+                kx_group::X25519,
+                kx_group::SECP256R1,
+                kx_group::SECP384R1,
+            ],
+            TlsProfile::Safari => vec![
+                kx_group::X25519,
+                kx_group::SECP256R1,
+                kx_group::SECP384R1,
+            ],
+            TlsProfile::Random | TlsProfile::Custom => vec![
+                kx_group::X25519,
+                kx_group::SECP256R1,
+                kx_group::SECP384R1,
+            ],
+        }
     }
 }
 

@@ -147,7 +147,7 @@ async fn run_vpn_client(args: Args) -> Result<()> {
     );
 
     // Build QUIC client config
-    let quic_config = build_quic_config(args.insecure, args.idle_timeout)?;
+    let quic_config = build_quic_config(args.insecure, args.idle_timeout, tls_profile)?;
 
     // Bind local endpoint
     let mut endpoint = Endpoint::client("0.0.0.0:0".parse()?)?;
@@ -324,7 +324,11 @@ async fn run_vpn_tunnel(tun: TunDevice, connection: quinn::Connection) -> Result
     Ok(())
 }
 
-fn build_quic_config(insecure: bool, idle_timeout: u64) -> Result<QuinnClientConfig> {
+fn build_quic_config(
+    insecure: bool,
+    idle_timeout: u64,
+    tls_profile: TlsProfile,
+) -> Result<QuinnClientConfig> {
     let mut transport_config = TransportConfig::default();
     transport_config.max_idle_timeout(Some(Duration::from_secs(idle_timeout).try_into()?));
 
@@ -332,7 +336,7 @@ fn build_quic_config(insecure: bool, idle_timeout: u64) -> Result<QuinnClientCon
     transport_config.datagram_receive_buffer_size(Some(65536));
     transport_config.datagram_send_buffer_size(65536);
 
-    let crypto_config = if insecure {
+    let mut crypto_config = if insecure {
         rustls::ClientConfig::builder()
             .dangerous()
             .with_custom_certificate_verifier(Arc::new(InsecureVerifier))
@@ -345,6 +349,10 @@ fn build_quic_config(insecure: bool, idle_timeout: u64) -> Result<QuinnClientCon
             .with_root_certificates(roots)
             .with_no_client_auth()
     };
+
+    // Apply TLS fingerprint profile: cipher suites and kx groups
+    crypto_config.cipher_suites = tls_profile.rustls_cipher_suites();
+    crypto_config.kx_groups = tls_profile.rustls_kx_groups();
 
     let mut client_config = QuinnClientConfig::new(Arc::new(
         quinn::crypto::rustls::QuicClientConfig::try_from(crypto_config)?,
