@@ -1,5 +1,6 @@
 pub mod cover_traffic;
 pub mod h3_server;
+pub mod key_rotation;
 pub mod hybrid_handshake;
 pub mod masque;
 pub mod noise_keys;
