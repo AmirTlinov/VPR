@@ -62,7 +62,8 @@ fn spawn_echo_udp() -> SocketAddr {
 }
 
 async fn wait_port(addr: SocketAddr) {
-    for _ in 0..30 {
+    // Increased retries for CI environments
+    for _ in 0..50 {
         if TcpStream::connect(addr).await.is_ok() {
             return;
         }

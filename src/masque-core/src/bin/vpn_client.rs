@@ -19,7 +19,7 @@ use tracing_subscriber::FmtSubscriber;
 
 use masque_core::hybrid_handshake::HybridClient;
 use masque_core::quic_stream::QuicBiStream;
-use masque_core::tun::{setup_routing, TunConfig, TunDevice};
+use masque_core::tun::{setup_routing, DnsProtection, TunConfig, TunDevice};
 use masque_core::vpn_config::{ConfigAck, VpnConfig};
 use masque_core::vpn_tunnel::{
     channel_to_tun, forward_quic_to_tun, forward_tun_to_quic, tun_to_channel, PacketEncapsulator,
@@ -80,6 +80,10 @@ struct Args {
     /// Idle timeout in seconds
     #[arg(long, default_value = "30")]
     idle_timeout: u64,
+
+    /// Enable DNS leak protection (overwrites /etc/resolv.conf)
+    #[arg(long)]
+    dns_protection: bool,
 }
 
 #[tokio::main]
@@ -208,8 +212,23 @@ async fn run_vpn_client(args: Args) -> Result<()> {
         setup_routing(tun.name(), vpn_config.gateway).context("setting up routing")?;
     }
 
-    // Start VPN tunnel
-    run_vpn_tunnel(tun, connection).await
+    // Enable DNS leak protection if requested
+    let mut dns_protection = DnsProtection::new();
+    if args.dns_protection && !vpn_config.dns_servers.is_empty() {
+        dns_protection
+            .enable(&vpn_config.dns_servers)
+            .context("enabling DNS protection")?;
+    }
+
+    // Start VPN tunnel (dns_protection will auto-restore on drop)
+    let result = run_vpn_tunnel(tun, connection).await;
+
+    // Explicitly disable DNS protection on exit
+    if dns_protection.is_active() {
+        let _ = dns_protection.disable();
+    }
+
+    result
 }
 
 async fn run_vpn_tunnel(tun: TunDevice, connection: quinn::Connection) -> Result<()> {

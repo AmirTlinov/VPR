@@ -366,6 +366,94 @@ pub fn setup_nat(tun_name: &str, outbound_iface: &str) -> Result<()> {
     Ok(())
 }
 
+/// DNS leak protection configuration
+pub struct DnsProtection {
+    /// Original resolv.conf backup
+    backup_path: Option<std::path::PathBuf>,
+    /// Whether protection is active
+    active: bool,
+}
+
+impl DnsProtection {
+    /// Create new DNS protection instance
+    pub fn new() -> Self {
+        Self {
+            backup_path: None,
+            active: false,
+        }
+    }
+
+    /// Enable DNS leak protection with specified DNS servers
+    pub fn enable(&mut self, dns_servers: &[Ipv4Addr]) -> Result<()> {
+        if self.active {
+            return Ok(());
+        }
+
+        let resolv_path = std::path::Path::new("/etc/resolv.conf");
+        let backup_path = std::path::PathBuf::from("/tmp/vpr-resolv.conf.bak");
+
+        // Backup original resolv.conf
+        if resolv_path.exists() {
+            std::fs::copy(resolv_path, &backup_path).context("backing up resolv.conf")?;
+            self.backup_path = Some(backup_path);
+        }
+
+        // Write new resolv.conf with VPN DNS servers
+        let mut content = String::from("# VPR VPN DNS configuration\n");
+        for dns in dns_servers {
+            content.push_str(&format!("nameserver {}\n", dns));
+        }
+
+        std::fs::write(resolv_path, &content).context("writing resolv.conf")?;
+
+        self.active = true;
+        info!(dns_servers = ?dns_servers, "DNS leak protection enabled");
+        Ok(())
+    }
+
+    /// Restore original DNS configuration
+    pub fn disable(&mut self) -> Result<()> {
+        if !self.active {
+            return Ok(());
+        }
+
+        let resolv_path = std::path::Path::new("/etc/resolv.conf");
+
+        if let Some(backup) = &self.backup_path {
+            if backup.exists() {
+                std::fs::copy(backup, resolv_path).context("restoring resolv.conf")?;
+                let _ = std::fs::remove_file(backup);
+            }
+        }
+
+        self.active = false;
+        self.backup_path = None;
+        info!("DNS leak protection disabled, original config restored");
+        Ok(())
+    }
+
+    /// Check if DNS protection is active
+    pub fn is_active(&self) -> bool {
+        self.active
+    }
+}
+
+impl Default for DnsProtection {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for DnsProtection {
+    fn drop(&mut self) {
+        if self.active {
+            if let Err(e) = self.disable() {
+                warn!(%e, "Failed to restore DNS on drop");
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

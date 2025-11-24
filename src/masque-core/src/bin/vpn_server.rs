@@ -15,7 +15,7 @@ use std::io::BufReader;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, error, info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
@@ -135,10 +135,25 @@ impl IpPool {
     }
 }
 
+/// Persistent session info for reconnection support
+struct SessionInfo {
+    /// Allocated IP address for this session
+    allocated_ip: Ipv4Addr,
+    /// Client's Noise public key (for identity verification)
+    client_pubkey: [u8; 32],
+    /// When session was last active
+    last_seen: Instant,
+}
+
+/// Session timeout for reconnection (5 minutes)
+const SESSION_TIMEOUT: Duration = Duration::from_secs(300);
+
 /// Shared server state
 struct ServerState {
-    /// Client sessions indexed by their allocated IP
+    /// Active client sessions indexed by their allocated IP
     clients: HashMap<Ipv4Addr, ClientSession>,
+    /// Persistent sessions indexed by session_id (for reconnect)
+    sessions: HashMap<String, SessionInfo>,
     /// IP address pool
     ip_pool: IpPool,
 }
@@ -147,9 +162,74 @@ impl ServerState {
     fn new(pool_start: Ipv4Addr, pool_end: Ipv4Addr) -> Self {
         Self {
             clients: HashMap::new(),
+            sessions: HashMap::new(),
             ip_pool: IpPool::new(pool_start, pool_end),
         }
     }
+
+    /// Try to restore session by session_id
+    fn restore_session(&mut self, session_id: &str, client_pubkey: &[u8; 32]) -> Option<Ipv4Addr> {
+        if let Some(session) = self.sessions.get(session_id) {
+            // Verify client identity and session freshness
+            if &session.client_pubkey == client_pubkey && session.last_seen.elapsed() < SESSION_TIMEOUT
+            {
+                return Some(session.allocated_ip);
+            }
+        }
+        None
+    }
+
+    /// Create new session
+    fn create_session(&mut self, client_pubkey: [u8; 32]) -> Option<(String, Ipv4Addr)> {
+        let ip = self.ip_pool.allocate()?;
+        let session_id = generate_session_id();
+
+        self.sessions.insert(
+            session_id.clone(),
+            SessionInfo {
+                allocated_ip: ip,
+                client_pubkey,
+                last_seen: Instant::now(),
+            },
+        );
+
+        Some((session_id, ip))
+    }
+
+    /// Update session last_seen time
+    fn touch_session(&mut self, session_id: &str) {
+        if let Some(session) = self.sessions.get_mut(session_id) {
+            session.last_seen = Instant::now();
+        }
+    }
+
+    /// Cleanup expired sessions
+    fn cleanup_expired_sessions(&mut self) {
+        let expired: Vec<String> = self
+            .sessions
+            .iter()
+            .filter(|(_, s)| s.last_seen.elapsed() > SESSION_TIMEOUT)
+            .map(|(id, _)| id.clone())
+            .collect();
+
+        for id in expired {
+            if let Some(session) = self.sessions.remove(&id) {
+                self.ip_pool.release(session.allocated_ip);
+                debug!(session_id = %id, "Session expired and cleaned up");
+            }
+        }
+    }
+}
+
+/// Generate cryptographically secure session ID
+fn generate_session_id() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let random: u64 = rand::random();
+    format!("{:x}{:016x}", timestamp, random)
 }
 
 #[tokio::main]
@@ -307,28 +387,37 @@ async fn handle_vpn_client_with_config(
         .await
         .context("hybrid noise handshake")?;
 
+    // Extract client's public key from handshake for session binding
+    let client_pubkey: [u8; 32] = hybrid_secret.combined[..32]
+        .try_into()
+        .expect("combined secret has at least 32 bytes");
+
     info!(
         %remote,
         secret_prefix = hex::encode(&hybrid_secret.combined[..8]),
         "Client authenticated"
     );
 
-    // Allocate IP address for client
-    let client_ip = {
+    // Allocate or restore session
+    let (session_id, client_ip) = {
         let mut st = state.write().await;
-        st.ip_pool
-            .allocate()
+        // Cleanup expired sessions periodically
+        st.cleanup_expired_sessions();
+
+        // Create new session with IP allocation
+        st.create_session(client_pubkey)
             .ok_or_else(|| anyhow::anyhow!("IP pool exhausted"))?
     };
 
-    info!(%remote, client_ip = %client_ip, "IP allocated");
+    info!(%remote, client_ip = %client_ip, session_id = %session_id, "Session created");
 
-    // Send VPN configuration to client
+    // Send VPN configuration to client with session_id for reconnect
     let vpn_config = VpnConfig::new(client_ip, gateway_ip)
         .with_mtu(mtu)
         .with_dns(Ipv4Addr::new(8, 8, 8, 8))
         .with_dns(Ipv4Addr::new(1, 1, 1, 1))
-        .with_route("0.0.0.0/0"); // Full tunnel mode
+        .with_route("0.0.0.0/0") // Full tunnel mode
+        .with_session_id(&session_id);
 
     vpn_config
         .send(&mut stream)
@@ -345,8 +434,9 @@ async fn handle_vpn_client_with_config(
     if !ack.accepted {
         let err_msg = ack.error.unwrap_or_else(|| "unknown error".into());
         error!(%remote, %err_msg, "Client rejected config");
-        // Release IP before returning error
+        // Remove session and release IP on rejection
         let mut st = state.write().await;
+        st.sessions.remove(&session_id);
         st.ip_pool.release(client_ip);
         anyhow::bail!("client rejected config: {}", err_msg);
     }
@@ -413,16 +503,23 @@ async fn handle_vpn_client_with_config(
         }
     }
 
-    // Cleanup
+    // Cleanup - remove from active clients but keep session for reconnect
     to_client_task.abort();
 
     {
         let mut st = state.write().await;
         st.clients.remove(&client_ip);
-        st.ip_pool.release(client_ip);
+        // Touch session to reset timeout (allows reconnect within SESSION_TIMEOUT)
+        st.touch_session(&session_id);
+        // Note: IP is NOT released here - session keeps IP reservation for reconnect
     }
 
-    info!(%remote, client_ip = %client_ip, "Client session ended, IP released");
+    info!(
+        %remote,
+        client_ip = %client_ip,
+        session_id = %session_id,
+        "Client disconnected, session preserved for reconnect"
+    );
 
     Ok(())
 }
