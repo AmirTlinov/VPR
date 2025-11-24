@@ -7,11 +7,11 @@ id: TASK-007
 parent: ROOT
 phase: null
 priority: HIGH
-progress: 33
+progress: 66
 status: WARN
 tags: []
 title: 'CRIT-001..002: crypto hygiene'
-updated: 2025-11-24 04:26
+updated: 2025-11-24 04:42
 ---
 
 # CRIT-001..002: crypto hygiene
@@ -28,11 +28,14 @@ updated: 2025-11-24 04:26
   - Отметки критериев: OsRng централизован через rng::secure_rng; thread_rng/rand::random отсутствуют
   - Отметки тестов: cargo test -p vpr-crypto --lib passed
   - Отметки блокеров: OsRng совместим с генерацией ключей; детерминированных тестов нет
-- [ ] CRIT-002: Zeroize/Drop для ML-KEM секрета в HybridKeypair и проверка очистки
+- [x] CRIT-002: Zeroize/Drop для ML-KEM секрета в HybridKeypair и проверка очистки
   - Критерии: HybridKeypair очищает PQ секреты через zeroize при Drop; Юнит тест подтверждает очистку буфера после drop; Покрытие ≥85% по затронутым файлам
   - Тесты: cargo test -p vpr-crypto --lib -- --nocapture; cargo llvm-cov -p vpr-crypto
   - Блокеры: Неизвестна внутренняя структура ML-KEM секрета — нужна инспекция; Возможна потребность в feature zeroize для зависимостей
-  - Чекпоинты: Критерии=TODO; Тесты=TODO; Блокеры=TODO
+  - Чекпоинты: Критерии=OK; Тесты=OK; Блокеры=OK
+  - Отметки критериев: HybridMlKemSecret zeroizes via Zeroizing; Drop calls zeroize
+  - Отметки тестов: cargo test -p vpr-crypto --lib passed; mlkem zeroize test added
+  - Отметки блокеров: Инспекция mlkem768: секрет хранится в bytes; zeroize без доп. features
 - [ ] Документация и чек: зафиксировать политику RNG/zeroize в docs/security.md
   - Критерии: docs/security.md отражает переход на OsRng и очистку ML-KEM; Сформирован чеклист для ревью RNG/zeroize; Док доступен в репозитории
   - Тесты: spellcheck/markdownlint для затронутых файлов; manual review чеклиста

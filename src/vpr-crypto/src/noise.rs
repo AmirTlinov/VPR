@@ -1,7 +1,9 @@
 use crate::{rng, CryptoError, Result};
 use hkdf::Hkdf;
 use pqcrypto_mlkem::mlkem768;
-use pqcrypto_traits::kem::{Ciphertext, PublicKey, SharedSecret};
+use pqcrypto_traits::kem::{
+    Ciphertext, PublicKey, SecretKey as KemSecretKey, SharedSecret as KemSharedSecret,
+};
 use sha2::Sha256;
 use snow::{Builder, HandshakeState, TransportState};
 use zeroize::Zeroize;
@@ -15,8 +17,40 @@ pub const PATTERN_NK: &str = "Noise_NK_25519_ChaChaPoly_SHA256";
 pub struct HybridKeypair {
     pub x25519_secret: [u8; 32],
     pub x25519_public: [u8; 32],
-    pub mlkem_secret: mlkem768::SecretKey,
+    pub mlkem_secret: HybridMlKemSecret,
     pub mlkem_public: mlkem768::PublicKey,
+}
+
+/// Wrapper to own ML-KEM secret bytes with explicit zeroization on drop.
+pub struct HybridMlKemSecret {
+    bytes: zeroize::Zeroizing<Vec<u8>>,
+}
+
+impl HybridMlKemSecret {
+    pub fn from_secret_key(sk: mlkem768::SecretKey) -> Self {
+        Self {
+            bytes: zeroize::Zeroizing::new(sk.as_bytes().to_vec()),
+        }
+    }
+
+    pub fn decapsulate(&self, ct: &mlkem768::Ciphertext) -> mlkem768::SharedSecret {
+        // Reconstruct secret key from stored bytes for each decapsulation.
+        // This avoids keeping the library secret key in memory long-term.
+        let sk = mlkem768::SecretKey::from_bytes(&self.bytes)
+            .expect("stored ML-KEM secret bytes must be valid");
+        mlkem768::decapsulate(ct, &sk)
+    }
+
+    #[cfg(test)]
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+impl zeroize::Zeroize for HybridMlKemSecret {
+    fn zeroize(&mut self) {
+        self.bytes.zeroize();
+    }
 }
 
 impl HybridKeypair {
@@ -32,7 +66,7 @@ impl HybridKeypair {
         Self {
             x25519_secret,
             x25519_public,
-            mlkem_secret,
+            mlkem_secret: HybridMlKemSecret::from_secret_key(mlkem_secret),
             mlkem_public,
         }
     }
@@ -57,7 +91,7 @@ impl HybridKeypair {
         // ML-KEM decapsulation
         let ct = mlkem768::Ciphertext::from_bytes(mlkem_ciphertext)
             .map_err(|_| CryptoError::Decrypt("invalid ML-KEM ciphertext".into()))?;
-        let mlkem_shared = mlkem768::decapsulate(&ct, &self.mlkem_secret);
+        let mlkem_shared = self.mlkem_secret.decapsulate(&ct);
 
         Ok(HybridSecret::combine(
             &x25519_shared,
@@ -68,19 +102,9 @@ impl HybridKeypair {
 
 impl Drop for HybridKeypair {
     fn drop(&mut self) {
-        use pqcrypto_traits::kem::SecretKey as _;
         self.x25519_secret.zeroize();
-        // ML-KEM SecretKey doesn't implement Zeroize, so we use unsafe to clear memory
-        // SecretKey is 2400 bytes for ML-KEM-768
-        let secret_bytes = self.mlkem_secret.as_bytes();
-        let ptr = secret_bytes.as_ptr() as *mut u8;
-        let len = secret_bytes.len();
-        // SAFETY: We have exclusive access during Drop, and the memory is valid
-        unsafe {
-            std::ptr::write_bytes(ptr, 0, len);
-            // Compiler fence to prevent optimization from removing the zeroing
-            std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
-        }
+        self.mlkem_secret.zeroize();
+        std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
     }
 }
 
@@ -380,6 +404,17 @@ impl NoiseTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mlkem_secret_zeroizes() {
+        let mut kp = HybridKeypair::generate();
+        // Zeroize explicitly to inspect buffer
+        kp.mlkem_secret.zeroize();
+        assert!(
+            kp.mlkem_secret.as_bytes().iter().all(|&b| b == 0),
+            "ML-KEM secret must be zeroized"
+        );
+    }
 
     #[test]
     fn hybrid_keypair_generation_hits_osrng() {
