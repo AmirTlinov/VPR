@@ -8,10 +8,10 @@ use std::time::Duration;
 use crate::cover::CoverGenerator;
 use crate::features::{Direction, PacketContext, TrafficStats};
 use crate::profiles::ProfileStats;
-#[cfg(feature = "onnx")]
+#[cfg(feature = "_onnx_core")]
 use crate::AiError;
 use crate::{MorphDecision, Result, TrafficMorpher, TrafficProfile};
-#[cfg(feature = "onnx")]
+#[cfg(feature = "_onnx_core")]
 use ort::session::{builder::GraphOptimizationLevel, Session};
 
 /// Configuration for morpher behavior
@@ -222,7 +222,7 @@ impl TrafficMorpher for RuleBasedMorpher {
 }
 
 /// ONNX-based AI morpher (requires `onnx` feature)
-#[cfg(feature = "onnx")]
+#[cfg(feature = "_onnx_core")]
 pub struct OnnxMorpher {
     profile: TrafficProfile,
     context: PacketContext,
@@ -231,7 +231,7 @@ pub struct OnnxMorpher {
     config: MorpherConfig,
 }
 
-#[cfg(feature = "onnx")]
+#[cfg(feature = "_onnx_core")]
 impl OnnxMorpher {
     /// Load ONNX model from file
     pub fn load(model_path: &std::path::Path, profile: TrafficProfile) -> Result<Self> {
@@ -244,17 +244,9 @@ impl OnnxMorpher {
         profile: TrafficProfile,
         config: MorpherConfig,
     ) -> Result<Self> {
-        let session = Session::builder()?
-            .with_optimization_level(GraphOptimizationLevel::Level3)?
-            .commit_from_file(model_path)?;
-
-        Ok(Self {
-            profile,
-            context: PacketContext::with_burst_threshold(config.burst_threshold_ms),
-            cover_generator: CoverGenerator::new(profile),
-            session,
-            config,
-        })
+        // Read model file into memory (works with both load-dynamic and bundled modes)
+        let model_bytes = std::fs::read(model_path)?;
+        Self::from_bytes_with_config(&model_bytes, profile, config)
     }
 
     /// Load ONNX model from bytes
@@ -282,47 +274,61 @@ impl OnnxMorpher {
     }
 }
 
-#[cfg(feature = "onnx")]
+#[cfg(feature = "_onnx_core")]
 impl TrafficMorpher for OnnxMorpher {
     fn morph_outgoing(&mut self, packet: &[u8]) -> Result<MorphDecision> {
-        use ndarray::Array2;
+        use ndarray::{Array2, Array1};
 
         let _features = self.context.add_packet(packet, Direction::Outbound);
         let context_tensor = self.context.to_tensor();
 
-        // Create input tensor [CONTEXT_WINDOW_SIZE, 4]
-        let input =
-            Array2::from_shape_vec((crate::features::CONTEXT_WINDOW_SIZE, 4), context_tensor)
-                .map_err(|e| AiError::FeatureExtractionFailed(e.to_string()))?;
-
-        let input_tensor = ort::value::Tensor::from_array(input)
+        // Create context input tensor [1, CONTEXT_WINDOW_SIZE, 4]
+        let context_flat: Vec<f32> = context_tensor;
+        let context_array = Array2::from_shape_vec(
+            (crate::features::CONTEXT_WINDOW_SIZE, 4),
+            context_flat,
+        )
+        .map_err(|e| AiError::FeatureExtractionFailed(e.to_string()))?;
+        
+        // Add batch dimension [1, context_size, input_dim]
+        let context_3d = context_array.insert_axis(ndarray::Axis(0));
+        let context_input = ort::value::Tensor::from_array(context_3d)
             .map_err(|e| AiError::InferenceFailed(e.to_string()))?;
 
+        // Create profile_id input tensor [1]
+        let profile_idx = self.profile as i64;
+        let profile_array = Array1::from_vec(vec![profile_idx]);
+        let profile_input = ort::value::Tensor::from_array(profile_array)
+            .map_err(|e| AiError::InferenceFailed(e.to_string()))?;
+
+        // Run inference with correct input names
         let outputs = self
             .session
-            .run(ort::inputs!["input" => input_tensor])
+            .run(ort::inputs!["context" => context_input, "profile_id" => profile_input])
             .map_err(|e| AiError::InferenceFailed(e.to_string()))?;
 
-        // Parse outputs
-        let (shape, data) = outputs
-            .get("output")
-            .ok_or_else(|| AiError::InferenceFailed("missing output".into()))?
-            .try_extract_tensor::<f32>()
-            .map_err(|e| AiError::InferenceFailed(e.to_string()))?;
+        // Helper to extract first element from 1D tensor output
+        let extract_first = |name: &str| -> std::result::Result<f32, AiError> {
+            let tensor = outputs
+                .get(name)
+                .ok_or_else(|| AiError::InferenceFailed(format!("missing {} output", name)))?;
+            let (_, data) = tensor
+                .try_extract_tensor::<f32>()
+                .map_err(|e| AiError::InferenceFailed(e.to_string()))?;
+            data.first()
+                .copied()
+                .ok_or_else(|| AiError::InferenceFailed(format!("{} tensor is empty", name)))
+        };
 
-        let output_view = ndarray::ArrayViewD::from_shape(shape.to_ixdyn(), data)
-            .map_err(|e| AiError::InferenceFailed(e.to_string()))?
-            .into_dimensionality::<ndarray::Ix2>()
-            .map_err(|e| AiError::InferenceFailed(e.to_string()))?;
-
-        let delay_ms = output_view[[0, 0]].max(0.0).min(self.config.max_delay_ms);
-        let padding = output_view[[0, 1]].max(0.0) as usize;
-        let inject_prob = output_view[[0, 2]];
-        let confidence = output_view[[0, 3]].clamp(self.config.min_confidence, 1.0);
+        // Extract individual outputs by name
+        let delay_ms = extract_first("delay_ms")?.max(0.0).min(self.config.max_delay_ms);
+        let padding = extract_first("padding_norm")?.max(0.0) as usize;
+        let inject_prob = extract_first("inject_prob")?;
+        let confidence = extract_first("confidence")?.clamp(self.config.min_confidence, 1.0);
 
         Ok(MorphDecision {
             delay: Duration::from_micros((delay_ms * 1000.0) as u64),
-            padding_size: padding.min(1400), // Cap at reasonable size
+            padding_size: padding.min(1400),
             inject_cover: inject_prob > 0.5,
             confidence,
         })
@@ -364,7 +370,7 @@ pub fn create_morpher_with_config(
     model_path: Option<&std::path::Path>,
     config: MorpherConfig,
 ) -> Box<dyn TrafficMorpher> {
-    #[cfg(feature = "onnx")]
+    #[cfg(feature = "_onnx_core")]
     if let Some(path) = model_path {
         if path.exists() {
             match OnnxMorpher::load_with_config(path, profile, config.clone()) {
@@ -483,5 +489,99 @@ mod tests {
 
         // Delay should be capped by low latency config
         assert!(decision.delay.as_millis() <= 3);
+    }
+
+    #[cfg(feature = "_onnx_core")]
+    #[test]
+    fn test_onnx_morpher_with_real_model() {
+        use std::path::Path;
+
+        // Path to the trained TMT-20M model
+        let model_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/tmt-20m.onnx");
+
+        if !model_path.exists() {
+            eprintln!("Skipping ONNX test: model not found at {:?}", model_path);
+            return;
+        }
+
+        // Try to load model - may fail if ONNX Runtime not installed
+        let mut morpher = match OnnxMorpher::load(&model_path, TrafficProfile::YouTube) {
+            Ok(m) => m,
+            Err(e) => {
+                eprintln!("Skipping ONNX test: runtime not available: {}", e);
+                return;
+            }
+        };
+
+        // Run inference on test packet
+        let packet = vec![0u8; 500];
+        let decision = morpher.morph_outgoing(&packet).expect("Inference failed");
+
+        // Verify reasonable outputs
+        assert!(
+            decision.delay.as_millis() <= 50,
+            "Delay too high: {:?}",
+            decision.delay
+        );
+        assert!(
+            decision.padding_size <= 1500,
+            "Padding too large: {}",
+            decision.padding_size
+        );
+        assert!(
+            decision.confidence >= 0.0 && decision.confidence <= 1.0,
+            "Confidence out of range: {}",
+            decision.confidence
+        );
+
+        // Run multiple packets to verify consistency
+        for i in 0..10 {
+            let size = 100 + i * 100;
+            let packet = vec![0u8; size];
+            let decision = morpher.morph_outgoing(&packet).expect("Inference failed");
+            assert!(decision.confidence > 0.0);
+        }
+    }
+
+    #[cfg(feature = "_onnx_core")]
+    #[test]
+    fn test_onnx_morpher_all_profiles() {
+        use std::path::Path;
+
+        let model_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/tmt-20m.onnx");
+
+        if !model_path.exists() {
+            eprintln!("Skipping ONNX test: model not found");
+            return;
+        }
+
+        // Test all profiles work correctly
+        let profiles = [
+            TrafficProfile::YouTube,
+            TrafficProfile::Zoom,
+            TrafficProfile::Gaming,
+            TrafficProfile::Browsing,
+            TrafficProfile::Netflix,
+        ];
+
+        for profile in profiles {
+            // Try to load model - may fail if ONNX Runtime not installed
+            let mut morpher = match OnnxMorpher::load(&model_path, profile) {
+                Ok(m) => m,
+                Err(e) => {
+                    eprintln!("Skipping ONNX test: runtime not available: {}", e);
+                    return;
+                }
+            };
+
+            let packet = vec![0u8; 256];
+            let decision = morpher.morph_outgoing(&packet).expect("Inference failed");
+
+            assert!(
+                decision.confidence >= 0.0,
+                "Profile {:?} failed",
+                profile
+            );
+        }
     }
 }

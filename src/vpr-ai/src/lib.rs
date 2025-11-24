@@ -133,7 +133,7 @@ pub enum AiError {
     #[error("feature extraction failed: {0}")]
     FeatureExtractionFailed(String),
 
-    #[cfg(feature = "onnx")]
+    #[cfg(feature = "_onnx_core")]
     #[error("ONNX runtime error: {0}")]
     OnnxError(#[from] ort::Error),
 

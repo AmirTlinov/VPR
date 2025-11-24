@@ -6,7 +6,13 @@ description = "AI-powered traffic morphing for VPR VPN"
 
 [features]
 default = []
-onnx = ["ort"]
+# Internal: enables ONNX code path without specifying runtime linking method
+_onnx_core = ["dep:ort"]
+# ONNX inference with system library (requires libonnxruntime.so 1.22.x)
+onnx = ["_onnx_core", "ort/load-dynamic"]
+# ONNX inference with bundled runtime (larger binary but self-contained)
+# Use this for development/testing when system ONNX Runtime version doesn't match
+onnx-bundled = ["_onnx_core", "ort/download-binaries"]
 training = []  # Enable training utilities
 
 [dependencies]
@@ -15,7 +21,9 @@ thiserror = "1.0"
 tracing = "0.1"
 
 # ONNX Runtime for inference
-ort = { version = "2.0.0-rc.10", optional = true, default-features = false, features = ["load-dynamic", "ndarray"] }
+# Features are controlled by onnx/onnx-bundled features above
+# std: needed for Error trait impl; ndarray: tensor handling
+ort = { version = "2.0.0-rc.10", optional = true, default-features = false, features = ["std", "ndarray"] }
 
 # Feature extraction
 ndarray = "0.16"
