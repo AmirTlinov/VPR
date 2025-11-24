@@ -4,7 +4,14 @@ use crate::config::E2eConfig;
 use anyhow::{Context, Result};
 use std::path::Path;
 use std::process::Stdio;
+use std::time::Duration;
 use tokio::process::Command;
+
+/// Default SSH operation timeout
+const SSH_TIMEOUT_SECS: u64 = 120;
+
+/// Default SCP operation timeout
+const SCP_TIMEOUT_SECS: u64 = 300;
 
 /// Server deployer - handles SSH operations and binary deployment
 pub struct Deployer {
@@ -16,8 +23,14 @@ impl Deployer {
         Self { config }
     }
 
-    /// Execute SSH command on remote server
+    /// Execute SSH command on remote server with timeout
     pub async fn ssh_exec(&self, cmd: &str) -> Result<String> {
+        self.ssh_exec_with_timeout(cmd, Duration::from_secs(SSH_TIMEOUT_SECS))
+            .await
+    }
+
+    /// Execute SSH command with custom timeout
+    pub async fn ssh_exec_with_timeout(&self, cmd: &str, timeout: Duration) -> Result<String> {
         let password = self
             .config
             .server
@@ -25,10 +38,11 @@ impl Deployer {
             .as_ref()
             .context("SSH password required")?;
 
-        let output = Command::new("sshpass")
+        // Use SSHPASS env var to hide password from process list
+        let output_future = Command::new("sshpass")
+            .env("SSHPASS", password)
             .args([
-                "-p",
-                password,
+                "-e", // Read password from SSHPASS env var (not visible in /proc/*/cmdline)
                 "ssh",
                 "-o",
                 "StrictHostKeyChecking=no",
@@ -43,8 +57,11 @@ impl Deployer {
             ])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .output()
+            .output();
+
+        let output = tokio::time::timeout(timeout, output_future)
             .await
+            .context("SSH command timed out")?
             .context("SSH command failed")?;
 
         if !output.status.success() {
@@ -66,7 +83,7 @@ impl Deployer {
         Ok(())
     }
 
-    /// Upload file via SCP
+    /// Upload file via SCP with timeout
     pub async fn upload_file(&self, local: &Path, remote: &str) -> Result<()> {
         let password = self
             .config
@@ -75,12 +92,16 @@ impl Deployer {
             .as_ref()
             .context("SSH password required")?;
 
+        let local_str = local
+            .to_str()
+            .context("Local path must be valid UTF-8")?;
+
         tracing::info!(?local, remote, "Uploading file");
 
-        let status = Command::new("sshpass")
+        let status_future = Command::new("sshpass")
+            .env("SSHPASS", password)
             .args([
-                "-p",
-                password,
+                "-e",
                 "scp",
                 "-o",
                 "StrictHostKeyChecking=no",
@@ -88,15 +109,21 @@ impl Deployer {
                 "UserKnownHostsFile=/dev/null",
                 "-o",
                 "LogLevel=ERROR",
-                local.to_str().unwrap(),
+                local_str,
                 &format!(
                     "{}@{}:{}",
                     self.config.server.user, self.config.server.host, remote
                 ),
             ])
-            .status()
-            .await
-            .context("SCP failed")?;
+            .status();
+
+        let status = tokio::time::timeout(
+            Duration::from_secs(SCP_TIMEOUT_SECS),
+            status_future,
+        )
+        .await
+        .context("SCP upload timed out")?
+        .context("SCP failed")?;
 
         if !status.success() {
             anyhow::bail!("SCP upload failed");
@@ -104,7 +131,7 @@ impl Deployer {
         Ok(())
     }
 
-    /// Download file via SCP
+    /// Download file via SCP with timeout
     pub async fn download_file(&self, remote: &str, local: &Path) -> Result<()> {
         let password = self
             .config
@@ -113,12 +140,16 @@ impl Deployer {
             .as_ref()
             .context("SSH password required")?;
 
+        let local_str = local
+            .to_str()
+            .context("Local path must be valid UTF-8")?;
+
         tracing::info!(remote, ?local, "Downloading file");
 
-        let status = Command::new("sshpass")
+        let status_future = Command::new("sshpass")
+            .env("SSHPASS", password)
             .args([
-                "-p",
-                password,
+                "-e",
                 "scp",
                 "-o",
                 "StrictHostKeyChecking=no",
@@ -130,11 +161,17 @@ impl Deployer {
                     "{}@{}:{}",
                     self.config.server.user, self.config.server.host, remote
                 ),
-                local.to_str().unwrap(),
+                local_str,
             ])
-            .status()
-            .await
-            .context("SCP failed")?;
+            .status();
+
+        let status = tokio::time::timeout(
+            Duration::from_secs(SCP_TIMEOUT_SECS),
+            status_future,
+        )
+        .await
+        .context("SCP download timed out")?
+        .context("SCP failed")?;
 
         if !status.success() {
             anyhow::bail!("SCP download failed");

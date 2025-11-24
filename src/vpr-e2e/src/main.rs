@@ -31,6 +31,12 @@ use deployer::Deployer;
 use report::E2eReport;
 use tests::TestRunner;
 
+/// Maximum time to wait for TUN device creation
+const TUN_WAIT_TIMEOUT_SECS: u64 = 30;
+
+/// Time to wait for connection to stabilize after TUN creation
+const CONNECTION_STABILIZE_SECS: u64 = 2;
+
 #[derive(Parser)]
 #[command(name = "vpr-e2e")]
 #[command(about = "VPR E2E Test Runner - automated deployment and testing")]
@@ -370,14 +376,14 @@ async fn sync_keys(deployer: &Deployer, config: &E2eConfig) -> Result<()> {
     let client_key = config.client.secrets_dir.join("client.noise.key");
     if !client_key.exists() {
         let keygen = std::env::current_dir()?.join("target/release/vpr-keygen");
+        let secrets_dir_str = config
+            .client
+            .secrets_dir
+            .to_str()
+            .context("secrets_dir must be valid UTF-8")?;
+
         let status = Command::new(&keygen)
-            .args([
-                "gen-noise-key",
-                "--name",
-                "client",
-                "--output",
-                config.client.secrets_dir.to_str().unwrap(),
-            ])
+            .args(["gen-noise-key", "--name", "client", "--output", secrets_dir_str])
             .status()
             .await?;
 
@@ -405,7 +411,7 @@ async fn run_client_tests(config: &E2eConfig) -> Result<E2eReport> {
     // Wait for TUN device
     let tun_name = &config.client.tun_name;
     let mut attempts = 0;
-    while attempts < 30 {
+    while attempts < TUN_WAIT_TIMEOUT_SECS {
         let output = Command::new("ip")
             .args(["link", "show", tun_name])
             .output()
@@ -425,15 +431,19 @@ async fn run_client_tests(config: &E2eConfig) -> Result<E2eReport> {
         attempts += 1;
     }
 
-    if attempts >= 30 {
+    if attempts >= TUN_WAIT_TIMEOUT_SECS {
         let _ = client.kill().await;
-        anyhow::bail!("TUN device not created after 30 seconds");
+        let _ = client.wait().await; // Prevent zombie process
+        anyhow::bail!(
+            "TUN device not created after {} seconds",
+            TUN_WAIT_TIMEOUT_SECS
+        );
     }
 
     pb.finish_with_message("VPN connected");
 
     // Wait for connection to stabilize
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    tokio::time::sleep(Duration::from_secs(CONNECTION_STABILIZE_SECS)).await;
 
     // Run tests
     let test_runner = TestRunner::new(config.clone());
@@ -443,8 +453,9 @@ async fn run_client_tests(config: &E2eConfig) -> Result<E2eReport> {
         report.add_test(result);
     }
 
-    // Stop client
+    // Stop client and wait to prevent zombie
     let _ = client.kill().await;
+    let _ = client.wait().await;
 
     // Cleanup TUN
     let _ = Command::new("ip")
@@ -459,6 +470,17 @@ async fn start_vpn_client(config: &E2eConfig) -> Result<tokio::process::Child> {
     let project_dir = std::env::current_dir()?;
     let client_binary = project_dir.join("target/release/vpn-client");
 
+    let secrets_dir_str = config
+        .client
+        .secrets_dir
+        .to_str()
+        .context("secrets_dir must be valid UTF-8")?;
+
+    let server_pub_path = config.client.secrets_dir.join("server.noise.pub");
+    let server_pub_str = server_pub_path
+        .to_str()
+        .context("server_pub path must be valid UTF-8")?;
+
     let mut cmd = Command::new("sudo");
     cmd.arg(&client_binary);
     cmd.args([
@@ -469,16 +491,11 @@ async fn start_vpn_client(config: &E2eConfig) -> Result<tokio::process::Child> {
         "--tun-name",
         &config.client.tun_name,
         "--noise-dir",
-        config.client.secrets_dir.to_str().unwrap(),
+        secrets_dir_str,
         "--noise-name",
         "client",
         "--server-pub",
-        config
-            .client
-            .secrets_dir
-            .join("server.noise.pub")
-            .to_str()
-            .unwrap(),
+        server_pub_str,
         "--tls-profile",
         &config.client.tls_profile,
     ]);
