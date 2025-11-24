@@ -225,14 +225,22 @@ async fn run_vpn_client(args: Args) -> Result<()> {
         .parse()
         .ok()
         .filter(|p: &TlsProfile| !matches!(p, TlsProfile::Custom));
+    let grease_mode = parse_grease_mode(&args.tls_grease_mode, args.tls_grease_seed);
+
+    // Suspicion-aware TLS selection: if server reports suspicion >=35, disable canary
+    // (config obtained later; before handshake default to 0)
+    let server_suspicion = 0.0;
+    let effective_canary = if server_suspicion >= 35.0 {
+        0.0
+    } else {
+        args.tls_canary_percent
+    };
     let (tls_profile, tls_bucket) = select_tls_profile(
         main_profile,
         canary_profile,
-        args.tls_canary_percent,
+        effective_canary,
         Some(args.tls_canary_seed).filter(|s| *s != 0),
     );
-
-    let grease_mode = parse_grease_mode(&args.tls_grease_mode, args.tls_grease_seed);
 
     // Log JA3/JA3S/JA4 fingerprints for debugging
     let ja3 = Ja3Fingerprint::from_profile_with_grease(&tls_profile, grease_mode);
@@ -335,6 +343,11 @@ async fn run_vpn_client(args: Args) -> Result<()> {
     let vpn_config = VpnConfig::recv(&mut stream)
         .await
         .context("receiving VPN config")?;
+
+    // Suspicion snapshot from server (used for TLS/padding adaptation)
+    if let Some(score) = vpn_config.suspicion_score {
+        info!(suspicion = %score, "Received suspicion score from server");
+    }
 
     info!(
         client_ip = %vpn_config.client_ip,
@@ -688,6 +701,13 @@ fn build_padder_cli(args: &Args, fallback_mtu: u16) -> Padder {
         jitter_enabled: args.padding_max_jitter_us > 0,
         max_jitter_us: args.padding_max_jitter_us,
         min_packet_size: args.padding_min_size,
+        adaptive: true,
+        high_strategy: PaddingStrategy::Mtu,
+        medium_strategy: PaddingStrategy::Bucket,
+        low_strategy: PaddingStrategy::RandomBucket,
+        high_threshold: 60,
+        medium_threshold: 20,
+        hysteresis: 5,
     };
 
     Padder::new(config)
@@ -730,6 +750,13 @@ fn build_padder_from_config(args: &Args, config: &VpnConfig) -> Padder {
         jitter_enabled: max_jitter_us > 0,
         max_jitter_us,
         min_packet_size: min_size,
+        adaptive: true,
+        high_strategy: PaddingStrategy::Mtu,
+        medium_strategy: PaddingStrategy::Bucket,
+        low_strategy: PaddingStrategy::RandomBucket,
+        high_threshold: 60,
+        medium_threshold: 20,
+        hysteresis: 5,
     };
 
     Padder::new(config)

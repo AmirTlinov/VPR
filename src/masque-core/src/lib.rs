@@ -10,6 +10,7 @@ pub mod probe_protection;
 pub mod quic_stream;
 pub mod replay_protection;
 pub mod rng;
+pub mod suspicion;
 pub mod tls_fingerprint;
 pub mod transport;
 pub mod tun;

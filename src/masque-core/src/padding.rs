@@ -5,6 +5,7 @@
 
 use rand::rngs::OsRng;
 use rand::Rng;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Duration;
 
 /// Padding bucket sizes (bytes)
@@ -18,6 +19,13 @@ pub const BUCKETS: [usize; 4] = [BUCKET_SMALL, BUCKET_MEDIUM, BUCKET_LARGE, BUCK
 
 /// Maximum padding overhead (percentage)
 pub const MAX_PADDING_OVERHEAD: f32 = 0.25;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SuspicionBucket {
+    Low,
+    Medium,
+    High,
+}
 
 /// Padding strategy
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,6 +59,20 @@ pub struct PaddingConfig {
     pub max_jitter_us: u64,
     /// Minimum packet size (will always pad to at least this)
     pub min_packet_size: usize,
+    /// Enable adaptive strategy switch by suspicion bucket
+    pub adaptive: bool,
+    /// High bucket = strategy applied when suspicion >= high_threshold
+    pub high_strategy: PaddingStrategy,
+    /// Medium bucket = strategy applied when suspicion in [mid, high)
+    pub medium_strategy: PaddingStrategy,
+    /// Low bucket = strategy applied when suspicion < mid_threshold
+    pub low_strategy: PaddingStrategy,
+    /// Upper threshold for medium (inclusive), >= this → high bucket
+    pub high_threshold: u8,
+    /// Upper threshold for low (inclusive), >= this → medium bucket
+    pub medium_threshold: u8,
+    /// Hysteresis margin to reduce flapping
+    pub hysteresis: u8,
 }
 
 impl Default for PaddingConfig {
@@ -61,6 +83,13 @@ impl Default for PaddingConfig {
             jitter_enabled: true,
             max_jitter_us: 5000, // 5ms max jitter
             min_packet_size: BUCKET_SMALL,
+            adaptive: false,
+            high_strategy: PaddingStrategy::Mtu,
+            medium_strategy: PaddingStrategy::Bucket,
+            low_strategy: PaddingStrategy::RandomBucket,
+            high_threshold: 60,
+            medium_threshold: 20,
+            hysteresis: 5,
         }
     }
 }
@@ -68,12 +97,22 @@ impl Default for PaddingConfig {
 /// Packet padder
 pub struct Padder {
     config: PaddingConfig,
+    suspicion_bucket: AtomicU8, // stores SuspicionBucket as u8
 }
 
 impl Padder {
+    /// Expose config for synchronization/telemetry
+    pub fn config(&self) -> &PaddingConfig {
+        &self.config
+    }
+
     /// Create new padder with config
     pub fn new(config: PaddingConfig) -> Self {
-        Self { config }
+        let initial_bucket = SuspicionBucket::Low as u8;
+        Self {
+            config,
+            suspicion_bucket: AtomicU8::new(initial_bucket),
+        }
     }
 
     /// Create padder with default config
@@ -83,7 +122,8 @@ impl Padder {
 
     /// Calculate padded size for a packet
     pub fn padded_size(&self, original_size: usize) -> usize {
-        match self.config.strategy {
+        let strategy = self.effective_strategy();
+        match strategy {
             PaddingStrategy::None => original_size,
             PaddingStrategy::Bucket => self.bucket_size(original_size),
             PaddingStrategy::RandomBucket => self.random_bucket_size(original_size),
@@ -130,6 +170,66 @@ impl Padder {
 
         let jitter_us = OsRng.gen_range(0..=self.config.max_jitter_us);
         Some(Duration::from_micros(jitter_us))
+    }
+
+    /// Update suspicion bucket with hysteresis to avoid flapping
+    pub fn update_suspicion(&self, score: f64) {
+        if !self.config.adaptive {
+            return;
+        }
+        let score = score.clamp(0.0, 100.0) as u8;
+        let current = self.suspicion_bucket.load(Ordering::Relaxed);
+        let current_enum = match current {
+            0 => SuspicionBucket::Low,
+            1 => SuspicionBucket::Medium,
+            _ => SuspicionBucket::High,
+        };
+
+        let next = match current_enum {
+            SuspicionBucket::Low => {
+                if score >= self.config.medium_threshold + self.config.hysteresis {
+                    SuspicionBucket::Medium
+                } else {
+                    SuspicionBucket::Low
+                }
+            }
+            SuspicionBucket::Medium => {
+                if score >= self.config.high_threshold + self.config.hysteresis {
+                    SuspicionBucket::High
+                } else if score + self.config.hysteresis < self.config.medium_threshold {
+                    SuspicionBucket::Low
+                } else {
+                    SuspicionBucket::Medium
+                }
+            }
+            SuspicionBucket::High => {
+                if score + self.config.hysteresis < self.config.high_threshold {
+                    SuspicionBucket::Medium
+                } else {
+                    SuspicionBucket::High
+                }
+            }
+        };
+        self.suspicion_bucket.store(next as u8, Ordering::Relaxed);
+    }
+
+    pub fn suspicion_bucket(&self) -> SuspicionBucket {
+        match self.suspicion_bucket.load(Ordering::Relaxed) {
+            0 => SuspicionBucket::Low,
+            1 => SuspicionBucket::Medium,
+            _ => SuspicionBucket::High,
+        }
+    }
+
+    fn effective_strategy(&self) -> PaddingStrategy {
+        if !self.config.adaptive {
+            return self.config.strategy;
+        }
+        match self.suspicion_bucket() {
+            SuspicionBucket::Low => self.config.low_strategy,
+            SuspicionBucket::Medium => self.config.medium_strategy,
+            SuspicionBucket::High => self.config.high_strategy,
+        }
     }
 
     /// Find bucket size for given data size
@@ -312,5 +412,30 @@ mod tests {
             unique_sizes.len() > 1,
             "Random bucket should produce varied sizes"
         );
+    }
+
+    #[test]
+    fn adaptive_switches_buckets_with_hysteresis() {
+        let padder = Padder::new(PaddingConfig {
+            adaptive: true,
+            low_strategy: PaddingStrategy::RandomBucket,
+            medium_strategy: PaddingStrategy::Bucket,
+            high_strategy: PaddingStrategy::Mtu,
+            medium_threshold: 20,
+            high_threshold: 60,
+            hysteresis: 5,
+            ..Default::default()
+        });
+
+        padder.update_suspicion(10.0);
+        assert_eq!(padder.suspicion_bucket(), SuspicionBucket::Low);
+        padder.update_suspicion(25.0);
+        assert_eq!(padder.suspicion_bucket(), SuspicionBucket::Medium);
+        padder.update_suspicion(90.0);
+        assert_eq!(padder.suspicion_bucket(), SuspicionBucket::High);
+        padder.update_suspicion(58.0);
+        assert_eq!(padder.suspicion_bucket(), SuspicionBucket::High);
+        padder.update_suspicion(40.0);
+        assert_eq!(padder.suspicion_bucket(), SuspicionBucket::Medium);
     }
 }

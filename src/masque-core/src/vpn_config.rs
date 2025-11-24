@@ -54,6 +54,9 @@ pub struct VpnConfig {
     /// Session rekey data limit in bytes (server-driven)
     #[serde(default)]
     pub session_rekey_bytes: Option<u64>,
+    /// Suspicion score snapshot provided by server
+    #[serde(default)]
+    pub suspicion_score: Option<f64>,
 }
 
 impl VpnConfig {
@@ -73,6 +76,7 @@ impl VpnConfig {
             padding_mtu: None,
             session_rekey_secs: None,
             session_rekey_bytes: None,
+            suspicion_score: None,
         }
     }
 
@@ -104,6 +108,12 @@ impl VpnConfig {
     /// Set session ID
     pub fn with_session_id(mut self, id: impl Into<String>) -> Self {
         self.session_id = Some(id.into());
+        self
+    }
+
+    /// Set suspicion score snapshot
+    pub fn with_suspicion(mut self, score: f64) -> Self {
+        self.suspicion_score = Some(score);
         self
     }
 

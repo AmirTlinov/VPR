@@ -15,6 +15,7 @@ use std::io::BufReader;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{broadcast, mpsc, RwLock};
@@ -40,8 +41,38 @@ use masque_core::tls_fingerprint::{
 use masque_core::tun::{enable_ip_forwarding, setup_nat, TunConfig, TunDevice};
 use masque_core::vpn_config::{ConfigAck, VpnConfig};
 use masque_core::vpn_tunnel::PacketEncapsulator;
+use rustls::crypto::SupportedKxGroup;
+use rustls::SupportedCipherSuite;
 use vpr_crypto::ct_eq_32;
 use vpr_crypto::keys::NoiseKeypair;
+
+#[derive(Debug, Default)]
+struct SuspicionTracker {
+    score: Mutex<f64>,
+}
+
+impl SuspicionTracker {
+    fn new() -> Self {
+        Self {
+            score: Mutex::new(0.0),
+        }
+    }
+
+    fn add(&self, delta: f64) {
+        if let Ok(mut s) = self.score.lock() {
+            *s = (*s + delta).clamp(0.0, 100.0);
+        }
+    }
+
+    fn current(&self) -> f64 {
+        self.score.lock().map(|s| *s).unwrap_or(0.0)
+    }
+
+    fn prometheus(&self, prefix: &str) -> String {
+        let val = self.score.lock().map(|s| *s).unwrap_or(0.0);
+        format!("{prefix}_score {{}} {val}\n")
+    }
+}
 
 #[derive(Parser, Debug)]
 #[command(name = "vpn-server", about = "VPR VPN server with TUN tunnel")]
@@ -383,6 +414,7 @@ async fn run_vpn_server(args: Args) -> Result<()> {
         .context("loading server Noise keypair")?;
 
     let replay_cache = Arc::new(NonceCache::new());
+    let suspicion = Arc::new(SuspicionTracker::new());
 
     let padder = Arc::new(build_padder(&args));
     let padding_strategy = args.padding_strategy.clone();
@@ -396,8 +428,9 @@ async fn run_vpn_server(args: Args) -> Result<()> {
 
     if let Some(path) = args.probe_metrics_path.clone() {
         let pp = probe_protector.clone();
+        let susp = suspicion.clone();
         let interval = args.probe_metrics_interval;
-        tokio::spawn(async move { probe_metrics_task(pp, path, interval).await });
+        tokio::spawn(async move { probe_metrics_task(pp, susp, path, interval).await });
     }
 
     let hybrid_server = Arc::new(
@@ -426,8 +459,9 @@ async fn run_vpn_server(args: Args) -> Result<()> {
     let certs = load_certs(&args.cert)?;
     let key = load_key(&args.key)?;
 
-    let tls_profile: TlsProfile = args.tls_profile.parse().unwrap_or(TlsProfile::Chrome);
-    info!(profile = %tls_profile, "TLS profile configured (server)");
+    // Legacy log for main profile (actual selection per-connection)
+    let main_profile: TlsProfile = args.tls_profile.parse().unwrap_or(TlsProfile::Chrome);
+    info!(profile = %main_profile, "TLS profile configured (server, main)");
 
     // Create TUN device
     let tun_config = TunConfig {
@@ -458,57 +492,37 @@ async fn run_vpn_server(args: Args) -> Result<()> {
         setup_nat(tun.name(), iface).context("setting up NAT")?;
     }
 
-    // TLS fingerprint profile with canary rollout
-    let main_profile: TlsProfile = args.tls_profile.parse().unwrap_or(TlsProfile::Chrome);
+    // TLS fingerprint profiles (main + canary union for rustls config)
     let canary_profile = args
         .tls_canary_profile
         .parse()
         .ok()
         .filter(|p: &TlsProfile| !matches!(p, TlsProfile::Custom));
-    let (tls_profile, tls_bucket) = select_tls_profile(
-        main_profile,
-        canary_profile,
-        args.tls_canary_percent,
-        Some(args.tls_canary_seed).filter(|s| *s != 0),
-    );
     let grease_mode = parse_grease_mode(&args.tls_grease_mode, args.tls_grease_seed);
-    let (ja3, ja3s, ja4, selected_cipher) = build_tls_fingerprint(&tls_profile, grease_mode);
-    let ja3_hash = ja3.to_ja3_hash();
-    let ja3s_hash = ja3s.to_ja3s_hash();
-    let ja4_hash = ja4.to_hash();
-    info!(
-        profile = %tls_profile,
-        bucket = ?tls_bucket,
-        grease = ?grease_mode,
-        ja3 = %ja3_hash,
-        ja3s = %ja3s_hash,
-        ja4 = %ja4_hash,
-        selected_cipher = format!("0x{selected_cipher:04x}"),
-        "TLS server fingerprint configured"
-    );
 
-    if let Some(path) = &args.tls_fp_metrics_path {
-        let content = format!(
-            "# HELP tls_fp_info TLS fingerprint JA3/JA3S/JA4\\n\
-             # TYPE tls_fp_info gauge\\n\
-             tls_fp_info{{bucket=\"{bucket}\",type=\"ja3\",hash=\"{ja3}\"}} 1\\n\
-             tls_fp_info{{bucket=\"{bucket}\",type=\"ja3s\",hash=\"{ja3s}\"}} 1\\n\
-             tls_fp_info{{bucket=\"{bucket}\",type=\"ja4\",hash=\"{ja4}\"}} 1\\n",
-            bucket = match tls_bucket {
-                TlsProfileBucket::Main => "main",
-                TlsProfileBucket::Canary => "canary",
-            },
-            ja3 = ja3_hash,
-            ja3s = ja3s_hash,
-            ja4 = ja4_hash
-        );
-        if let Err(e) = fs::write(path, content.as_bytes()) {
-            warn!(?e, ?path, "Failed to write tls_fp metrics");
+    let mut cipher_union = main_profile.rustls_cipher_suites();
+    if let Some(cp) = canary_profile {
+        for cs in cp.rustls_cipher_suites() {
+            if !cipher_union.iter().any(|x| x.suite() == cs.suite()) {
+                cipher_union.push(cs);
+            }
+        }
+    }
+    let mut kx_union: Vec<&'static dyn SupportedKxGroup> = main_profile.rustls_kx_groups();
+    if let Some(cp) = canary_profile {
+        for kx in cp.rustls_kx_groups() {
+            kx_union.push(kx);
         }
     }
 
     // Build QUIC server config
-    let server_config = build_server_config(certs, key, args.idle_timeout, tls_profile)?;
+    let server_config = build_server_config(
+        certs,
+        key,
+        args.idle_timeout,
+        cipher_union.clone(),
+        kx_union.clone(),
+    )?;
 
     // Create server endpoint
     let endpoint = Endpoint::server(server_config, args.bind)?;
@@ -552,13 +566,43 @@ async fn run_vpn_server(args: Args) -> Result<()> {
         let session_rekey_seconds = args.session_rekey_seconds;
         let session_rekey_bytes = args.session_rekey_bytes;
         let dns_servers = dns_servers.clone();
-        let tls_bucket_local = tls_bucket;
+        let suspicion = suspicion.clone();
+        let suspicion_score = suspicion.current();
+        let effective_canary = if suspicion_score >= 35.0 {
+            0.0
+        } else {
+            args.tls_canary_percent
+        };
+        let (tls_profile_selected, tls_bucket_local) = select_tls_profile(
+            main_profile,
+            canary_profile,
+            effective_canary,
+            Some(args.tls_canary_seed).filter(|s| *s != 0),
+        );
 
         tokio::spawn(async move {
             match incoming.await {
                 Ok(connection) => {
                     let remote = connection.remote_address();
                     info!(%remote, "New VPN connection");
+
+                    // Per-connection TLS fingerprints for metrics/logging
+                    let (ja3, ja3s, ja4, selected_cipher) =
+                        build_tls_fingerprint(&tls_profile_selected, grease_mode);
+                    let ja3_hash = ja3.to_ja3_hash();
+                    let ja3s_hash = ja3s.to_ja3s_hash();
+                    let ja4_hash = ja4.to_hash();
+                    info!(
+                        %remote,
+                        profile = %tls_profile_selected,
+                        bucket = ?tls_bucket_local,
+                        suspicion = suspicion_score,
+                        ja3 = %ja3_hash,
+                        ja3s = %ja3s_hash,
+                        ja4 = %ja4_hash,
+                        selected_cipher = format!("0x{selected_cipher:04x}"),
+                        "TLS fingerprint selected"
+                    );
 
                     if let Err(e) = handle_vpn_client_with_config(
                         connection,
@@ -581,6 +625,7 @@ async fn run_vpn_server(args: Args) -> Result<()> {
                         session_rekey_bytes,
                         dns_servers,
                         tls_bucket_local,
+                        suspicion,
                     )
                     .await
                     {
@@ -627,6 +672,7 @@ async fn handle_vpn_client_with_config(
     session_rekey_bytes: u64,
     dns_servers: Arc<Vec<IpAddr>>,
     tls_bucket: TlsProfileBucket,
+    suspicion: Arc<SuspicionTracker>,
 ) -> Result<()> {
     let remote = connection.remote_address();
     let remote_ip = remote.ip();
@@ -634,11 +680,13 @@ async fn handle_vpn_client_with_config(
     // Probe protection: IP ban/suspicion pre-check
     match probe.check_ip(remote_ip) {
         ProbeDetection::Blocked(reason) => {
+            suspicion.add(40.0);
             warn!(%remote, %reason, "Probe blocked before handshake");
             connection.close(0u32.into(), b"probe-blocked");
             anyhow::bail!("probe blocked: {reason}");
         }
         ProbeDetection::Suspicious(reason) => {
+            suspicion.add(15.0);
             warn!(%remote, %reason, "Probe suspicious, continuing with caution");
         }
         ProbeDetection::Legitimate => {}
@@ -729,11 +777,13 @@ async fn handle_vpn_client_with_config(
     // Probe protection: timing analysis
     match probe.check_timing(handshake_start.elapsed()) {
         ProbeDetection::Blocked(reason) => {
+            suspicion.add(25.0);
             warn!(%remote, %reason, "Handshake timing blocked");
             connection.close(0u32.into(), b"probe-timing");
             anyhow::bail!(reason);
         }
         ProbeDetection::Suspicious(reason) => {
+            suspicion.add(10.0);
             warn!(%remote, %reason, "Handshake timing suspicious");
         }
         ProbeDetection::Legitimate => {}
@@ -775,6 +825,7 @@ async fn handle_vpn_client_with_config(
             padding_mtu,
         )
         .with_rotation(session_rekey_seconds, session_rekey_bytes)
+        .with_suspicion(suspicion.current())
         .with_route("0.0.0.0/0") // Full tunnel mode
         .with_session_id(&session_id);
 
@@ -1025,7 +1076,8 @@ fn build_server_config(
     certs: Vec<CertificateDer<'static>>,
     key: PrivateKeyDer<'static>,
     idle_timeout: u64,
-    tls_profile: TlsProfile,
+    cipher_suites: Vec<SupportedCipherSuite>,
+    kx_groups: Vec<&'static dyn SupportedKxGroup>,
 ) -> Result<ServerConfig> {
     let mut transport_config = TransportConfig::default();
     transport_config.max_idle_timeout(Some(Duration::from_secs(idle_timeout).try_into()?));
@@ -1035,8 +1087,8 @@ fn build_server_config(
     transport_config.datagram_send_buffer_size(65536);
 
     let provider = rustls::crypto::CryptoProvider {
-        cipher_suites: tls_profile.rustls_cipher_suites(),
-        kx_groups: tls_profile.rustls_kx_groups(),
+        cipher_suites,
+        kx_groups,
         ..rustls::crypto::ring::default_provider()
     };
 
@@ -1080,6 +1132,13 @@ fn build_padder(args: &Args) -> Padder {
         jitter_enabled: args.padding_max_jitter_us > 0,
         max_jitter_us: args.padding_max_jitter_us,
         min_packet_size: args.padding_min_size,
+        adaptive: true,
+        high_strategy: PaddingStrategy::Mtu,
+        medium_strategy: PaddingStrategy::Bucket,
+        low_strategy: PaddingStrategy::RandomBucket,
+        high_threshold: 60,
+        medium_threshold: 20,
+        hysteresis: 5,
     };
 
     Padder::new(config)
@@ -1152,16 +1211,23 @@ fn resolve_dns_servers(args: &Args) -> Vec<IpAddr> {
     }
 }
 
-async fn probe_metrics_task(protector: Arc<ProbeProtector>, path: PathBuf, interval_secs: u64) {
+async fn probe_metrics_task(
+    protector: Arc<ProbeProtector>,
+    suspicion: Arc<SuspicionTracker>,
+    path: PathBuf,
+    interval_secs: u64,
+) {
     let mut ticker = interval(Duration::from_secs(interval_secs.max(1)));
     loop {
         ticker.tick().await;
         let path = path.clone();
         let protector_clone = protector.clone();
+        let suspicion_clone = suspicion.clone();
         if let Err(e) = tokio::task::spawn_blocking(move || {
             let content = protector_clone.metrics().to_prometheus("probe");
+            let susp = suspicion_clone.prometheus("suspicion");
             let tmp = path.with_extension(".tmp");
-            fs::write(&tmp, content.as_bytes())?;
+            fs::write(&tmp, format!("{content}{susp}").as_bytes())?;
             fs::rename(&tmp, &path)?;
             Ok::<(), std::io::Error>(())
         })
