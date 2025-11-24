@@ -63,6 +63,25 @@ impl ReplayMetrics {
             entries_expired: self.entries_expired.load(Ordering::Relaxed),
         }
     }
+
+    /// Render metrics in Prometheus text exposition format.
+    pub fn to_prometheus(&self, prefix: &str) -> String {
+        let snap = self.snapshot();
+        format!(
+            concat!(
+                "# TYPE {p}_messages_processed counter\n",
+                "{p}_messages_processed {mp}\n",
+                "# TYPE {p}_replays_blocked counter\n",
+                "{p}_replays_blocked {rb}\n",
+                "# TYPE {p}_entries_expired counter\n",
+                "{p}_entries_expired {ee}\n"
+            ),
+            p = prefix,
+            mp = snap.messages_processed,
+            rb = snap.replays_blocked,
+            ee = snap.entries_expired
+        )
+    }
 }
 
 /// Snapshot of replay metrics at a point in time
@@ -85,6 +104,8 @@ pub struct NonceCache {
     last_cleanup: RwLock<Instant>,
     /// Cleanup interval (clean expired entries every N seconds)
     cleanup_interval: Duration,
+    /// Soft ceiling on entries to prevent unbounded growth
+    max_entries: usize,
 }
 
 impl NonceCache {
@@ -101,6 +122,7 @@ impl NonceCache {
             metrics: ReplayMetrics::default(),
             last_cleanup: RwLock::new(Instant::now()),
             cleanup_interval: Duration::from_secs(60),
+            max_entries: 50_000,
         }
     }
 
@@ -135,6 +157,27 @@ impl NonceCache {
                     warn!(target: "telemetry.replay", blocked, "replay detected");
                     return Err(ReplayError::DuplicateMessage);
                 }
+            }
+
+            if cache.len() >= self.max_entries {
+                warn!(
+                    target: "telemetry.replay",
+                    size = cache.len(),
+                    "replay cache at soft limit, triggering cleanup"
+                );
+                // Attempt cleanup while still holding the lock by filtering expired entries.
+                let before = cache.len();
+                cache.retain(|_, entry| entry.expires_at > now);
+                let removed = before - cache.len();
+                if removed > 0 {
+                    self.metrics
+                        .entries_expired
+                        .fetch_add(removed as u64, Ordering::Relaxed);
+                }
+            }
+
+            if cache.len() >= self.max_entries {
+                self.evict_oldest(&mut cache, now);
             }
 
             // Insert new entry
@@ -224,6 +267,33 @@ impl NonceCache {
         if should_cleanup {
             self.cleanup();
         }
+    }
+
+    fn evict_oldest(&self, cache: &mut HashMap<NonceHash, NonceEntry>, now: Instant) {
+        if cache.is_empty() {
+            return;
+        }
+        let mut items: Vec<(NonceHash, Instant)> =
+            cache.iter().map(|(k, v)| (*k, v.expires_at)).collect();
+        items.sort_by_key(|(_, v)| *v);
+        let to_remove = cache
+            .len()
+            .saturating_sub(self.max_entries.saturating_sub(1));
+        for (key, _) in items.into_iter().take(to_remove) {
+            cache.remove(&key);
+        }
+        let removed = to_remove as u64;
+        if removed > 0 {
+            self.metrics
+                .entries_expired
+                .fetch_add(removed, Ordering::Relaxed);
+            warn!(
+                target: "telemetry.replay",
+                removed,
+                "evicted entries to honor soft limit"
+            );
+        }
+        *self.last_cleanup.write().unwrap() = now;
     }
 }
 
@@ -351,5 +421,18 @@ mod tests {
             cache.check_and_record(&msg2),
             Err(ReplayError::DuplicateMessage)
         );
+    }
+
+    #[test]
+    fn test_prometheus_export() {
+        let cache = NonceCache::new();
+        let msg = b"prom metrics";
+        let _ = cache.check_and_record(msg);
+        let _ = cache.check_and_record(msg);
+
+        let prom = cache.metrics().to_prometheus("replay");
+        assert!(prom.contains("replay_messages_processed"));
+        assert!(prom.contains("replay_replays_blocked"));
+        assert!(prom.contains("replay_entries_expired"));
     }
 }
