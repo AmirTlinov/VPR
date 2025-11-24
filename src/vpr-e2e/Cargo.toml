@@ -17,11 +17,8 @@ serde_json = "1.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 chrono = { version = "0.4", features = ["serde"] }
-ssh2 = "0.9"
-rand = "0.8"
-hex = "0.4"
+futures = "0.3"
 dirs = "5.0"
-which = "6"
 colored = "2"
 indicatif = "0.17"
 

@@ -106,15 +106,24 @@ impl TestRunner {
         }
     }
 
-    /// Test DNS resolution
+    /// Test DNS resolution through VPN tunnel
     pub async fn test_dns(&self) -> TestResult {
         let start = Instant::now();
         let test_name = "dns_resolution";
 
-        tracing::info!("Running DNS test");
+        tracing::info!("Running DNS test through VPN");
 
-        let result = Command::new("dig")
-            .args(["@8.8.8.8", "google.com", "+short", "+timeout=5"])
+        // Use curl with DNS-over-HTTPS to ensure traffic goes through VPN interface
+        // This is more reliable than dig which doesn't support interface binding well
+        let result = Command::new("curl")
+            .args([
+                "-s",
+                "--max-time",
+                "10",
+                "--interface",
+                &self.tun_name,
+                "https://dns.google/resolve?name=google.com&type=A",
+            ])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()
@@ -123,18 +132,28 @@ impl TestRunner {
         match result {
             Ok(output) if output.status.success() => {
                 let stdout = String::from_utf8_lossy(&output.stdout);
-                let resolved = !stdout.trim().is_empty();
+                // Parse DoH JSON response
+                let resolved = stdout.contains("\"Answer\"");
+                let ip = extract_dns_ip(&stdout);
 
                 TestResult {
                     name: test_name.into(),
                     passed: resolved,
                     duration_ms: start.elapsed().as_millis() as u64,
-                    details: Some(format!("Resolved to: {}", stdout.trim())),
-                    metrics: None,
+                    details: Some(format!(
+                        "DNS via VPN: {} (resolved: {})",
+                        ip.as_deref().unwrap_or("N/A"),
+                        resolved
+                    )),
+                    metrics: Some(serde_json::json!({
+                        "resolved": resolved,
+                        "ip": ip,
+                        "method": "DoH via VPN interface",
+                    })),
                     error: if resolved {
                         None
                     } else {
-                        Some("No DNS response".into())
+                        Some("DNS resolution failed".into())
                     },
                 }
             }
@@ -218,33 +237,51 @@ impl TestRunner {
         }
     }
 
-    /// Test latency to multiple endpoints
+    /// Test latency to multiple endpoints (parallel for speed)
     pub async fn test_latency(&self) -> TestResult {
         let start = Instant::now();
         let test_name = "latency";
 
-        tracing::info!("Running latency test");
+        tracing::info!("Running parallel latency tests");
 
-        // Ping multiple endpoints and average
+        // Ping multiple endpoints in parallel
         let endpoints = ["8.8.8.8", "1.1.1.1", "9.9.9.9"];
-        let mut latencies = Vec::new();
+        let tun = self.tun_name.clone();
 
-        for endpoint in endpoints {
-            if let Ok(output) = Command::new("ping")
-                .args(["-c", "3", "-W", "3", "-I", &self.tun_name, endpoint])
-                .stdout(Stdio::piped())
-                .output()
-                .await
-            {
-                if output.status.success() {
-                    let stdout = String::from_utf8_lossy(&output.stdout);
-                    let rtt = parse_ping_rtt(&stdout);
-                    if rtt > 0.0 {
-                        latencies.push(rtt);
+        // Spawn all pings concurrently
+        let futures: Vec<_> = endpoints
+            .iter()
+            .map(|&endpoint| {
+                let tun_name = tun.clone();
+                async move {
+                    let output = Command::new("ping")
+                        .args(["-c", "3", "-W", "3", "-I", &tun_name, endpoint])
+                        .stdout(Stdio::piped())
+                        .output()
+                        .await;
+
+                    match output {
+                        Ok(out) if out.status.success() => {
+                            let stdout = String::from_utf8_lossy(&out.stdout);
+                            let rtt = parse_ping_rtt(&stdout);
+                            if rtt > 0.0 {
+                                Some((endpoint, rtt))
+                            } else {
+                                None
+                            }
+                        }
+                        _ => None,
                     }
                 }
-            }
-        }
+            })
+            .collect();
+
+        // Wait for all pings to complete
+        let results = futures::future::join_all(futures).await;
+        let latencies: Vec<(&&str, f64)> = results
+            .iter()
+            .filter_map(|r| r.as_ref().map(|(e, rtt)| (e, *rtt)))
+            .collect();
 
         if latencies.is_empty() {
             return TestResult {
@@ -257,90 +294,112 @@ impl TestRunner {
             };
         }
 
-        let avg_latency: f64 = latencies.iter().sum::<f64>() / latencies.len() as f64;
-        let min_latency = latencies.iter().cloned().fold(f64::INFINITY, f64::min);
-        let max_latency = latencies.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let rtts: Vec<f64> = latencies.iter().map(|(_, rtt)| *rtt).collect();
+        let avg_latency: f64 = rtts.iter().sum::<f64>() / rtts.len() as f64;
+        let min_latency = rtts.iter().cloned().fold(f64::INFINITY, f64::min);
+        let max_latency = rtts.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
 
         TestResult {
             name: test_name.into(),
             passed: true,
             duration_ms: start.elapsed().as_millis() as u64,
             details: Some(format!(
-                "Latency: min={:.1}ms, avg={:.1}ms, max={:.1}ms",
-                min_latency, avg_latency, max_latency
+                "Latency: min={:.1}ms, avg={:.1}ms, max={:.1}ms ({} endpoints)",
+                min_latency, avg_latency, max_latency, latencies.len()
             )),
             metrics: Some(serde_json::json!({
                 "latency_min_ms": min_latency,
                 "latency_avg_ms": avg_latency,
                 "latency_max_ms": max_latency,
                 "samples": latencies.len(),
+                "endpoints": latencies.iter().map(|(e, rtt)| {
+                    serde_json::json!({"host": e, "rtt_ms": rtt})
+                }).collect::<Vec<_>>(),
             })),
             error: None,
         }
     }
 
-    /// Test throughput (simplified)
+    /// Test throughput with fallback URLs
     pub async fn test_throughput(&self) -> TestResult {
         let start = Instant::now();
         let test_name = "throughput";
 
         tracing::info!("Running throughput test");
 
-        // Download a small file and measure speed
-        let result = Command::new("curl")
-            .args([
-                "-s",
-                "-w",
-                "%{speed_download}",
-                "-o",
-                "/dev/null",
-                "--max-time",
-                "30",
-                "--interface",
-                &self.tun_name,
-                "http://speedtest.tele2.net/1MB.zip",
-            ])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .await;
+        // Try multiple speedtest URLs (fallback if one is unavailable)
+        let speedtest_urls = [
+            "http://speedtest.tele2.net/1MB.zip",
+            "http://proof.ovh.net/files/1Mb.dat",
+            "http://ipv4.download.thinkbroadband.com/1MB.zip",
+        ];
 
-        match result {
-            Ok(output) if output.status.success() => {
-                let speed_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                let speed_bytes: f64 = speed_str.parse().unwrap_or(0.0);
-                let speed_mbps = (speed_bytes * 8.0) / 1_000_000.0;
+        for url in speedtest_urls {
+            let result = Command::new("curl")
+                .args([
+                    "-s",
+                    "-w",
+                    "%{speed_download}",
+                    "-o",
+                    "/dev/null",
+                    "--max-time",
+                    "30",
+                    "--interface",
+                    &self.tun_name,
+                    url,
+                ])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .output()
+                .await;
 
-                TestResult {
-                    name: test_name.into(),
-                    passed: speed_mbps > 0.1,
-                    duration_ms: start.elapsed().as_millis() as u64,
-                    details: Some(format!("Download: {:.2} Mbps", speed_mbps)),
-                    metrics: Some(serde_json::json!({
-                        "download_mbps": speed_mbps,
-                        "download_bytes_sec": speed_bytes,
-                    })),
-                    error: None,
+            if let Ok(output) = result {
+                if output.status.success() {
+                    let speed_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                    if let Ok(speed_bytes) = speed_str.parse::<f64>() {
+                        if speed_bytes > 0.0 {
+                            let speed_mbps = (speed_bytes * 8.0) / 1_000_000.0;
+
+                            return TestResult {
+                                name: test_name.into(),
+                                passed: speed_mbps > 0.1,
+                                duration_ms: start.elapsed().as_millis() as u64,
+                                details: Some(format!("Download: {:.2} Mbps", speed_mbps)),
+                                metrics: Some(serde_json::json!({
+                                    "download_mbps": speed_mbps,
+                                    "download_bytes_sec": speed_bytes,
+                                    "source": url,
+                                })),
+                                error: None,
+                            };
+                        }
+                    }
                 }
             }
-            Ok(output) => TestResult {
-                name: test_name.into(),
-                passed: false,
-                duration_ms: start.elapsed().as_millis() as u64,
-                details: None,
-                metrics: None,
-                error: Some(String::from_utf8_lossy(&output.stderr).to_string()),
-            },
-            Err(e) => TestResult {
-                name: test_name.into(),
-                passed: false,
-                duration_ms: start.elapsed().as_millis() as u64,
-                details: None,
-                metrics: None,
-                error: Some(e.to_string()),
-            },
+            tracing::debug!("Speedtest URL {} failed, trying next", url);
+        }
+
+        TestResult {
+            name: test_name.into(),
+            passed: false,
+            duration_ms: start.elapsed().as_millis() as u64,
+            details: None,
+            metrics: None,
+            error: Some("All speedtest URLs failed".into()),
         }
     }
+}
+
+/// Extract IP from DoH JSON response
+fn extract_dns_ip(json: &str) -> Option<String> {
+    // Simple extraction: look for "data":"<ip>"
+    if let Some(start) = json.find("\"data\":\"") {
+        let rest = &json[start + 8..];
+        if let Some(end) = rest.find('"') {
+            return Some(rest[..end].to_string());
+        }
+    }
+    None
 }
 
 /// Parse ping statistics from output

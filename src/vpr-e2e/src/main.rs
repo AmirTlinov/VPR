@@ -302,7 +302,10 @@ async fn run_full_e2e(
     println!("Total time: {:?}", start.elapsed());
 
     if keep_alive {
-        println!("\n{}", "VPN connection kept alive. Press Ctrl+C to stop.".yellow());
+        println!(
+            "\n{}",
+            "VPN connection kept alive. Press Ctrl+C to stop.".yellow()
+        );
         tokio::signal::ctrl_c().await?;
     }
 
@@ -326,7 +329,14 @@ async fn deploy_binaries(deployer: &Deployer, config: &E2eConfig, rebuild: bool)
         let pb = progress_spinner("Building VPN binaries...");
 
         let status = Command::new("cargo")
-            .args(["build", "--release", "-p", "masque-core", "-p", "vpr-crypto"])
+            .args([
+                "build",
+                "--release",
+                "-p",
+                "masque-core",
+                "-p",
+                "vpr-crypto",
+            ])
             .current_dir(&project_dir)
             .stdout(if config.output.verbose {
                 Stdio::inherit()
@@ -383,7 +393,13 @@ async fn sync_keys(deployer: &Deployer, config: &E2eConfig) -> Result<()> {
             .context("secrets_dir must be valid UTF-8")?;
 
         let status = Command::new(&keygen)
-            .args(["gen-noise-key", "--name", "client", "--output", secrets_dir_str])
+            .args([
+                "gen-noise-key",
+                "--name",
+                "client",
+                "--output",
+                secrets_dir_str,
+            ])
             .status()
             .await?;
 
@@ -421,10 +437,15 @@ async fn run_client_tests(config: &E2eConfig) -> Result<E2eReport> {
             break;
         }
 
-        // Check if client died
+        // Check if client died - capture stderr for diagnostics
         if let Ok(Some(status)) = client.try_wait() {
             pb.finish_with_message("Client failed!");
-            anyhow::bail!("VPN client exited with status: {:?}", status);
+            let stderr = capture_child_stderr(&mut client).await;
+            anyhow::bail!(
+                "VPN client exited with status: {:?}\nClient stderr:\n{}",
+                status,
+                if stderr.is_empty() { "(no output)" } else { &stderr }
+            );
         }
 
         tokio::time::sleep(Duration::from_secs(1)).await;
@@ -522,4 +543,19 @@ fn progress_spinner(msg: &str) -> ProgressBar {
     pb.set_message(msg.to_string());
     pb.enable_steady_tick(Duration::from_millis(100));
     pb
+}
+
+/// Capture stderr from a child process for diagnostics
+async fn capture_child_stderr(child: &mut tokio::process::Child) -> String {
+    use tokio::io::AsyncReadExt;
+
+    if let Some(mut stderr) = child.stderr.take() {
+        let mut buf = String::new();
+        match tokio::time::timeout(Duration::from_secs(2), stderr.read_to_string(&mut buf)).await {
+            Ok(Ok(_)) => buf,
+            _ => String::new(),
+        }
+    } else {
+        String::new()
+    }
 }

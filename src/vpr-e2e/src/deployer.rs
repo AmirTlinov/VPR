@@ -92,9 +92,7 @@ impl Deployer {
             .as_ref()
             .context("SSH password required")?;
 
-        let local_str = local
-            .to_str()
-            .context("Local path must be valid UTF-8")?;
+        let local_str = local.to_str().context("Local path must be valid UTF-8")?;
 
         tracing::info!(?local, remote, "Uploading file");
 
@@ -117,13 +115,10 @@ impl Deployer {
             ])
             .status();
 
-        let status = tokio::time::timeout(
-            Duration::from_secs(SCP_TIMEOUT_SECS),
-            status_future,
-        )
-        .await
-        .context("SCP upload timed out")?
-        .context("SCP failed")?;
+        let status = tokio::time::timeout(Duration::from_secs(SCP_TIMEOUT_SECS), status_future)
+            .await
+            .context("SCP upload timed out")?
+            .context("SCP failed")?;
 
         if !status.success() {
             anyhow::bail!("SCP upload failed");
@@ -140,9 +135,7 @@ impl Deployer {
             .as_ref()
             .context("SSH password required")?;
 
-        let local_str = local
-            .to_str()
-            .context("Local path must be valid UTF-8")?;
+        let local_str = local.to_str().context("Local path must be valid UTF-8")?;
 
         tracing::info!(remote, ?local, "Downloading file");
 
@@ -165,13 +158,10 @@ impl Deployer {
             ])
             .status();
 
-        let status = tokio::time::timeout(
-            Duration::from_secs(SCP_TIMEOUT_SECS),
-            status_future,
-        )
-        .await
-        .context("SCP download timed out")?
-        .context("SCP failed")?;
+        let status = tokio::time::timeout(Duration::from_secs(SCP_TIMEOUT_SECS), status_future)
+            .await
+            .context("SCP download timed out")?
+            .context("SCP failed")?;
 
         if !status.success() {
             anyhow::bail!("SCP download failed");
@@ -266,8 +256,11 @@ impl Deployer {
     /// Download server public key for client
     pub async fn download_server_pubkey(&self, local_path: &Path) -> Result<()> {
         let remote_dir = &self.config.server.remote_dir;
-        self.download_file(&format!("{remote_dir}/secrets/server.noise.pub"), local_path)
-            .await
+        self.download_file(
+            &format!("{remote_dir}/secrets/server.noise.pub"),
+            local_path,
+        )
+        .await
     }
 
     /// Stop VPN server
