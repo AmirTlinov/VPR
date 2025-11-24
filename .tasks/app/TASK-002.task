@@ -7,11 +7,11 @@ id: TASK-002
 parent: ROOT
 phase: null
 priority: HIGH
-progress: 0
-status: FAIL
+progress: 25
+status: WARN
 tags: []
 title: Перенос GUI на Rust Tauri/TUI
-updated: 2025-11-24 03:01
+updated: 2025-11-24 03:06
 ---
 
 # Перенос GUI на Rust Tauri/TUI
@@ -37,11 +37,14 @@ updated: 2025-11-24 03:01
   - Тесты: cargo build --workspace --release
   - Блокеры: Нужно синхронизировать с roadmap
   - Чекпоинты: Критерии=TODO; Тесты=TODO; Блокеры=TODO
-- [ ] Полностью удалить Python артефакты (health-history, parser) и заменить на Rust CLI
+- [x] Полностью удалить Python артефакты (health-history, parser) и заменить на Rust CLI
   - Критерии: Нет *.py в репозитории; CLI на Rust повторяет функционал health-history; тесты workspace зелёные
   - Тесты: cargo test --workspace
   - Блокеры: Нужно реализовать CLI на Rust и обновить workspace
-  - Чекпоинты: Критерии=TODO; Тесты=TODO; Блокеры=TODO
+  - Чекпоинты: Критерии=OK; Тесты=OK; Блокеры=OK
+  - Отметки критериев: Python файлы удалены; функционал перенесён в Rust CLI src/health-history
+  - Отметки тестов: cargo test --workspace зелёный (health-history CLI покрыт)
+  - Отметки блокеров: CLI реализован, workspace обновлён, python удалён
 
 ## Критерии успеха
 - cargo build --workspace --release

@@ -26,6 +26,7 @@ use tokio_rustls::{server::TlsStream, TlsAcceptor};
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
+use masque_core::h3_server::{run_h3_server, H3ServerConfig};
 use masque_core::hybrid_handshake::HybridServer;
 use masque_core::tunnel::{read_connect_request, read_frame, write_frame, Proto};
 
@@ -67,12 +68,17 @@ struct Args {
     /// Noise keypair name (default: server)
     #[arg(long, default_value = "server")]
     noise_name: String,
+
+    /// Enable HTTP/3 MASQUE CONNECT-UDP mode (RFC 9298)
+    #[arg(long)]
+    h3_masque: Option<SocketAddr>,
 }
 
 #[derive(Debug, Deserialize, Default)]
 struct FileConfig {
     bind: Option<SocketAddr>,
     quic_bind: Option<SocketAddr>,
+    h3_masque: Option<SocketAddr>,
     cert: Option<PathBuf>,
     key: Option<PathBuf>,
     quic_cert: Option<PathBuf>,
@@ -135,6 +141,26 @@ async fn main() -> Result<()> {
             }
         });
         info!(%quic_addr, "QUIC listener started");
+    }
+
+    // Start HTTP/3 MASQUE server if configured
+    let h3_masque_bind = args.h3_masque.or(file_cfg.h3_masque);
+    if let Some(h3_addr) = h3_masque_bind {
+        let (certs, key) = load_or_generate_cert(cert_path.as_ref(), key_path.as_ref())?;
+        let h3_config = H3ServerConfig {
+            bind: h3_addr,
+            certs,
+            key,
+            enable_datagrams: true,
+            idle_timeout: std::time::Duration::from_secs(120),
+        };
+        let hs = hybrid_server.clone();
+        tokio::spawn(async move {
+            if let Err(err) = run_h3_server(h3_config, hs).await {
+                error!(%err, "H3 MASQUE server failed");
+            }
+        });
+        info!(%h3_addr, "HTTP/3 MASQUE listener started (RFC 9298)");
     }
 
     // Main TLS/TCP accept loop
