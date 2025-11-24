@@ -3,16 +3,20 @@
 //! This module bridges the local TUN interface with the MASQUE tunnel,
 //! forwarding IP packets through encrypted QUIC datagrams.
 
+use crate::cover_traffic::CoverTrafficGenerator;
+use crate::dpi_feedback::DpiFeedbackController;
 use crate::key_rotation::SessionKeyState;
 use crate::masque::UdpCapsule;
+use crate::suspicion::SuspicionTracker;
+use crate::traffic_monitor::TrafficMonitor;
 use crate::tun::{IpPacketInfo, TunConfig, TunReader, TunWriter};
 use anyhow::Result;
 use bytes::Bytes;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tokio::time::sleep;
-use tracing::{debug, error, info, warn};
+use tokio::time::{interval, sleep, Duration};
+use tracing::{debug, error, info, trace, warn};
 
 /// VPN tunnel configuration
 #[derive(Debug, Clone)]
@@ -64,10 +68,7 @@ impl PacketEncapsulator {
 
     /// Encapsulate IP packet for MASQUE transport
     pub fn encapsulate(&self, ip_packet: Bytes) -> Bytes {
-        let capsule = UdpCapsule {
-            context_id: self.context_id,
-            payload: ip_packet,
-        };
+        let capsule = UdpCapsule::with_context_id(self.context_id, ip_packet);
         capsule.encode()
     }
 
@@ -141,10 +142,57 @@ pub async fn channel_to_tun(
     mut tun_writer: TunWriter,
     mut rx: mpsc::Receiver<Bytes>,
 ) -> Result<()> {
+    let mut consecutive_errors = 0u32;
+    const MAX_CONSECUTIVE_ERRORS: u32 = 10;
+
     while let Some(packet) = rx.recv().await {
+        // Validate packet before writing to TUN
+        if packet.is_empty() {
+            trace!("Skipping empty packet");
+            continue;
+        }
+
+        // Check IP version (first 4 bits)
+        let version = packet[0] >> 4;
+        if version != 4 && version != 6 {
+            trace!(
+                version = version,
+                len = packet.len(),
+                "Skipping non-IP packet (possibly cover traffic)"
+            );
+            continue;
+        }
+
+        // Validate minimum packet length
+        let min_len = if version == 4 { 20 } else { 40 };
+        if packet.len() < min_len {
+            warn!(
+                version = version,
+                len = packet.len(),
+                min_len = min_len,
+                "Skipping truncated IP packet"
+            );
+            continue;
+        }
+
         if let Err(e) = tun_writer.write_packet(&packet).await {
-            error!(%e, "TUN write error");
-            break;
+            consecutive_errors += 1;
+            warn!(
+                %e,
+                consecutive_errors,
+                packet_len = packet.len(),
+                "TUN write error"
+            );
+
+            if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
+                error!(
+                    consecutive_errors,
+                    "Too many consecutive TUN write errors, stopping"
+                );
+                break;
+            }
+        } else {
+            consecutive_errors = 0;
         }
     }
     debug!("TUN writer: channel closed");
@@ -158,8 +206,19 @@ pub async fn forward_tun_to_quic(
     encapsulator: Arc<PacketEncapsulator>,
     padder: Option<Arc<crate::padding::Padder>>,
     tracker: Option<Arc<SessionKeyState>>,
+    dpi_feedback: Option<Arc<DpiFeedbackController>>,
+    traffic_monitor: Option<Arc<TrafficMonitor>>,
 ) -> Result<()> {
     while let Some(packet) = rx.recv().await {
+        // Update padder suspicion based on DPI feedback if available
+        // The padder will use its adaptive strategy selection based on suspicion bucket
+        if let Some(feedback) = &dpi_feedback {
+            if let Some(p) = &padder {
+                let suspicion = feedback.current_suspicion();
+                p.update_suspicion(suspicion);
+            }
+        }
+
         let payload = if let Some(p) = &padder {
             let padded = p.pad(&packet);
             if let Some(delay) = p.jitter_delay() {
@@ -171,6 +230,12 @@ pub async fn forward_tun_to_quic(
         };
 
         let datagram = encapsulator.encapsulate(payload);
+
+        // Record traffic in monitor
+        if let Some(monitor) = &traffic_monitor {
+            monitor.record_packet(datagram.len());
+        }
+
         if let Some(state) = &tracker {
             state.record_bytes(datagram.len() as u64);
             state.maybe_rotate_with(|reason| {
@@ -200,16 +265,67 @@ pub async fn forward_tun_to_quic(
     Ok(())
 }
 
+/// Background task to periodically update suspicion score in DPI feedback controller
+/// from SuspicionTracker
+pub async fn suspicion_update_task(
+    suspicion_tracker: Arc<SuspicionTracker>,
+    dpi_feedback: Arc<DpiFeedbackController>,
+) -> Result<()> {
+    let update_interval = dpi_feedback.update_interval();
+    let mut interval_timer = interval(update_interval);
+
+    loop {
+        interval_timer.tick().await;
+        let score = suspicion_tracker.current();
+        dpi_feedback.update_suspicion(score);
+        trace!(
+            suspicion = %score,
+            bucket = ?dpi_feedback.current_bucket(),
+            "Updated suspicion score from tracker"
+        );
+    }
+}
+
+/// Background task to periodically update cover traffic generator with real traffic rate
+/// from TrafficMonitor
+pub async fn traffic_monitor_update_task(
+    traffic_monitor: Arc<TrafficMonitor>,
+    cover_generator: Arc<tokio::sync::Mutex<CoverTrafficGenerator>>,
+    update_interval: Duration,
+) -> Result<()> {
+    let mut interval_timer = interval(update_interval);
+
+    loop {
+        interval_timer.tick().await;
+        let real_traffic_rate = traffic_monitor.get_packets_per_sec();
+
+        // Update cover traffic generator with real traffic rate
+        let mut gen = cover_generator.lock().await;
+        gen.update_real_traffic_rate(real_traffic_rate);
+
+        trace!(
+            real_traffic_rate = %real_traffic_rate,
+            "Updated cover traffic generator with real traffic rate"
+        );
+    }
+}
+
 /// Forward packets from QUIC connection to TUN
 pub async fn forward_quic_to_tun(
     connection: quinn::Connection,
     tx: mpsc::Sender<Bytes>,
     encapsulator: Arc<PacketEncapsulator>,
     tracker: Option<Arc<SessionKeyState>>,
+    traffic_monitor: Option<Arc<TrafficMonitor>>,
 ) -> Result<()> {
     loop {
         match connection.read_datagram().await {
             Ok(datagram) => {
+                // Record traffic in monitor
+                if let Some(monitor) = &traffic_monitor {
+                    monitor.record_packet(datagram.len());
+                }
+
                 if let Some(state) = &tracker {
                     state.record_bytes(datagram.len() as u64);
                     state.maybe_rotate_with(|reason| {
