@@ -22,6 +22,9 @@ pub const MAX_FAILED_ATTEMPTS: u32 = 3;
 /// Challenge validity duration
 pub const CHALLENGE_VALIDITY: Duration = Duration::from_secs(30);
 
+/// Maximum number of pending challenges to avoid unbounded memory on probe floods
+const MAX_PENDING_CHALLENGES: usize = 1024;
+
 /// Probe detection result
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProbeDetection {
@@ -157,11 +160,13 @@ pub struct Challenge {
     pub issued_at: Instant,
     /// Challenge expires at
     pub expires_at: Instant,
+    /// IP address the challenge was issued for (anti-replay across IPs)
+    pub ip: IpAddr,
 }
 
 impl Challenge {
     /// Generate new challenge
-    pub fn new(difficulty: u8) -> Self {
+    pub fn new(difficulty: u8, ip: IpAddr) -> Self {
         let mut nonce = [0u8; 32];
         OsRng.fill_bytes(&mut nonce);
 
@@ -171,6 +176,7 @@ impl Challenge {
             difficulty,
             issued_at: now,
             expires_at: now + CHALLENGE_VALIDITY,
+            ip,
         }
     }
 
@@ -219,6 +225,7 @@ impl Challenge {
             difficulty,
             issued_at: now,
             expires_at: now + CHALLENGE_VALIDITY,
+            ip: IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED), // caller must set if needed
         })
     }
 }
@@ -248,7 +255,10 @@ impl ProbeProtector {
             .connections_checked
             .fetch_add(1, Ordering::Relaxed);
 
-        let tracking = self.ip_tracking.read().unwrap();
+        let tracking = self
+            .ip_tracking
+            .read()
+            .expect("probe protection lock poisoned - this indicates a critical bug");
         if let Some(entry) = tracking.get(&ip) {
             // Check if banned
             if let Some(banned_until) = entry.banned_until {
@@ -275,7 +285,10 @@ impl ProbeProtector {
 
     /// Record a failed connection attempt
     pub fn record_failure(&self, ip: IpAddr) {
-        let mut tracking = self.ip_tracking.write().unwrap();
+        let mut tracking = self
+            .ip_tracking
+            .write()
+            .expect("probe protection lock poisoned - this indicates a critical bug");
         let entry = tracking.entry(ip).or_default();
 
         entry.failed_attempts += 1;
@@ -290,7 +303,10 @@ impl ProbeProtector {
 
     /// Record a successful connection
     pub fn record_success(&self, ip: IpAddr) {
-        let mut tracking = self.ip_tracking.write().unwrap();
+        let mut tracking = self
+            .ip_tracking
+            .write()
+            .expect("probe protection lock poisoned - this indicates a critical bug");
         if let Some(entry) = tracking.get_mut(&ip) {
             // Reset failed attempts on success
             entry.failed_attempts = 0;
@@ -299,14 +315,24 @@ impl ProbeProtector {
     }
 
     /// Issue a challenge for an IP
-    pub fn issue_challenge(&self, _ip: IpAddr) -> Challenge {
+    pub fn issue_challenge(&self, ip: IpAddr) -> Challenge {
         self.metrics
             .challenges_issued
             .fetch_add(1, Ordering::Relaxed);
 
-        let challenge = Challenge::new(self.config.challenge_difficulty);
+        let challenge = Challenge::new(self.config.challenge_difficulty, ip);
 
-        let mut pending = self.pending_challenges.write().unwrap();
+        let mut pending = self
+            .pending_challenges
+            .write()
+            .expect("probe protection challenge lock poisoned - this indicates a critical bug");
+
+        // Bound memory: drop oldest entry if limit exceeded
+        if pending.len() >= MAX_PENDING_CHALLENGES {
+            if let Some(oldest) = pending.keys().next().copied() {
+                pending.remove(&oldest);
+            }
+        }
         pending.insert(challenge.nonce, challenge.clone());
 
         debug!(difficulty = challenge.difficulty, "Challenge issued");
@@ -314,11 +340,14 @@ impl ProbeProtector {
     }
 
     /// Verify a challenge response
-    pub fn verify_challenge(&self, nonce: &[u8; 32], response: &[u8; 32]) -> bool {
-        let mut pending = self.pending_challenges.write().unwrap();
+    pub fn verify_challenge(&self, ip: IpAddr, nonce: &[u8; 32], response: &[u8; 32]) -> bool {
+        let mut pending = self
+            .pending_challenges
+            .write()
+            .expect("probe protection challenge lock poisoned - this indicates a critical bug");
 
         if let Some(challenge) = pending.remove(nonce) {
-            if challenge.verify(response) {
+            if challenge.ip == ip && challenge.verify(response) {
                 self.metrics
                     .challenges_passed
                     .fetch_add(1, Ordering::Relaxed);
@@ -363,7 +392,9 @@ impl ProbeProtector {
 
         // Cleanup IP tracking
         {
-            let mut tracking = self.ip_tracking.write().unwrap();
+            let mut tracking = self.ip_tracking.write().expect(
+                "probe protection lock poisoned during cleanup - this indicates a critical bug",
+            );
             tracking.retain(|_, entry| {
                 // Keep if banned and not expired, or if recently active
                 if let Some(banned_until) = entry.banned_until {
@@ -378,7 +409,8 @@ impl ProbeProtector {
 
         // Cleanup expired challenges
         {
-            let mut pending = self.pending_challenges.write().unwrap();
+            let mut pending = self.pending_challenges.write()
+                .expect("probe protection challenge lock poisoned during cleanup - this indicates a critical bug");
             pending.retain(|_, challenge| now < challenge.expires_at);
         }
     }
@@ -452,7 +484,7 @@ mod tests {
 
     #[test]
     fn test_challenge_verification() {
-        let challenge = Challenge::new(0); // 0 difficulty = any response works
+        let challenge = Challenge::new(0, IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)); // 0 difficulty = any response works
 
         // With 0 difficulty, any response should pass
         let response = [0u8; 32];
@@ -502,12 +534,13 @@ mod tests {
 
     #[test]
     fn test_challenge_serialization() {
-        let challenge = Challenge::new(2);
+        let challenge = Challenge::new(2, IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
         let bytes = challenge.to_bytes();
 
         assert_eq!(bytes.len(), 33);
 
-        let restored = Challenge::from_bytes(&bytes).unwrap();
+        let restored = Challenge::from_bytes(&bytes)
+            .expect("challenge deserialization should succeed for valid bytes");
         assert_eq!(restored.nonce, challenge.nonce);
         assert_eq!(restored.difficulty, challenge.difficulty);
     }

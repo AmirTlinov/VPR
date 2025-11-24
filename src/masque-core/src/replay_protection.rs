@@ -31,12 +31,15 @@ struct NonceEntry {
 pub enum ReplayError {
     /// Message has already been seen (replay attack)
     DuplicateMessage,
+    /// Internal cache error (lock poisoned due to panic in another thread)
+    CacheCorrupted,
 }
 
 impl std::fmt::Display for ReplayError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::DuplicateMessage => write!(f, "duplicate message detected (replay attack)"),
+            Self::CacheCorrupted => write!(f, "replay protection cache corrupted (lock poisoned)"),
         }
     }
 }
@@ -135,7 +138,13 @@ impl NonceCache {
 
         // Try read lock first to check if message exists
         {
-            let cache = self.cache.read().unwrap();
+            let cache = match self.cache.read() {
+                Ok(guard) => guard,
+                Err(poisoned) => {
+                    warn!(target: "telemetry.replay", "cache lock poisoned, recovering");
+                    poisoned.into_inner()
+                }
+            };
             if let Some(entry) = cache.get(&hash) {
                 if entry.expires_at > now {
                     let blocked = self.metrics.replays_blocked.fetch_add(1, Ordering::Relaxed) + 1;
@@ -148,7 +157,13 @@ impl NonceCache {
 
         // Need write lock to insert
         {
-            let mut cache = self.cache.write().unwrap();
+            let mut cache = match self.cache.write() {
+                Ok(guard) => guard,
+                Err(poisoned) => {
+                    warn!(target: "telemetry.replay", "cache lock poisoned on write, recovering");
+                    poisoned.into_inner()
+                }
+            };
 
             // Double-check after acquiring write lock
             if let Some(entry) = cache.get(&hash) {
@@ -204,7 +219,13 @@ impl NonceCache {
         let hash = self.compute_hash(message);
         let now = Instant::now();
 
-        let cache = self.cache.read().unwrap();
+        let cache = match self.cache.read() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                warn!(target: "telemetry.replay", "cache lock poisoned in is_replay, recovering");
+                poisoned.into_inner()
+            }
+        };
         if let Some(entry) = cache.get(&hash) {
             return entry.expires_at > now;
         }
@@ -218,18 +239,36 @@ impl NonceCache {
 
     /// Get number of entries in cache
     pub fn len(&self) -> usize {
-        self.cache.read().unwrap().len()
+        match self.cache.read() {
+            Ok(guard) => guard.len(),
+            Err(poisoned) => {
+                warn!(target: "telemetry.replay", "cache lock poisoned in len, recovering");
+                poisoned.into_inner().len()
+            }
+        }
     }
 
     /// Check if cache is empty
     pub fn is_empty(&self) -> bool {
-        self.cache.read().unwrap().is_empty()
+        match self.cache.read() {
+            Ok(guard) => guard.is_empty(),
+            Err(poisoned) => {
+                warn!(target: "telemetry.replay", "cache lock poisoned in is_empty, recovering");
+                poisoned.into_inner().is_empty()
+            }
+        }
     }
 
     /// Force cleanup of expired entries
     pub fn cleanup(&self) {
         let now = Instant::now();
-        let mut cache = self.cache.write().unwrap();
+        let mut cache = match self.cache.write() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                warn!(target: "telemetry.replay", "cache lock poisoned in cleanup, recovering");
+                poisoned.into_inner()
+            }
+        };
         let initial_len = cache.len();
 
         cache.retain(|_, entry| entry.expires_at > now);
@@ -241,7 +280,13 @@ impl NonceCache {
                 .fetch_add(removed as u64, Ordering::Relaxed);
         }
 
-        *self.last_cleanup.write().unwrap() = now;
+        match self.last_cleanup.write() {
+            Ok(mut guard) => *guard = now,
+            Err(poisoned) => {
+                warn!(target: "telemetry.replay", "cleanup lock poisoned, recovering");
+                *poisoned.into_inner() = now;
+            }
+        }
     }
 
     /// Compute hash of message prefix
@@ -260,8 +305,14 @@ impl NonceCache {
     fn maybe_cleanup(&self) {
         let now = Instant::now();
         let should_cleanup = {
-            let last = self.last_cleanup.read().unwrap();
-            now.duration_since(*last) >= self.cleanup_interval
+            let last = match self.last_cleanup.read() {
+                Ok(guard) => *guard,
+                Err(poisoned) => {
+                    warn!(target: "telemetry.replay", "cleanup lock poisoned in maybe_cleanup, recovering");
+                    *poisoned.into_inner()
+                }
+            };
+            now.duration_since(last) >= self.cleanup_interval
         };
 
         if should_cleanup {
@@ -293,7 +344,13 @@ impl NonceCache {
                 "evicted entries to honor soft limit"
             );
         }
-        *self.last_cleanup.write().unwrap() = now;
+        match self.last_cleanup.write() {
+            Ok(mut guard) => *guard = now,
+            Err(poisoned) => {
+                warn!(target: "telemetry.replay", "cleanup lock poisoned in evict_oldest, recovering");
+                *poisoned.into_inner() = now;
+            }
+        }
     }
 }
 
@@ -370,7 +427,9 @@ mod tests {
         assert!(!cache.is_replay(msg));
 
         // Record it
-        cache.check_and_record(msg).unwrap();
+        cache
+            .check_and_record(msg)
+            .expect("test: failed to record message");
 
         // Now it's a replay
         assert!(cache.is_replay(msg));
@@ -383,7 +442,9 @@ mod tests {
         // Add some messages
         for i in 0..10 {
             let msg = format!("message {}", i);
-            cache.check_and_record(msg.as_bytes()).unwrap();
+            cache
+                .check_and_record(msg.as_bytes())
+                .expect("test: failed to record message");
         }
         assert_eq!(cache.len(), 10);
 
