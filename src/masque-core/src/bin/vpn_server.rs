@@ -14,6 +14,7 @@ use std::fs::{self, File};
 use std::io::BufReader;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
+use std::process::Command;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -224,6 +225,14 @@ struct Args {
     /// Export JA3/JA3S/JA4 metrics to Prometheus text file
     #[arg(long)]
     tls_fp_metrics_path: Option<PathBuf>,
+
+    /// Run tls-fp-sync.py on startup to refresh fingerprint profiles
+    #[arg(long)]
+    tls_fp_sync: bool,
+
+    /// Path to tls-fp-sync log file
+    #[arg(long, default_value = "logs/tls-fp-sync.log")]
+    tls_fp_sync_log: PathBuf,
 }
 
 /// Client session with allocated IP and connection
@@ -493,6 +502,30 @@ async fn run_vpn_server(args: Args) -> Result<()> {
     }
 
     // TLS fingerprint profiles (main + canary union for rustls config)
+    if args.tls_fp_sync {
+        let log_path = &args.tls_fp_sync_log;
+        let stdout = File::options().append(true).create(true).open(log_path);
+        let stderr = File::options().append(true).create(true).open(log_path);
+        match (stdout, stderr) {
+            (Ok(out), Ok(err)) => {
+                let status = Command::new("python")
+                    .arg("scripts/tls-fp-sync.py")
+                    .arg("--validate-only")
+                    .stdout(out)
+                    .stderr(err)
+                    .status();
+                match status {
+                    Ok(s) if s.success() => info!(?log_path, "tls-fp-sync validate-only succeeded"),
+                    Ok(s) => {
+                        warn!(?log_path, code=?s.code(), "tls-fp-sync failed, using existing profiles")
+                    }
+                    Err(e) => warn!(?e, ?log_path, "Failed to run tls-fp-sync"),
+                }
+            }
+            _ => warn!(?log_path, "Could not open tls-fp-sync log file"),
+        }
+    }
+
     let canary_profile = args
         .tls_canary_profile
         .parse()

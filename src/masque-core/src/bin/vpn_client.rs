@@ -13,6 +13,8 @@ use sha2::Sha256;
 use std::fs;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
+use std::process::Command;
+use std::fs::File;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
@@ -130,6 +132,14 @@ struct Args {
     #[arg(long)]
     tls_fp_metrics_path: Option<PathBuf>,
 
+    /// Run tls-fp-sync.py on startup (client side validation)
+    #[arg(long)]
+    tls_fp_sync: bool,
+
+    /// Path to tls-fp-sync log file
+    #[arg(long, default_value = "logs/tls-fp-sync.log")]
+    tls_fp_sync_log: PathBuf,
+
     /// GREASE mode: random|deterministic
     #[arg(long, default_value = "random")]
     tls_grease_mode: String,
@@ -225,6 +235,32 @@ async fn run_vpn_client(args: Args) -> Result<()> {
         .parse()
         .ok()
         .filter(|p: &TlsProfile| !matches!(p, TlsProfile::Custom));
+
+    if args.tls_fp_sync {
+        let log_path = &args.tls_fp_sync_log;
+        let stdout = File::options().append(true).create(true).open(log_path);
+        let stderr = File::options().append(true).create(true).open(log_path);
+        match (stdout, stderr) {
+            (Ok(out), Ok(err)) => {
+                let status = Command::new("python")
+                    .arg("scripts/tls-fp-sync.py")
+                    .arg("--validate-only")
+                    .stdout(out)
+                    .stderr(err)
+                    .status();
+                match status {
+                    Ok(s) if s.success() => {
+                        tracing::info!(?log_path, "tls-fp-sync validate-only succeeded (client)")
+                    }
+                    Ok(s) => {
+                        tracing::warn!(?log_path, code=?s.code(), "tls-fp-sync failed, using existing profiles")
+                    }
+                    Err(e) => tracing::warn!(?e, ?log_path, "Failed to run tls-fp-sync"),
+                }
+            }
+            _ => tracing::warn!(?log_path, "Could not open tls-fp-sync log file"),
+        }
+    }
     let grease_mode = parse_grease_mode(&args.tls_grease_mode, args.tls_grease_seed);
 
     // Suspicion-aware TLS selection: if server reports suspicion >=35, disable canary
