@@ -65,6 +65,12 @@ cargo run -p health-history -- --tail 5
 
 Читает `~/.vpr/health_reports.jsonl`, выводит последние отчёты или `--json` для автоматизации. Заменяет старый python-скрипт.
 
+## TUI ASCII Earth
+
+- Интерактивный режим: `cargo run -p vpr-tui --release` (выход `q`/`Esc`).
+- Снепшот кадра или embed: `cargo run -p vpr-tui --bin frame_dump -- 64 32 0.6`.
+- Детали по алгоритму и тестам: `docs/tui-earth.md`.
+
 ## План работ
 
 См. `TODO.md`
