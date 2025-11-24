@@ -107,7 +107,7 @@ impl SigningKeypair {
         let sig = Signature::from_bytes(signature);
         self.verifying
             .verify(message, &sig)
-            .map_err(|e| CryptoError::InvalidKey(format!("signature verification failed: {e}")))
+            .map_err(|_| CryptoError::InvalidKey("signature verification failed".into()))
     }
 
     pub fn save(&self, dir: &Path, name: &str) -> Result<()> {
@@ -148,7 +148,7 @@ impl SignatureVerifier {
     /// Create verifier from public key bytes
     pub fn from_public_bytes(bytes: &[u8; 32]) -> Result<Self> {
         let verifying = VerifyingKey::from_bytes(bytes)
-            .map_err(|e| CryptoError::InvalidKey(format!("invalid public key: {e}")))?;
+            .map_err(|_| CryptoError::InvalidKey("invalid public key".into()))?;
         Ok(Self { verifying })
     }
 
@@ -163,7 +163,7 @@ impl SignatureVerifier {
         let sig = Signature::from_bytes(signature);
         self.verifying
             .verify(message, &sig)
-            .map_err(|e| CryptoError::InvalidKey(format!("signature verification failed: {e}")))
+            .map_err(|_| CryptoError::InvalidKey("signature verification failed".into()))
     }
 
     /// Load public key from file

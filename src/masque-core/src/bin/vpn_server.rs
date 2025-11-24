@@ -34,7 +34,8 @@ use masque_core::quic_stream::QuicBiStream;
 use masque_core::replay_protection::NonceCache;
 use masque_core::rng;
 use masque_core::tls_fingerprint::{
-    GreaseMode, Ja3Fingerprint, Ja3sFingerprint, Ja4Fingerprint, TlsProfile,
+    select_tls_profile, GreaseMode, Ja3Fingerprint, Ja3sFingerprint, Ja4Fingerprint, TlsProfile,
+    TlsProfileBucket,
 };
 use masque_core::tun::{enable_ip_forwarding, setup_nat, TunConfig, TunDevice};
 use masque_core::vpn_config::{ConfigAck, VpnConfig};
@@ -168,6 +169,18 @@ struct Args {
     /// TLS fingerprint profile to mimic (chrome, firefox, safari, random)
     #[arg(long, default_value = "chrome")]
     tls_profile: String,
+
+    /// Canary TLS profile (chrome|firefox|safari|random|custom)
+    #[arg(long, default_value = "safari")]
+    tls_canary_profile: String,
+
+    /// Percent of connections using canary profile
+    #[arg(long, default_value = "5")]
+    tls_canary_percent: f64,
+
+    /// Seed for canary selection (0 = random)
+    #[arg(long, default_value_t = 0)]
+    tls_canary_seed: u64,
 
     /// GREASE mode: random|deterministic
     #[arg(long, default_value = "random")]
@@ -445,8 +458,19 @@ async fn run_vpn_server(args: Args) -> Result<()> {
         setup_nat(tun.name(), iface).context("setting up NAT")?;
     }
 
-    // TLS fingerprint profile
-    let tls_profile: TlsProfile = args.tls_profile.parse().unwrap_or(TlsProfile::Chrome);
+    // TLS fingerprint profile with canary rollout
+    let main_profile: TlsProfile = args.tls_profile.parse().unwrap_or(TlsProfile::Chrome);
+    let canary_profile = args
+        .tls_canary_profile
+        .parse()
+        .ok()
+        .filter(|p: &TlsProfile| !matches!(p, TlsProfile::Custom));
+    let (tls_profile, tls_bucket) = select_tls_profile(
+        main_profile,
+        canary_profile,
+        args.tls_canary_percent,
+        Some(args.tls_canary_seed).filter(|s| *s != 0),
+    );
     let grease_mode = parse_grease_mode(&args.tls_grease_mode, args.tls_grease_seed);
     let (ja3, ja3s, ja4, selected_cipher) = build_tls_fingerprint(&tls_profile, grease_mode);
     let ja3_hash = ja3.to_ja3_hash();
@@ -454,6 +478,7 @@ async fn run_vpn_server(args: Args) -> Result<()> {
     let ja4_hash = ja4.to_hash();
     info!(
         profile = %tls_profile,
+        bucket = ?tls_bucket,
         grease = ?grease_mode,
         ja3 = %ja3_hash,
         ja3s = %ja3s_hash,
@@ -466,9 +491,13 @@ async fn run_vpn_server(args: Args) -> Result<()> {
         let content = format!(
             "# HELP tls_fp_info TLS fingerprint JA3/JA3S/JA4\\n\
              # TYPE tls_fp_info gauge\\n\
-             tls_fp_info{{type=\"ja3\",hash=\"{ja3}\"}} 1\\n\
-             tls_fp_info{{type=\"ja3s\",hash=\"{ja3s}\"}} 1\\n\
-             tls_fp_info{{type=\"ja4\",hash=\"{ja4}\"}} 1\\n",
+             tls_fp_info{{bucket=\"{bucket}\",type=\"ja3\",hash=\"{ja3}\"}} 1\\n\
+             tls_fp_info{{bucket=\"{bucket}\",type=\"ja3s\",hash=\"{ja3s}\"}} 1\\n\
+             tls_fp_info{{bucket=\"{bucket}\",type=\"ja4\",hash=\"{ja4}\"}} 1\\n",
+            bucket = match tls_bucket {
+                TlsProfileBucket::Main => "main",
+                TlsProfileBucket::Canary => "canary",
+            },
             ja3 = ja3_hash,
             ja3s = ja3s_hash,
             ja4 = ja4_hash

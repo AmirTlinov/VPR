@@ -309,8 +309,10 @@ pub async fn read_handshake_msg<R: AsyncRead + Unpin>(reader: &mut R) -> Result<
     if len == 0 {
         return Ok(Vec::new());
     }
-    if len > 65536 {
-        anyhow::bail!("handshake message too large: {len}");
+    // Limit to 8KB - realistic handshake is ~4KB, prevents memory amplification
+    const MAX_HANDSHAKE_SIZE: usize = 8192;
+    if len > MAX_HANDSHAKE_SIZE {
+        anyhow::bail!("handshake message too large");
     }
     let mut buf = vec![0u8; len];
     reader

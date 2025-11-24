@@ -28,9 +28,10 @@ use masque_core::key_rotation::{
 use masque_core::padding::{Padder, PaddingConfig, PaddingStrategy};
 use masque_core::quic_stream::QuicBiStream;
 use masque_core::tls_fingerprint::{
-    GreaseMode, Ja3Fingerprint, Ja3sFingerprint, Ja4Fingerprint, TlsProfile,
+    select_tls_profile, GreaseMode, Ja3Fingerprint, Ja3sFingerprint, Ja4Fingerprint, TlsProfile,
+    TlsProfileBucket,
 };
-use masque_core::tun::{setup_routing, DnsProtection, TunConfig, TunDevice};
+use masque_core::tun::{restore_routing, setup_routing, DnsProtection, TunConfig, TunDevice};
 use masque_core::vpn_config::{ConfigAck, VpnConfig};
 use masque_core::vpn_tunnel::{
     channel_to_tun, forward_quic_to_tun, forward_tun_to_quic, tun_to_channel, PacketEncapsulator,
@@ -112,6 +113,18 @@ struct Args {
     /// TLS fingerprint profile to mimic (chrome, firefox, safari, random)
     #[arg(long, default_value = "chrome")]
     tls_profile: String,
+
+    /// Canary TLS profile (chrome|firefox|safari|random|custom)
+    #[arg(long, default_value = "safari")]
+    tls_canary_profile: String,
+
+    /// Percent of connections using canary profile
+    #[arg(long, default_value = "5")]
+    tls_canary_percent: f64,
+
+    /// Seed for canary selection (0 = random)
+    #[arg(long, default_value_t = 0)]
+    tls_canary_seed: u64,
 
     /// Export JA3/JA3S/JA4 metrics to Prometheus text file
     #[arg(long)]
@@ -202,11 +215,22 @@ async fn run_vpn_client(args: Args) -> Result<()> {
         .parse()
         .with_context(|| format!("parsing server address: {}", args.server))?;
 
-    // Parse TLS profile
-    let tls_profile: TlsProfile = args.tls_profile.parse().unwrap_or_else(|_| {
+    // Parse TLS profiles (main + canary)
+    let main_profile: TlsProfile = args.tls_profile.parse().unwrap_or_else(|_| {
         tracing::warn!(profile = %args.tls_profile, "Unknown TLS profile, using Chrome");
         TlsProfile::Chrome
     });
+    let canary_profile = args
+        .tls_canary_profile
+        .parse()
+        .ok()
+        .filter(|p: &TlsProfile| !matches!(p, TlsProfile::Custom));
+    let (tls_profile, tls_bucket) = select_tls_profile(
+        main_profile,
+        canary_profile,
+        args.tls_canary_percent,
+        Some(args.tls_canary_seed).filter(|s| *s != 0),
+    );
 
     let grease_mode = parse_grease_mode(&args.tls_grease_mode, args.tls_grease_seed);
 
@@ -222,11 +246,23 @@ async fn run_vpn_client(args: Args) -> Result<()> {
         let content = format!(
             "# HELP tls_fp_info TLS fingerprint JA3/JA3S/JA4 (client)\n\
              # TYPE tls_fp_info gauge\n\
-             tls_fp_info{{role=\"client\",type=\"ja3\",hash=\"{}\"}} 1\n\
-             tls_fp_info{{role=\"client\",type=\"ja3s\",hash=\"{}\"}} 1\n\
-             tls_fp_info{{role=\"client\",type=\"ja4\",hash=\"{}\"}} 1\n",
+             tls_fp_info{{role=\"client\",bucket=\"{}\",type=\"ja3\",hash=\"{}\"}} 1\n\
+             tls_fp_info{{role=\"client\",bucket=\"{}\",type=\"ja3s\",hash=\"{}\"}} 1\n\
+             tls_fp_info{{role=\"client\",bucket=\"{}\",type=\"ja4\",hash=\"{}\"}} 1\n",
+            match tls_bucket {
+                TlsProfileBucket::Main => "main",
+                TlsProfileBucket::Canary => "canary",
+            },
             ja3.to_ja3_hash(),
+            match tls_bucket {
+                TlsProfileBucket::Main => "main",
+                TlsProfileBucket::Canary => "canary",
+            },
             ja3s.to_ja3s_hash(),
+            match tls_bucket {
+                TlsProfileBucket::Main => "main",
+                TlsProfileBucket::Canary => "canary",
+            },
             ja4.to_hash()
         );
         if let Err(e) = fs::write(path, content.as_bytes()) {
@@ -235,6 +271,7 @@ async fn run_vpn_client(args: Args) -> Result<()> {
     }
     info!(
         profile = %tls_profile,
+        bucket = ?tls_bucket,
         grease = ?grease_mode,
         ja3_hash = %ja3.to_ja3_hash(),
         ja3s_hash = %ja3s.to_ja3s_hash(),
@@ -389,12 +426,26 @@ async fn run_vpn_client(args: Args) -> Result<()> {
         vpn_config.mtu as usize,
     );
 
+    // Сохранить информацию о маршрутизации для восстановления
+    let tun_name = tun.name().to_string();
+    let gateway = vpn_config.gateway;
+    let routing_configured = args.set_default_route;
+
     // Start VPN tunnel (dns_protection will auto-restore on drop)
     let result = run_vpn_tunnel(tun, connection, padder, cover_config, session_state.clone()).await;
 
+    // Восстановить маршрутизацию при выходе
+    if routing_configured {
+        if let Err(e) = restore_routing(&tun_name, gateway) {
+            tracing::warn!(%e, "Failed to restore routing");
+        }
+    }
+
     // Explicitly disable DNS protection on exit
     if dns_protection.is_active() {
-        let _ = dns_protection.disable();
+        if let Err(e) = dns_protection.disable() {
+            tracing::warn!(%e, "Failed to disable DNS protection");
+        }
     }
 
     let _ = rotation_shutdown_tx.send(());
@@ -504,15 +555,68 @@ async fn run_vpn_tunnel(
     info!("VPN tunnel running. Press Ctrl+C to stop.");
 
     // Wait for any task to complete (usually means connection lost)
-    tokio::select! {
-        _ = tun_read_task => info!("TUN reader stopped"),
-        _ = tun_to_quic_task => info!("TUN->QUIC forwarder stopped"),
-        _ = quic_to_channel_task => info!("QUIC->TUN forwarder stopped"),
-        _ = tun_write_task => info!("TUN writer stopped"),
-        _ = cover_task => info!("Cover traffic task stopped"),
-        _ = tokio::signal::ctrl_c() => info!("Ctrl+C received, shutting down"),
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut sigterm =
+            signal(SignalKind::terminate()).context("failed to install SIGTERM handler")?;
+        let mut sigint =
+            signal(SignalKind::interrupt()).context("failed to install SIGINT handler")?;
+
+        tokio::select! {
+            result = tun_read_task => {
+                info!("TUN reader stopped: {:?}", result);
+            }
+            result = tun_to_quic_task => {
+                info!("TUN->QUIC forwarder stopped: {:?}", result);
+            }
+            result = quic_to_channel_task => {
+                info!("QUIC->TUN forwarder stopped: {:?}", result);
+            }
+            result = tun_write_task => {
+                info!("TUN writer stopped: {:?}", result);
+            }
+            result = cover_task => {
+                info!("Cover traffic task stopped: {:?}", result);
+            }
+            _ = tokio::signal::ctrl_c() => {
+                info!("Ctrl+C received, shutting down gracefully");
+            }
+            _ = sigterm.recv() => {
+                info!("SIGTERM received, shutting down gracefully");
+            }
+            _ = sigint.recv() => {
+                info!("SIGINT received, shutting down gracefully");
+            }
+        }
     }
 
+    #[cfg(not(unix))]
+    {
+        tokio::select! {
+            result = tun_read_task => {
+                info!("TUN reader stopped: {:?}", result);
+            }
+            result = tun_to_quic_task => {
+                info!("TUN->QUIC forwarder stopped: {:?}", result);
+            }
+            result = quic_to_channel_task => {
+                info!("QUIC->TUN forwarder stopped: {:?}", result);
+            }
+            result = tun_write_task => {
+                info!("TUN writer stopped: {:?}", result);
+            }
+            result = cover_task => {
+                info!("Cover traffic task stopped: {:?}", result);
+            }
+            _ = tokio::signal::ctrl_c() => {
+                info!("Ctrl+C received, shutting down gracefully");
+            }
+        }
+    }
+
+    // Задачи уже завершены в select!, просто логируем завершение
+    info!("VPN tunnel shutdown complete");
     Ok(())
 }
 

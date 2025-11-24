@@ -25,7 +25,7 @@ impl SealIdentity {
     pub fn from_str(s: &str) -> Result<Self> {
         let identity = s
             .parse::<x25519::Identity>()
-            .map_err(|e| CryptoError::InvalidKey(format!("invalid age identity: {e}")))?;
+            .map_err(|_| CryptoError::InvalidKey("invalid age identity".into()))?;
         Ok(Self { identity })
     }
 
@@ -94,7 +94,7 @@ impl SealRecipient {
     pub fn from_str(s: &str) -> Result<Self> {
         let recipient = s
             .parse::<x25519::Recipient>()
-            .map_err(|e| CryptoError::InvalidKey(format!("invalid age recipient: {e}")))?;
+            .map_err(|_| CryptoError::InvalidKey("invalid age recipient".into()))?;
         Ok(Self { recipient })
     }
 
