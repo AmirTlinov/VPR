@@ -524,6 +524,11 @@ async fn deploy_server(
     vps: deployer::VpsConfig,
     app: AppHandle,
 ) -> Result<(), String> {
+    // Validate VPS configuration before deployment
+    if !vps.is_configured() {
+        return Err("VPS not configured: host and authentication required".into());
+    }
+
     let deployer = deployer::Deployer::new(&vps)
         .map_err(|e| format!("Invalid VPS config: {}", e))?
         .with_app_handle(app);
