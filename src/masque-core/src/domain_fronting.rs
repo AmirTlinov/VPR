@@ -479,4 +479,331 @@ mod tests {
         assert!(host.is_some());
         assert_eq!(host.unwrap().1, "target.com");
     }
+
+    // === Additional tests for increased coverage ===
+
+    #[test]
+    fn test_all_cdn_providers_default_front() {
+        assert_eq!(CdnProvider::Fastly.default_front(), Some("fastly.net"));
+        assert_eq!(CdnProvider::CloudFront.default_front(), Some("cloudfront.net"));
+        assert_eq!(CdnProvider::Google.default_front(), Some("google.com"));
+        assert_eq!(CdnProvider::Azure.default_front(), Some("azureedge.net"));
+        assert_eq!(CdnProvider::Akamai.default_front(), Some("akamai.net"));
+    }
+
+    #[test]
+    fn test_all_cdn_providers_fronting_blocked() {
+        assert!(!CdnProvider::Fastly.fronting_blocked());
+        assert!(!CdnProvider::Azure.fronting_blocked());
+        assert!(!CdnProvider::Akamai.fronting_blocked());
+        assert!(!CdnProvider::Custom.fronting_blocked());
+    }
+
+    #[test]
+    fn test_cdn_provider_debug_and_clone() {
+        let provider = CdnProvider::Cloudflare;
+        let debug_str = format!("{:?}", provider);
+        assert!(debug_str.contains("Cloudflare"));
+
+        let cloned = provider;
+        assert_eq!(cloned, CdnProvider::Cloudflare);
+    }
+
+    #[test]
+    fn test_cdn_provider_serialization() {
+        let provider = CdnProvider::Fastly;
+        let json = serde_json::to_string(&provider).unwrap();
+        assert_eq!(json, "\"fastly\"");
+
+        let parsed: CdnProvider = serde_json::from_str("\"cloudflare\"").unwrap();
+        assert_eq!(parsed, CdnProvider::Cloudflare);
+    }
+
+    #[test]
+    fn test_cdn_provider_hash() {
+        use std::collections::HashSet;
+        let mut set = HashSet::new();
+        set.insert(CdnProvider::Cloudflare);
+        set.insert(CdnProvider::Fastly);
+        assert_eq!(set.len(), 2);
+        assert!(set.contains(&CdnProvider::Cloudflare));
+    }
+
+    #[test]
+    fn test_front_config_with_ip() {
+        let config = FrontConfig::new(
+            CdnProvider::Cloudflare,
+            "cdn.example.com",
+            "target.com",
+        )
+        .with_ip("192.168.1.1");
+
+        assert_eq!(config.ip_override, Some("192.168.1.1".to_string()));
+    }
+
+    #[test]
+    fn test_front_config_with_priority() {
+        let config = FrontConfig::new(
+            CdnProvider::Cloudflare,
+            "cdn.example.com",
+            "target.com",
+        )
+        .with_priority(50);
+
+        assert_eq!(config.priority, 50);
+    }
+
+    #[test]
+    fn test_front_config_build_url_no_prefix() {
+        let config = FrontConfig::new(
+            CdnProvider::Cloudflare,
+            "cdn.example.com",
+            "target.com",
+        );
+
+        assert_eq!(config.build_url("/api/data"), "https://cdn.example.com/api/data");
+    }
+
+    #[test]
+    fn test_front_config_build_url_trailing_slash_prefix() {
+        let config = FrontConfig::new(
+            CdnProvider::Cloudflare,
+            "cdn.example.com",
+            "target.com",
+        )
+        .with_path_prefix("/proxy/");
+
+        assert_eq!(
+            config.build_url("/api/data"),
+            "https://cdn.example.com/proxy/api/data"
+        );
+    }
+
+    #[test]
+    fn test_front_config_debug_and_clone() {
+        let config = FrontConfig::new(
+            CdnProvider::Cloudflare,
+            "cdn.example.com",
+            "target.com",
+        );
+
+        let debug_str = format!("{:?}", config);
+        assert!(debug_str.contains("FrontConfig"));
+        assert!(debug_str.contains("cdn.example.com"));
+
+        let cloned = config.clone();
+        assert_eq!(cloned.front_domain, "cdn.example.com");
+    }
+
+    #[test]
+    fn test_front_config_serialization() {
+        let config = FrontConfig::new(
+            CdnProvider::Cloudflare,
+            "cdn.example.com",
+            "target.com",
+        );
+
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(json.contains("cloudflare"));
+        assert!(json.contains("cdn.example.com"));
+
+        let parsed: FrontConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.front_domain, "cdn.example.com");
+        assert!(parsed.enabled); // default_enabled
+        assert_eq!(parsed.priority, 100); // default_priority
+    }
+
+    #[test]
+    fn test_fronter_with_timeout() {
+        let fronts = vec![FrontConfig::new(
+            CdnProvider::Cloudflare,
+            "cdn.example.com",
+            "target.com",
+        )];
+
+        let fronter = DomainFronter::new(fronts).with_timeout(Duration::from_secs(60));
+        assert_eq!(fronter.timeout, Duration::from_secs(60));
+    }
+
+    #[test]
+    fn test_fronter_enabled_fronts() {
+        let fronts = vec![
+            FrontConfig::new(CdnProvider::Cloudflare, "cf.example.com", "target.com"),
+            FrontConfig {
+                provider: CdnProvider::Fastly,
+                front_domain: "fs.example.com".to_string(),
+                target_domain: "target.com".to_string(),
+                ip_override: None,
+                path_prefix: String::new(),
+                priority: 100,
+                enabled: false,
+            },
+        ];
+
+        let fronter = DomainFronter::new(fronts);
+        let enabled: Vec<_> = fronter.enabled_fronts().collect();
+        assert_eq!(enabled.len(), 1);
+        assert_eq!(enabled[0].front_domain, "cf.example.com");
+    }
+
+    #[test]
+    fn test_fronter_mark_working() {
+        let fronts = vec![FrontConfig::new(
+            CdnProvider::Cloudflare,
+            "cf.example.com",
+            "target.com",
+        )];
+
+        let mut fronter = DomainFronter::new(fronts);
+        fronter.mark_failed("cf.example.com");
+        assert_eq!(fronter.available_count(), 0);
+
+        fronter.mark_working("cf.example.com");
+        assert_eq!(fronter.available_count(), 1);
+    }
+
+    #[test]
+    fn test_fronter_next_front_empty() {
+        let fronts = vec![FrontConfig::new(
+            CdnProvider::Cloudflare,
+            "cf.example.com",
+            "target.com",
+        )];
+
+        let mut fronter = DomainFronter::new(fronts);
+        fronter.mark_failed("cf.example.com");
+
+        let next = fronter.next_front();
+        assert!(next.is_none());
+    }
+
+    #[test]
+    fn test_fronter_next_front_rotation() {
+        let fronts = vec![
+            FrontConfig::new(CdnProvider::Cloudflare, "cf1.example.com", "target.com")
+                .with_priority(10),
+            FrontConfig::new(CdnProvider::Fastly, "cf2.example.com", "target.com")
+                .with_priority(20),
+        ];
+
+        let mut fronter = DomainFronter::new(fronts);
+
+        // Call next_front multiple times to test rotation
+        let _ = fronter.next_front();
+        let second = fronter.next_front();
+        assert!(second.is_some());
+    }
+
+    #[test]
+    fn test_fronter_tls_server_name() {
+        let fronts = vec![FrontConfig::new(
+            CdnProvider::Cloudflare,
+            "cdn.example.com",
+            "target.com",
+        )];
+
+        let fronter = DomainFronter::new(fronts.clone());
+        assert_eq!(fronter.tls_server_name(&fronts[0]), "cdn.example.com");
+    }
+
+    #[test]
+    fn test_fronter_debug_and_clone() {
+        let fronts = vec![FrontConfig::new(
+            CdnProvider::Cloudflare,
+            "cdn.example.com",
+            "target.com",
+        )];
+
+        let fronter = DomainFronter::new(fronts);
+        let debug_str = format!("{:?}", fronter);
+        assert!(debug_str.contains("DomainFronter"));
+
+        let cloned = fronter.clone();
+        assert_eq!(cloned.available_count(), 1);
+    }
+
+    #[test]
+    fn test_fronted_request_post_with_body() {
+        let front = FrontConfig::new(CdnProvider::Cloudflare, "cdn.example.com", "target.com");
+        let body_data = b"test body".to_vec();
+        let request = FrontedRequest::post(front, "/api").body(body_data.clone());
+
+        assert_eq!(request.body, Some(body_data));
+    }
+
+    #[test]
+    fn test_fronted_request_front_method() {
+        let front = FrontConfig::new(CdnProvider::Cloudflare, "cdn.example.com", "target.com");
+        let request = FrontedRequest::get(front, "/api");
+
+        assert_eq!(request.front().front_domain, "cdn.example.com");
+        assert_eq!(request.front().target_domain, "target.com");
+    }
+
+    #[test]
+    fn test_reflector_config_debug_and_clone() {
+        let config = ReflectorConfig::new(
+            vec!["target.com".to_string()],
+            "127.0.0.1:8080",
+        );
+
+        let debug_str = format!("{:?}", config);
+        assert!(debug_str.contains("ReflectorConfig"));
+        assert!(debug_str.contains("target.com"));
+
+        let cloned = config.clone();
+        assert_eq!(cloned.allowed_hosts, vec!["target.com".to_string()]);
+    }
+
+    #[test]
+    fn test_reflector_config_serialization() {
+        let config = ReflectorConfig::new(
+            vec!["target.com".to_string()],
+            "127.0.0.1:8080",
+        );
+
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(json.contains("target.com"));
+        assert!(json.contains("127.0.0.1:8080"));
+
+        let parsed: ReflectorConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.backend_addr, "127.0.0.1:8080");
+    }
+
+    #[test]
+    fn test_reflector_is_host_allowed_exact() {
+        let config = ReflectorConfig::new(
+            vec!["target.com".to_string()],
+            "127.0.0.1:8080",
+        );
+
+        assert!(config.is_host_allowed("target.com"));
+        assert!(!config.is_host_allowed("other.com"));
+    }
+
+    #[test]
+    fn test_reflector_is_host_allowed_subdomain() {
+        let config = ReflectorConfig::new(
+            vec!["target.com".to_string()],
+            "127.0.0.1:8080",
+        );
+
+        assert!(config.is_host_allowed("sub.target.com"));
+        assert!(config.is_host_allowed("deep.sub.target.com"));
+        assert!(!config.is_host_allowed("faketarget.com"));
+    }
+
+    #[test]
+    fn test_default_priority_and_enabled() {
+        // Test through deserialization
+        let json = r#"{
+            "provider": "cloudflare",
+            "front_domain": "cdn.example.com",
+            "target_domain": "target.com"
+        }"#;
+
+        let config: FrontConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.priority, 100); // default_priority
+        assert!(config.enabled); // default_enabled
+    }
 }

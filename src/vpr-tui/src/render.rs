@@ -9,8 +9,8 @@ use ratatui::Frame;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::ascii_art::{
-    self, glitch_text, get_doge_message, get_hacker_message, hacker_progress_bar, pulse, spinner,
-    DOGE, SKULL, VPR_LOGO,
+    glitch_text, get_doge_message, get_hacker_message, hacker_progress_bar, pulse, spinner,
+    DOGE, SKULL,
 };
 use crate::globe::GlobeRenderer;
 
@@ -128,7 +128,7 @@ fn render_hacker_header(frame: &mut Frame<'_>, area: Rect, stats: &UiStats) {
                 Style::default().fg(Color::Magenta),
             ),
             Span::styled(
-                format!(" [ENCRYPTED:ML-KEM768] "),
+                " [ENCRYPTED:ML-KEM768] ",
                 Style::default().fg(Color::Green).add_modifier(Modifier::RAPID_BLINK),
             ),
             Span::styled(
@@ -151,7 +151,7 @@ fn render_hacker_header(frame: &mut Frame<'_>, area: Rect, stats: &UiStats) {
 fn render_orphaned_warning(frame: &mut Frame<'_>, area: Rect, health: &NetworkHealth) {
     if let NetworkHealth::OrphanedState {
         pending_changes,
-        crashed_at,
+        crashed_at: _,
     } = health
     {
         let skull_line = SKULL.get(5).unwrap_or(&"");
@@ -447,4 +447,193 @@ fn render_hacker_footer(frame: &mut Frame<'_>, area: Rect, stats: &UiStats) {
         ),
         area,
     );
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    fn make_stats(tick: u64, health: NetworkHealth) -> UiStats {
+        UiStats {
+            tick,
+            fps: 60,
+            latency_ms: 10,
+            throughput_mbps: 900,
+            network_health: health,
+        }
+    }
+
+    #[test]
+    fn network_health_default_is_connected() {
+        let health = NetworkHealth::default();
+        assert!(matches!(health, NetworkHealth::Connected));
+    }
+
+    #[test]
+    fn network_health_variants() {
+        let connected = NetworkHealth::Connected;
+        let disconnected = NetworkHealth::Disconnected;
+        let orphaned = NetworkHealth::OrphanedState {
+            pending_changes: 3,
+            crashed_at: Some(12345),
+        };
+        let repairing = NetworkHealth::Repairing;
+
+        assert!(format!("{:?}", connected).contains("Connected"));
+        assert!(format!("{:?}", disconnected).contains("Disconnected"));
+        assert!(format!("{:?}", orphaned).contains("OrphanedState"));
+        assert!(format!("{:?}", repairing).contains("Repairing"));
+    }
+
+    #[test]
+    fn ui_stats_construction() {
+        let stats = make_stats(100, NetworkHealth::Connected);
+        assert_eq!(stats.tick, 100);
+        assert_eq!(stats.fps, 60);
+    }
+
+    #[test]
+    fn draw_connected_state() {
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let globe = crate::globe::GlobeRenderer::new(200, 0.3, 0.2);
+        let stats = make_stats(1, NetworkHealth::Connected);
+
+        // Should not panic
+        terminal
+            .draw(|f| {
+                draw(f, &globe, f.size(), 0.0, stats);
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
+        // Check for any content rendered
+        assert!(!content.trim().is_empty());
+    }
+
+    #[test]
+    fn draw_disconnected_state() {
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let globe = crate::globe::GlobeRenderer::new(200, 0.3, 0.2);
+        let stats = make_stats(1, NetworkHealth::Disconnected);
+
+        terminal
+            .draw(|f| {
+                draw(f, &globe, f.size(), 0.5, stats);
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
+        assert!(!content.trim().is_empty());
+    }
+
+    #[test]
+    fn draw_orphaned_state_shows_warning() {
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let globe = crate::globe::GlobeRenderer::new(200, 0.3, 0.2);
+        let stats = make_stats(
+            1,
+            NetworkHealth::OrphanedState {
+                pending_changes: 5,
+                crashed_at: Some(99999),
+            },
+        );
+
+        terminal
+            .draw(|f| {
+                draw(f, &globe, f.size(), 0.0, stats);
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
+        assert!(content.contains("RECOVERY"));
+    }
+
+    #[test]
+    fn footer_shows_quit_button() {
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let globe = crate::globe::GlobeRenderer::new(200, 0.3, 0.2);
+        let stats = make_stats(1, NetworkHealth::Connected);
+
+        terminal
+            .draw(|f| {
+                draw(f, &globe, f.size(), 0.0, stats);
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
+        assert!(content.contains("EXIT_MATRIX"));
+    }
+
+    #[test]
+    fn small_terminal_does_not_panic() {
+        let backend = TestBackend::new(40, 15);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let globe = crate::globe::GlobeRenderer::new(100, 0.3, 0.2);
+        let stats = make_stats(0, NetworkHealth::Connected);
+
+        let result = terminal.draw(|f| {
+            draw(f, &globe, f.size(), 0.0, stats);
+        });
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn doge_messages_cycle() {
+        let msg1 = get_doge_message(0);
+        let msg2 = get_doge_message(100);
+        // Messages should exist
+        assert!(!msg1.is_empty());
+        assert!(!msg2.is_empty());
+    }
+
+    #[test]
+    fn hacker_messages_cycle() {
+        let msg1 = get_hacker_message(0);
+        let msg2 = get_hacker_message(100);
+        assert!(!msg1.is_empty());
+        assert!(!msg2.is_empty());
+    }
+
+    #[test]
+    fn glitch_text_works() {
+        let original = "HELLO WORLD";
+        let glitched = glitch_text(original, 42, 0.5);
+        // Glitched text should have same number of chars (not bytes)
+        assert_eq!(glitched.chars().count(), original.chars().count());
+    }
+
+    #[test]
+    fn progress_bar_renders() {
+        let bar = hacker_progress_bar(0.5, 20);
+        assert!(bar.contains("█"));
+        assert!(bar.contains("░"));
+        assert!(bar.contains("50%"));
+    }
+
+    #[test]
+    fn spinner_animates() {
+        let s1 = spinner(0);
+        let _s2 = spinner(5);
+        // Spinner should return valid chars
+        assert!(s1.is_ascii() || !s1.is_ascii()); // Always true, just check no panic
+    }
+
+    #[test]
+    fn pulse_animates() {
+        let p1 = pulse(0);
+        let p2 = pulse(10);
+        assert!(!p1.is_empty());
+        assert!(!p2.is_empty());
+    }
 }

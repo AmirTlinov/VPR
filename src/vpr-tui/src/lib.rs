@@ -1,4 +1,5 @@
 pub mod app;
+pub mod ascii_art;
 pub mod frame;
 pub mod globe;
 pub mod render;

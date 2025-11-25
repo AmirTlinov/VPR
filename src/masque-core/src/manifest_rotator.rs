@@ -356,6 +356,36 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
     use vpr_crypto::keys::SigningKeypair;
+    use vpr_crypto::manifest::ServerEndpoint;
+
+    fn test_endpoint(host: &str, port: u16) -> EndpointConfig {
+        EndpointConfig {
+            server: ServerEndpoint {
+                id: format!("test-{}-{}", host, port),
+                host: host.to_string(),
+                port,
+                noise_pubkey: "test_pubkey".to_string(),
+                region: "us-east".to_string(),
+                capabilities: vec!["masque".to_string()],
+                weight: 100,
+                active: true,
+            },
+            active: true,
+        }
+    }
+
+    fn test_server_endpoint(host: &str, port: u16) -> ServerEndpoint {
+        ServerEndpoint {
+            id: format!("test-{}-{}", host, port),
+            host: host.to_string(),
+            port,
+            noise_pubkey: "test_pubkey".to_string(),
+            region: "us-east".to_string(),
+            capabilities: vec!["masque".to_string()],
+            weight: 100,
+            active: true,
+        }
+    }
 
     #[test]
     fn test_rotation_strategy_immediate() {
@@ -381,6 +411,108 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_rotation_strategy_scheduled() {
+        let target = SystemTime::now() + Duration::from_secs(3600);
+        let strategy = RotationStrategy::Scheduled { target_time: target };
+        match strategy {
+            RotationStrategy::Scheduled { target_time } => {
+                assert!(target_time > SystemTime::now());
+            }
+            _ => panic!("Expected Scheduled strategy"),
+        }
+    }
+
+    #[test]
+    fn test_rotation_strategy_debug() {
+        let immediate = format!("{:?}", RotationStrategy::Immediate);
+        assert!(immediate.contains("Immediate"));
+
+        let canary = format!(
+            "{:?}",
+            RotationStrategy::Canary {
+                initial_percent: 20,
+                stage_interval: Duration::from_secs(60),
+            }
+        );
+        assert!(canary.contains("Canary"));
+        assert!(canary.contains("20"));
+
+        let scheduled = format!(
+            "{:?}",
+            RotationStrategy::Scheduled {
+                target_time: SystemTime::now(),
+            }
+        );
+        assert!(scheduled.contains("Scheduled"));
+    }
+
+    #[test]
+    fn test_rotation_strategy_clone() {
+        let strategy = RotationStrategy::Canary {
+            initial_percent: 15,
+            stage_interval: Duration::from_secs(120),
+        };
+        let cloned = strategy.clone();
+        assert_eq!(strategy, cloned);
+    }
+
+    #[test]
+    fn test_endpoint_config_debug() {
+        let config = test_endpoint("example.com", 443);
+        let debug_str = format!("{:?}", config);
+        assert!(debug_str.contains("EndpointConfig"));
+        assert!(debug_str.contains("example.com"));
+    }
+
+    #[test]
+    fn test_endpoint_config_clone() {
+        let config = test_endpoint("test.com", 8443);
+        let cloned = config.clone();
+        assert_eq!(cloned.server.host, "test.com");
+        assert_eq!(cloned.server.port, 8443);
+        assert!(cloned.active);
+    }
+
+    #[test]
+    fn test_rotation_plan_debug_and_clone() {
+        let plan = RotationPlan {
+            stages: vec![
+                RotationStage {
+                    endpoints: vec!["a:1".to_string()],
+                    delay: Duration::ZERO,
+                },
+                RotationStage {
+                    endpoints: vec!["b:2".to_string()],
+                    delay: Duration::from_secs(60),
+                },
+            ],
+        };
+
+        let debug_str = format!("{:?}", plan);
+        assert!(debug_str.contains("RotationPlan"));
+        assert!(debug_str.contains("stages"));
+
+        let cloned = plan.clone();
+        assert_eq!(cloned.stages.len(), 2);
+    }
+
+    #[test]
+    fn test_rotation_stage_debug_and_clone() {
+        let stage = RotationStage {
+            endpoints: vec!["host:443".to_string()],
+            delay: Duration::from_secs(30),
+        };
+
+        let debug_str = format!("{:?}", stage);
+        assert!(debug_str.contains("RotationStage"));
+        assert!(debug_str.contains("host:443"));
+
+        let cloned = stage.clone();
+        assert_eq!(cloned.endpoints, vec!["host:443".to_string()]);
+        assert_eq!(cloned.delay, Duration::from_secs(30));
+    }
+
     #[tokio::test]
     async fn test_manifest_rotator_new() {
         let temp_dir = TempDir::new().expect("failed to create temp dir");
@@ -398,5 +530,307 @@ mod tests {
 
         let rotator = ManifestRotator::new(config);
         assert!(rotator.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_list_backups_empty_dir() {
+        let temp_dir = TempDir::new().expect("failed to create temp dir");
+        let keypair = SigningKeypair::generate();
+
+        let config = ManifestRotatorConfig {
+            signing_keypair: keypair,
+            output_dir: temp_dir.path().to_path_buf(),
+            rss_config: None,
+            rotation_strategy: RotationStrategy::Immediate,
+            current_manifest_path: None,
+            backup_dir: temp_dir.path().join("backups"),
+            max_backups: 5,
+        };
+
+        let rotator = ManifestRotator::new(config).unwrap();
+        let backups = rotator.list_backups().await.unwrap();
+        assert!(backups.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_list_backups_with_files() {
+        let temp_dir = TempDir::new().expect("failed to create temp dir");
+        let backup_dir = temp_dir.path().join("backups");
+        tokio::fs::create_dir_all(&backup_dir).await.unwrap();
+
+        // Create test backup files
+        tokio::fs::write(backup_dir.join("manifest_1.json"), "{}").await.unwrap();
+        tokio::fs::write(backup_dir.join("manifest_2.json"), "{}").await.unwrap();
+        tokio::fs::write(backup_dir.join("other.txt"), "not a backup").await.unwrap();
+
+        let keypair = SigningKeypair::generate();
+        let config = ManifestRotatorConfig {
+            signing_keypair: keypair,
+            output_dir: temp_dir.path().to_path_buf(),
+            rss_config: None,
+            rotation_strategy: RotationStrategy::Immediate,
+            current_manifest_path: None,
+            backup_dir,
+            max_backups: 5,
+        };
+
+        let rotator = ManifestRotator::new(config).unwrap();
+        let backups = rotator.list_backups().await.unwrap();
+        assert_eq!(backups.len(), 2); // Only .json files
+    }
+
+    #[test]
+    fn test_generate_rotation_plan_immediate() {
+        let temp_dir = TempDir::new().expect("failed to create temp dir");
+        let keypair = SigningKeypair::generate();
+
+        let config = ManifestRotatorConfig {
+            signing_keypair: keypair,
+            output_dir: temp_dir.path().to_path_buf(),
+            rss_config: None,
+            rotation_strategy: RotationStrategy::Immediate,
+            current_manifest_path: None,
+            backup_dir: temp_dir.path().join("backups"),
+            max_backups: 5,
+        };
+
+        let rotator = ManifestRotator::new(config).unwrap();
+        let endpoints = vec![
+            test_endpoint("server1.com", 443),
+            test_endpoint("server2.com", 8443),
+        ];
+        let current = vec![test_server_endpoint("old.com", 443)];
+
+        let plan = rotator.generate_rotation_plan(&current, &endpoints);
+        assert_eq!(plan.stages.len(), 1);
+        assert_eq!(plan.stages[0].endpoints.len(), 2);
+        assert_eq!(plan.stages[0].delay, Duration::ZERO);
+    }
+
+    #[test]
+    fn test_generate_rotation_plan_canary() {
+        let temp_dir = TempDir::new().expect("failed to create temp dir");
+        let keypair = SigningKeypair::generate();
+
+        let config = ManifestRotatorConfig {
+            signing_keypair: keypair,
+            output_dir: temp_dir.path().to_path_buf(),
+            rss_config: None,
+            rotation_strategy: RotationStrategy::Canary {
+                initial_percent: 50,
+                stage_interval: Duration::from_secs(60),
+            },
+            current_manifest_path: None,
+            backup_dir: temp_dir.path().join("backups"),
+            max_backups: 5,
+        };
+
+        let rotator = ManifestRotator::new(config).unwrap();
+        let endpoints = vec![
+            test_endpoint("server1.com", 443),
+            test_endpoint("server2.com", 8443),
+            test_endpoint("server3.com", 9443),
+            test_endpoint("server4.com", 10443),
+        ];
+        let current = vec![];
+
+        let plan = rotator.generate_rotation_plan(&current, &endpoints);
+        assert_eq!(plan.stages.len(), 2);
+        assert_eq!(plan.stages[0].endpoints.len(), 2); // 50% of 4
+        assert_eq!(plan.stages[0].delay, Duration::ZERO);
+        assert_eq!(plan.stages[1].endpoints.len(), 2);
+        assert_eq!(plan.stages[1].delay, Duration::from_secs(60));
+    }
+
+    #[test]
+    fn test_generate_rotation_plan_canary_single_endpoint() {
+        let temp_dir = TempDir::new().expect("failed to create temp dir");
+        let keypair = SigningKeypair::generate();
+
+        let config = ManifestRotatorConfig {
+            signing_keypair: keypair,
+            output_dir: temp_dir.path().to_path_buf(),
+            rss_config: None,
+            rotation_strategy: RotationStrategy::Canary {
+                initial_percent: 10,
+                stage_interval: Duration::from_secs(30),
+            },
+            current_manifest_path: None,
+            backup_dir: temp_dir.path().join("backups"),
+            max_backups: 5,
+        };
+
+        let rotator = ManifestRotator::new(config).unwrap();
+        let endpoints = vec![test_endpoint("only.com", 443)];
+        let current = vec![];
+
+        let plan = rotator.generate_rotation_plan(&current, &endpoints);
+        // With 1 endpoint, initial_count.max(1) ensures at least 1
+        assert_eq!(plan.stages.len(), 1);
+        assert_eq!(plan.stages[0].endpoints.len(), 1);
+    }
+
+    #[test]
+    fn test_generate_rotation_plan_scheduled() {
+        let temp_dir = TempDir::new().expect("failed to create temp dir");
+        let keypair = SigningKeypair::generate();
+        let target_time = SystemTime::now() + Duration::from_secs(3600);
+
+        let config = ManifestRotatorConfig {
+            signing_keypair: keypair,
+            output_dir: temp_dir.path().to_path_buf(),
+            rss_config: None,
+            rotation_strategy: RotationStrategy::Scheduled { target_time },
+            current_manifest_path: None,
+            backup_dir: temp_dir.path().join("backups"),
+            max_backups: 5,
+        };
+
+        let rotator = ManifestRotator::new(config).unwrap();
+        let endpoints = vec![
+            test_endpoint("server1.com", 443),
+            test_endpoint("server2.com", 8443),
+        ];
+        let current = vec![];
+
+        let plan = rotator.generate_rotation_plan(&current, &endpoints);
+        assert_eq!(plan.stages.len(), 1);
+        assert_eq!(plan.stages[0].endpoints.len(), 2);
+        // Delay should be approximately 1 hour (3600 seconds)
+        assert!(plan.stages[0].delay > Duration::from_secs(3500));
+    }
+
+    #[test]
+    fn test_generate_rotation_plan_scheduled_past_time() {
+        let temp_dir = TempDir::new().expect("failed to create temp dir");
+        let keypair = SigningKeypair::generate();
+        // Target time in the past
+        let target_time = SystemTime::now() - Duration::from_secs(100);
+
+        let config = ManifestRotatorConfig {
+            signing_keypair: keypair,
+            output_dir: temp_dir.path().to_path_buf(),
+            rss_config: None,
+            rotation_strategy: RotationStrategy::Scheduled { target_time },
+            current_manifest_path: None,
+            backup_dir: temp_dir.path().join("backups"),
+            max_backups: 5,
+        };
+
+        let rotator = ManifestRotator::new(config).unwrap();
+        let endpoints = vec![test_endpoint("server.com", 443)];
+
+        let plan = rotator.generate_rotation_plan(&[], &endpoints);
+        // Past time should result in zero delay
+        assert_eq!(plan.stages[0].delay, Duration::ZERO);
+    }
+
+    #[tokio::test]
+    async fn test_rollback_no_backup_dir() {
+        let temp_dir = TempDir::new().expect("failed to create temp dir");
+        let keypair = SigningKeypair::generate();
+
+        let config = ManifestRotatorConfig {
+            signing_keypair: keypair,
+            output_dir: temp_dir.path().to_path_buf(),
+            rss_config: None,
+            rotation_strategy: RotationStrategy::Immediate,
+            current_manifest_path: None,
+            backup_dir: temp_dir.path().join("nonexistent_backups"),
+            max_backups: 5,
+        };
+
+        let rotator = ManifestRotator::new(config).unwrap();
+        let result = rotator.rollback().await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("does not exist"));
+    }
+
+    #[tokio::test]
+    async fn test_rollback_empty_backups() {
+        let temp_dir = TempDir::new().expect("failed to create temp dir");
+        let backup_dir = temp_dir.path().join("backups");
+        tokio::fs::create_dir_all(&backup_dir).await.unwrap();
+
+        let keypair = SigningKeypair::generate();
+        let config = ManifestRotatorConfig {
+            signing_keypair: keypair,
+            output_dir: temp_dir.path().to_path_buf(),
+            rss_config: None,
+            rotation_strategy: RotationStrategy::Immediate,
+            current_manifest_path: None,
+            backup_dir,
+            max_backups: 5,
+        };
+
+        let rotator = ManifestRotator::new(config).unwrap();
+        let result = rotator.rollback().await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("No backup"));
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_backups() {
+        let temp_dir = TempDir::new().expect("failed to create temp dir");
+        let backup_dir = temp_dir.path().join("backups");
+        tokio::fs::create_dir_all(&backup_dir).await.unwrap();
+
+        // Create 5 backup files
+        for i in 1..=5 {
+            tokio::fs::write(backup_dir.join(format!("manifest_{}.json", i)), "{}").await.unwrap();
+        }
+
+        let keypair = SigningKeypair::generate();
+        let config = ManifestRotatorConfig {
+            signing_keypair: keypair,
+            output_dir: temp_dir.path().to_path_buf(),
+            rss_config: None,
+            rotation_strategy: RotationStrategy::Immediate,
+            current_manifest_path: None,
+            backup_dir: backup_dir.clone(),
+            max_backups: 3,
+        };
+
+        let rotator = ManifestRotator::new(config).unwrap();
+
+        // Before cleanup
+        let backups_before = rotator.list_backups().await.unwrap();
+        assert_eq!(backups_before.len(), 5);
+
+        // Cleanup
+        rotator.cleanup_backups().await.unwrap();
+
+        // After cleanup - should have max_backups (3)
+        let backups_after = rotator.list_backups().await.unwrap();
+        assert_eq!(backups_after.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_backups_under_limit() {
+        let temp_dir = TempDir::new().expect("failed to create temp dir");
+        let backup_dir = temp_dir.path().join("backups");
+        tokio::fs::create_dir_all(&backup_dir).await.unwrap();
+
+        // Create 2 backup files (under limit of 5)
+        tokio::fs::write(backup_dir.join("manifest_1.json"), "{}").await.unwrap();
+        tokio::fs::write(backup_dir.join("manifest_2.json"), "{}").await.unwrap();
+
+        let keypair = SigningKeypair::generate();
+        let config = ManifestRotatorConfig {
+            signing_keypair: keypair,
+            output_dir: temp_dir.path().to_path_buf(),
+            rss_config: None,
+            rotation_strategy: RotationStrategy::Immediate,
+            current_manifest_path: None,
+            backup_dir,
+            max_backups: 5,
+        };
+
+        let rotator = ManifestRotator::new(config).unwrap();
+        rotator.cleanup_backups().await.unwrap();
+
+        // Should still have 2 (no cleanup needed)
+        let backups = rotator.list_backups().await.unwrap();
+        assert_eq!(backups.len(), 2);
     }
 }
