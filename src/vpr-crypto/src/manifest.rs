@@ -581,4 +581,277 @@ mod tests {
         assert!(info.is_supported);
         assert!(info.is_compatible);
     }
+
+    #[test]
+    fn test_constants() {
+        assert_eq!(MANIFEST_VERSION, 1);
+        assert_eq!(MIN_MANIFEST_VERSION, 1);
+        assert_eq!(MAX_MANIFEST_VERSION, 1);
+        assert_eq!(MAX_MANIFEST_AGE.as_secs(), 7 * 24 * 60 * 60);
+        assert_eq!(STALE_FALLBACK_AGE.as_secs(), 24 * 60 * 60);
+    }
+
+    #[test]
+    fn test_server_endpoint_with_region() {
+        let ep = ServerEndpoint::new("srv1", "example.com", 443, "aabbccdd").with_region("eu-west");
+        assert_eq!(ep.region, "eu-west");
+    }
+
+    #[test]
+    fn test_server_endpoint_with_capabilities() {
+        let caps = vec!["masque".to_string(), "doh".to_string()];
+        let ep = ServerEndpoint::new("srv1", "example.com", 443, "aabbccdd")
+            .with_capabilities(caps.clone());
+        assert_eq!(ep.capabilities, caps);
+    }
+
+    #[test]
+    fn test_server_endpoint_validate_pubkey_valid() {
+        // Valid 32-byte hex pubkey
+        let pubkey_hex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let ep = ServerEndpoint::new("srv1", "example.com", 443, pubkey_hex);
+        let result = ep.validate_pubkey();
+        assert!(result.is_ok());
+        let bytes = result.unwrap();
+        assert_eq!(bytes.len(), 32);
+    }
+
+    #[test]
+    fn test_server_endpoint_validate_pubkey_invalid_hex() {
+        let ep = ServerEndpoint::new("srv1", "example.com", 443, "not-valid-hex!");
+        let result = ep.validate_pubkey();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not valid hex"));
+    }
+
+    #[test]
+    fn test_server_endpoint_validate_pubkey_wrong_length() {
+        // Only 16 bytes (32 hex chars needed, we have 16)
+        let ep = ServerEndpoint::new("srv1", "example.com", 443, "0123456789abcdef");
+        let result = ep.validate_pubkey();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("32 bytes"));
+    }
+
+    #[test]
+    fn test_server_endpoint_is_pubkey_valid() {
+        let valid_pubkey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let ep_valid = ServerEndpoint::new("srv1", "example.com", 443, valid_pubkey);
+        assert!(ep_valid.is_pubkey_valid());
+
+        let ep_invalid = ServerEndpoint::new("srv2", "example.com", 443, "invalid");
+        assert!(!ep_invalid.is_pubkey_valid());
+    }
+
+    #[test]
+    fn test_server_endpoint_defaults() {
+        let ep = ServerEndpoint::new("srv1", "example.com", 443, "key");
+        assert_eq!(ep.weight, 100);
+        assert!(ep.active);
+        assert_eq!(ep.region, "unknown");
+        assert!(ep.capabilities.is_empty());
+    }
+
+    #[test]
+    fn test_server_endpoint_serde() {
+        let ep = ServerEndpoint::new("srv1", "example.com", 443, "aabbccdd")
+            .with_region("us-east")
+            .with_capabilities(vec!["masque".to_string()]);
+
+        let json = serde_json::to_string(&ep).unwrap();
+        let restored: ServerEndpoint = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(ep, restored);
+    }
+
+    #[test]
+    fn test_manifest_payload_with_validity() {
+        let servers = vec![ServerEndpoint::new("srv1", "1.2.3.4", 443, "key1")];
+        let payload = ManifestPayload::with_validity(servers, Duration::from_secs(3600)); // 1 hour
+
+        assert!(!payload.is_expired());
+        // expires_at should be about 1 hour from now
+        let expected_expires = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 3600;
+        assert!((payload.expires_at as i64 - expected_expires as i64).abs() < 5); // 5 second tolerance
+    }
+
+    #[test]
+    fn test_manifest_payload_comment() {
+        let servers = vec![ServerEndpoint::new("srv1", "1.2.3.4", 443, "key1")];
+        let mut payload = ManifestPayload::new(servers);
+        payload.comment = "Test manifest".to_string();
+
+        let bytes = payload.to_bytes().unwrap();
+        let restored = ManifestPayload::from_bytes(&bytes).unwrap();
+        assert_eq!(restored.comment, "Test manifest");
+    }
+
+    #[test]
+    fn test_manifest_payload_odoh_relays() {
+        let servers = vec![ServerEndpoint::new("srv1", "1.2.3.4", 443, "key1")];
+        let mut payload = ManifestPayload::new(servers);
+        payload.odoh_relays = vec!["relay1.example.com".to_string()];
+
+        let bytes = payload.to_bytes().unwrap();
+        let restored = ManifestPayload::from_bytes(&bytes).unwrap();
+        assert_eq!(restored.odoh_relays.len(), 1);
+        assert_eq!(restored.odoh_relays[0], "relay1.example.com");
+    }
+
+    #[test]
+    fn test_manifest_payload_front_domains() {
+        let servers = vec![ServerEndpoint::new("srv1", "1.2.3.4", 443, "key1")];
+        let mut payload = ManifestPayload::new(servers);
+        payload.front_domains = vec!["cdn.example.com".to_string()];
+
+        let bytes = payload.to_bytes().unwrap();
+        let restored = ManifestPayload::from_bytes(&bytes).unwrap();
+        assert_eq!(restored.front_domains.len(), 1);
+    }
+
+    #[test]
+    fn test_manifest_is_stale() {
+        let servers = vec![ServerEndpoint::new("srv1", "1.2.3.4", 443, "key1")];
+        let mut payload = ManifestPayload::new(servers);
+
+        // Set expires_at to 10 seconds ago (expired but not stale)
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        payload.expires_at = now - 10;
+
+        assert!(payload.is_expired());
+        assert!(payload.is_stale()); // Within STALE_FALLBACK_AGE (24h)
+
+        // Set expires_at to more than 24h ago (too stale)
+        payload.expires_at = now - STALE_FALLBACK_AGE.as_secs() - 100;
+        assert!(payload.is_expired());
+        assert!(!payload.is_stale()); // Past STALE_FALLBACK_AGE
+    }
+
+    #[test]
+    fn test_version_info_struct() {
+        let info = VersionInfo {
+            version: 1,
+            current_version: 1,
+            min_supported: 1,
+            max_supported: 2,
+            is_supported: true,
+            is_compatible: true,
+        };
+
+        assert_eq!(info.version, 1);
+        assert!(info.is_supported);
+
+        let info2 = info.clone();
+        assert_eq!(info, info2);
+
+        let debug = format!("{:?}", info);
+        assert!(debug.contains("VersionInfo"));
+    }
+
+    #[test]
+    fn test_signed_manifest_bytes_roundtrip() {
+        let keypair = test_keypair();
+        let servers = vec![ServerEndpoint::new("srv1", "1.2.3.4", 443, "key1")];
+        let payload = ManifestPayload::new(servers);
+
+        let signed = SignedManifest::sign(&payload, &keypair).unwrap();
+        let bytes = signed.to_bytes().unwrap();
+        let restored = SignedManifest::from_bytes(&bytes).unwrap();
+
+        assert_eq!(signed.signature, restored.signature);
+        assert_eq!(signed.signer_pubkey, restored.signer_pubkey);
+        assert_eq!(signed.nonce, restored.nonce);
+    }
+
+    #[test]
+    fn test_signed_manifest_verify_invalid_signer_length() {
+        let keypair = test_keypair();
+        let servers = vec![ServerEndpoint::new("srv1", "1.2.3.4", 443, "key1")];
+        let payload = ManifestPayload::new(servers);
+
+        let mut signed = SignedManifest::sign(&payload, &keypair).unwrap();
+        signed.signer_pubkey = "aabb".to_string(); // Too short
+
+        let result = signed.verify(&keypair.public_bytes());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_signed_manifest_verify_invalid_signature_length() {
+        let keypair = test_keypair();
+        let servers = vec![ServerEndpoint::new("srv1", "1.2.3.4", 443, "key1")];
+        let payload = ManifestPayload::new(servers);
+
+        let mut signed = SignedManifest::sign(&payload, &keypair).unwrap();
+        signed.signature = "aabb".to_string(); // Too short for 64-byte signature
+
+        let result = signed.verify(&keypair.public_bytes());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_signed_manifest_verify_zero_nonce() {
+        let keypair = test_keypair();
+        let servers = vec![ServerEndpoint::new("srv1", "1.2.3.4", 443, "key1")];
+        let payload = ManifestPayload::new(servers);
+
+        let mut signed = SignedManifest::sign(&payload, &keypair).unwrap();
+        signed.nonce = 0; // Invalid
+
+        let result = signed.verify(&keypair.public_bytes());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("nonce"));
+    }
+
+    #[test]
+    fn test_unsupported_version_fails_verification() {
+        let keypair = test_keypair();
+        let servers = vec![ServerEndpoint::new("srv1", "1.2.3.4", 443, "key1")];
+        let mut payload = ManifestPayload::new(servers);
+        payload.version = 999; // Unsupported version
+
+        let signed = SignedManifest::sign(&payload, &keypair).unwrap();
+        let result = signed.verify(&keypair.public_bytes());
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("unsupported"));
+    }
+
+    #[test]
+    fn test_migrate_unsupported_version_fails() {
+        let servers = vec![ServerEndpoint::new("srv1", "1.2.3.4", 443, "key1")];
+        let mut payload = ManifestPayload::new(servers);
+        payload.version = 999;
+
+        let result = payload.migrate_to_current();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_manifest_payload_debug() {
+        let servers = vec![ServerEndpoint::new("srv1", "1.2.3.4", 443, "key1")];
+        let payload = ManifestPayload::new(servers);
+
+        let debug = format!("{:?}", payload);
+        assert!(debug.contains("ManifestPayload"));
+        assert!(debug.contains("version"));
+    }
+
+    #[test]
+    fn test_signed_manifest_debug() {
+        let keypair = test_keypair();
+        let servers = vec![ServerEndpoint::new("srv1", "1.2.3.4", 443, "key1")];
+        let payload = ManifestPayload::new(servers);
+
+        let signed = SignedManifest::sign(&payload, &keypair).unwrap();
+        let debug = format!("{:?}", signed);
+        assert!(debug.contains("SignedManifest"));
+    }
 }
