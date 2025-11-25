@@ -16,6 +16,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use tokio::sync::RwLock;
 
+use crate::config::TuiConfig;
 use crate::globe::GlobeRenderer;
 use crate::render::{draw_main_screen, draw_logs_screen, draw_servers_screen, draw_help_screen};
 use crate::vpn::{ConnectionState, ControllerConfig, ServerConfig, VpnController, VpnMetrics};
@@ -63,6 +64,8 @@ pub struct AppState {
     pub input_mode: InputMode,
     /// Input buffer
     pub input_buffer: String,
+    /// Persistent configuration
+    pub config: TuiConfig,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -74,7 +77,8 @@ pub enum InputMode {
 }
 
 impl AppState {
-    pub fn new(vpn: Arc<VpnController>) -> Self {
+    pub fn new(vpn: Arc<VpnController>, config: TuiConfig) -> Self {
+        let servers = config.servers.clone();
         Self {
             screen: Screen::Main,
             tick: 0,
@@ -82,14 +86,22 @@ impl AppState {
             vpn,
             conn_state: ConnectionState::Disconnected,
             metrics: VpnMetrics::default(),
-            servers: default_servers(),
+            servers,
             selected_server: 0,
             log_scroll: 0,
             show_help: false,
             status_message: None,
             input_mode: InputMode::Normal,
             input_buffer: String::new(),
+            config,
         }
+    }
+
+    /// Save current configuration
+    pub fn save_config(&mut self) -> anyhow::Result<()> {
+        // Sync servers back to config
+        self.config.servers = self.servers.clone();
+        self.config.save()
     }
 
     /// Set temporary status message
@@ -109,23 +121,7 @@ impl AppState {
     }
 }
 
-/// Default server list
-fn default_servers() -> Vec<ServerConfig> {
-    vec![
-        ServerConfig {
-            host: "64.176.70.203".into(),
-            port: 443,
-            name: "VPR-Tokyo".into(),
-            location: "Tokyo, Japan".into(),
-        },
-        ServerConfig {
-            host: String::new(),
-            port: 443,
-            name: "Custom Server".into(),
-            location: "Enter manually".into(),
-        },
-    ]
-}
+// Server list is now loaded from TuiConfig
 
 /// TUI event that can be handled by the caller
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -167,15 +163,23 @@ where
     rt.block_on(run_async())
 }
 
-/// Main async TUI entry point
+/// Main async TUI entry point - loads config from file
 pub async fn run_async() -> Result<()> {
-    run_with_config(ControllerConfig::default()).await
+    let tui_config = TuiConfig::load();
+    let controller_config = tui_config.to_controller_config();
+    run_with_tui_config(controller_config, tui_config).await
 }
 
-/// Run TUI with custom VPN configuration
+/// Run TUI with custom VPN configuration (legacy)
 pub async fn run_with_config(config: ControllerConfig) -> Result<()> {
-    let vpn = Arc::new(VpnController::new(config));
-    let state = Arc::new(RwLock::new(AppState::new(Arc::clone(&vpn))));
+    let tui_config = TuiConfig::load();
+    run_with_tui_config(config, tui_config).await
+}
+
+/// Run TUI with full configuration
+pub async fn run_with_tui_config(controller_config: ControllerConfig, tui_config: TuiConfig) -> Result<()> {
+    let vpn = Arc::new(VpnController::new(controller_config));
+    let state = Arc::new(RwLock::new(AppState::new(Arc::clone(&vpn), tui_config)));
 
     let mut stdout = io::stdout();
     enable_raw_mode()?;

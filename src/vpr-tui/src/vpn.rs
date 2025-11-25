@@ -58,7 +58,7 @@ pub struct VpnMetrics {
 }
 
 /// Server configuration
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ServerConfig {
     pub host: String,
     pub port: u16,

@@ -835,6 +835,7 @@ pub fn draw(frame: &mut Frame<'_>, globe: &GlobeRenderer, area: Rect, angle: f32
         status_message: None,
         input_mode: InputMode::Normal,
         input_buffer: String::new(),
+        config: crate::config::TuiConfig::default(),
     };
 
     draw_main_screen(frame, globe, area, &app);
