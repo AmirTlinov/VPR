@@ -18,7 +18,7 @@ use tokio::sync::RwLock;
 
 use crate::config::TuiConfig;
 use crate::globe::GlobeRenderer;
-use crate::render::{draw_main_screen, draw_logs_screen, draw_servers_screen, draw_help_screen};
+use crate::render::{draw_main_screen, draw_logs_screen, draw_servers_screen, draw_settings_screen, draw_help_screen};
 use crate::vpn::{ConnectionState, ControllerConfig, ServerConfig, VpnController, VpnMetrics};
 
 /// Active screen in TUI
@@ -27,6 +27,7 @@ pub enum Screen {
     Main,
     Logs,
     Servers,
+    Settings,
     Help,
 }
 
@@ -66,6 +67,8 @@ pub struct AppState {
     pub input_buffer: String,
     /// Persistent configuration
     pub config: TuiConfig,
+    /// Settings screen selection index
+    pub settings_selection: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -94,6 +97,7 @@ impl AppState {
             input_mode: InputMode::Normal,
             input_buffer: String::new(),
             config,
+            settings_selection: 0,
         }
     }
 
@@ -241,6 +245,7 @@ where
                     Screen::Main => draw_main_screen(frame, &globe, area, &app),
                     Screen::Logs => draw_logs_screen(frame, area, &app, &vpn),
                     Screen::Servers => draw_servers_screen(frame, area, &app),
+                    Screen::Settings => draw_settings_screen(frame, area, &app),
                     Screen::Help => draw_help_screen(frame, area, &app),
                 }
             })?;
@@ -307,6 +312,9 @@ where
                     }
                     Screen::Servers => {
                         handle_servers_keys(&mut app, &vpn, key.code).await;
+                    }
+                    Screen::Settings => {
+                        handle_settings_keys(&mut app, key.code);
                     }
                     Screen::Help => {
                         // Any key returns to main
@@ -376,6 +384,11 @@ async fn handle_main_keys(app: &mut AppState, vpn: &VpnController, key: KeyCode)
         // View logs
         KeyCode::Char('l') | KeyCode::Char('L') => {
             app.screen = Screen::Logs;
+        }
+        // Open settings
+        KeyCode::Char('o') | KeyCode::Char('O') => {
+            app.screen = Screen::Settings;
+            app.settings_selection = 0;
         }
         // Refresh external IP
         KeyCode::Char('i') | KeyCode::Char('I') => {
@@ -466,6 +479,67 @@ async fn handle_servers_keys(app: &mut AppState, vpn: &VpnController, key: KeyCo
             // Edit custom server
             app.input_mode = InputMode::ServerHost;
             app.input_buffer.clear();
+        }
+        _ => {}
+    }
+}
+
+/// Handle settings screen keys
+fn handle_settings_keys(app: &mut AppState, key: KeyCode) {
+    const MAX_SETTINGS: usize = 7; // Total number of settings items
+    
+    match key {
+        KeyCode::Up | KeyCode::Char('k') => {
+            if app.settings_selection > 0 {
+                app.settings_selection -= 1;
+            }
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            if app.settings_selection < MAX_SETTINGS - 1 {
+                app.settings_selection += 1;
+            }
+        }
+        KeyCode::Enter | KeyCode::Char(' ') => {
+            // Toggle boolean settings or cycle enums
+            match app.settings_selection {
+                0 => app.config.auto_connect = !app.config.auto_connect,
+                1 => app.config.auto_reconnect = !app.config.auto_reconnect,
+                2 => {
+                    // Cycle max reconnect attempts: 3 -> 5 -> 10 -> 3
+                    app.config.max_reconnect_attempts = match app.config.max_reconnect_attempts {
+                        3 => 5,
+                        5 => 10,
+                        _ => 3,
+                    };
+                }
+                3 => {
+                    // Cycle TUN name: vpr0 -> vpr1 -> tun0 -> vpr0
+                    app.config.tun_name = match app.config.tun_name.as_str() {
+                        "vpr0" => "vpr1".into(),
+                        "vpr1" => "tun0".into(),
+                        _ => "vpr0".into(),
+                    };
+                }
+                4 => app.config.insecure = !app.config.insecure,
+                5 => {
+                    // Cycle themes
+                    app.config.theme = match app.config.theme {
+                        crate::config::Theme::WatchDogs => crate::config::Theme::Matrix,
+                        crate::config::Theme::Matrix => crate::config::Theme::Cyberpunk,
+                        crate::config::Theme::Cyberpunk => crate::config::Theme::Minimal,
+                        crate::config::Theme::Minimal => crate::config::Theme::WatchDogs,
+                    };
+                }
+                6 => app.config.notifications = !app.config.notifications,
+                _ => {}
+            }
+        }
+        KeyCode::Char('s') | KeyCode::Char('S') => {
+            // Save configuration
+            match app.save_config() {
+                Ok(_) => app.set_status("✓ Configuration saved"),
+                Err(e) => app.set_status(format!("✗ Save failed: {}", e)),
+            }
         }
         _ => {}
     }

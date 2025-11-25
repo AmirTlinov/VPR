@@ -507,6 +507,7 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
         Span::styled(action_key, action_style.add_modifier(Modifier::BOLD)),
         Span::styled(" [S: SERVERS] ", Style::default().fg(Color::Cyan)),
         Span::styled(" [L: LOGS] ", Style::default().fg(Color::Magenta)),
+        Span::styled(" [O: SETTINGS] ", Style::default().fg(Color::Yellow)),
         Span::styled(" [?: HELP] ", Style::default().fg(Color::Blue)),
         Span::styled(" [Q: EXIT] ", Style::default().fg(Color::Red)),
         Span::styled(
@@ -788,6 +789,147 @@ pub fn draw_help_screen(frame: &mut Frame<'_>, area: Rect, _app: &AppState) {
 }
 
 // =============================================================================
+// Settings Screen
+// =============================================================================
+
+pub fn draw_settings_screen(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),  // Header
+            Constraint::Min(15),    // Settings content
+            Constraint::Length(2),  // Footer
+        ])
+        .split(area);
+
+    // Header
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(vec![
+                Span::styled(
+                    " ████ SYSTEM CONFIGURATION ████ ",
+                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                ),
+            ]),
+        ])
+        .block(Block::default().borders(Borders::BOTTOM)),
+        layout[0],
+    );
+
+    // Settings panels - split into two columns
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(layout[1]);
+
+    // Left column - Connection settings
+    render_connection_settings(frame, columns[0], app);
+
+    // Right column - Appearance settings
+    render_appearance_settings(frame, columns[1], app);
+
+    // Footer
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(" [↑/↓: NAVIGATE] ", Style::default().fg(Color::Cyan)),
+            Span::styled(" [ENTER: TOGGLE/EDIT] ", Style::default().fg(Color::Green)),
+            Span::styled(" [S: SAVE] ", Style::default().fg(Color::Yellow)),
+            Span::styled(" [Q/ESC: BACK] ", Style::default().fg(Color::Red)),
+        ]))
+        .block(Block::default().borders(Borders::TOP)),
+        layout[2],
+    );
+}
+
+fn render_connection_settings(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
+    let config = &app.config;
+    let selected = app.settings_selection;
+    
+    // Pre-compute string values to avoid temporary lifetime issues
+    let reconnect_str = config.max_reconnect_attempts.to_string();
+    let tun_str = config.tun_name.clone();
+    
+    let items = vec![
+        setting_item("Auto-connect on start", if config.auto_connect { "ON" } else { "OFF" }, 
+                    if config.auto_connect { Color::Green } else { Color::DarkGray }, selected == 0),
+        setting_item("Auto-reconnect", if config.auto_reconnect { "ON" } else { "OFF" },
+                    if config.auto_reconnect { Color::Green } else { Color::DarkGray }, selected == 1),
+        setting_item("Max reconnect attempts", &reconnect_str, 
+                    Color::Cyan, selected == 2),
+        setting_item("TUN interface name", &tun_str, Color::Magenta, selected == 3),
+        setting_item("Insecure mode (no cert)", if config.insecure { "ON" } else { "OFF" },
+                    if config.insecure { Color::Red } else { Color::Green }, selected == 4),
+    ];
+
+    frame.render_widget(
+        List::new(items)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Cyan))
+                    .title(" ◈ CONNECTION ◈ "),
+            ),
+        area,
+    );
+}
+
+fn render_appearance_settings(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
+    let config = &app.config;
+    let selected = app.settings_selection;
+    
+    let theme_name = match config.theme {
+        crate::config::Theme::WatchDogs => "Watch Dogs",
+        crate::config::Theme::Matrix => "Matrix",
+        crate::config::Theme::Cyberpunk => "Cyberpunk",
+        crate::config::Theme::Minimal => "Minimal",
+    };
+    
+    let config_path = format!("{:?}", crate::config::TuiConfig::config_path());
+
+    let items: Vec<ListItem> = vec![
+        setting_item("Theme", theme_name, Color::Magenta, selected == 5),
+        setting_item("Notifications", if config.notifications { "ON" } else { "OFF" },
+                    if config.notifications { Color::Green } else { Color::DarkGray }, selected == 6),
+        ListItem::new(Line::from("")),
+        ListItem::new(Line::from(vec![
+            Span::styled("  Config path: ", Style::default().fg(Color::DarkGray)),
+        ])),
+        ListItem::new(Line::from(vec![
+            Span::styled(
+                format!("  {}", config_path),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ])),
+    ];
+
+    frame.render_widget(
+        List::new(items)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Yellow))
+                    .title(" ◈ APPEARANCE ◈ "),
+            ),
+        area,
+    );
+}
+
+fn setting_item(label: &str, value: &str, value_color: Color, selected: bool) -> ListItem<'static> {
+    let prefix = if selected { "▶ " } else { "  " };
+    let style = if selected {
+        Style::default().add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+    };
+    
+    ListItem::new(Line::from(vec![
+        Span::styled(prefix.to_string(), style.fg(Color::Cyan)),
+        Span::styled(format!("{:<24}", label), style.fg(Color::White)),
+        Span::styled(format!("[{}]", value), style.fg(value_color)),
+    ]))
+}
+
+// =============================================================================
 // Utilities
 // =============================================================================
 
@@ -836,6 +978,7 @@ pub fn draw(frame: &mut Frame<'_>, globe: &GlobeRenderer, area: Rect, angle: f32
         input_mode: InputMode::Normal,
         input_buffer: String::new(),
         config: crate::config::TuiConfig::default(),
+        settings_selection: 0,
     };
 
     draw_main_screen(frame, globe, area, &app);
