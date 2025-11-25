@@ -1,7 +1,7 @@
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
 use vpr_tui::globe::GlobeRenderer;
-use vpr_tui::render::{draw, UiStats};
+use vpr_tui::render::{draw, NetworkHealth, UiStats};
 
 #[test]
 fn render_draw_smoke() {
@@ -13,6 +13,7 @@ fn render_draw_smoke() {
         fps: 60,
         latency_ms: 10,
         throughput_mbps: 900,
+        network_health: NetworkHealth::default(),
     };
 
     terminal

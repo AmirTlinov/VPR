@@ -123,6 +123,31 @@ impl NetworkStateGuard {
         }
     }
 
+    /// Check if orphaned network state exists (for TUI status display)
+    /// Returns Some(NetworkState) if orphaned state exists, None otherwise
+    pub fn check_orphaned_state() -> Option<NetworkState> {
+        let state_path = Self::determine_state_path();
+        if !state_path.exists() {
+            return None;
+        }
+
+        let content = std::fs::read_to_string(&state_path).ok()?;
+        let state: NetworkState = serde_json::from_str(&content).ok()?;
+
+        if state.cleaned_up || state.changes.is_empty() {
+            return None;
+        }
+
+        // Check if the old process is still running
+        if let Some(pid) = state.pid {
+            if Self::process_exists(pid) {
+                return None; // Process still running, not orphaned
+            }
+        }
+
+        Some(state)
+    }
+
     /// Attempt to restore network from orphaned state (crash recovery)
     pub fn restore_from_crash() -> Result<bool> {
         let state_path = Self::determine_state_path();

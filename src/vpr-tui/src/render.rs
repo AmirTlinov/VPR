@@ -1,37 +1,82 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::globe::GlobeRenderer;
+
+/// Network health status for TUI display
+#[derive(Debug, Clone, Default)]
+pub enum NetworkHealth {
+    /// Network is healthy, VPN connected
+    #[default]
+    Connected,
+    /// Disconnected but clean
+    Disconnected,
+    /// Orphaned network state detected (previous crash)
+    OrphanedState {
+        /// Number of pending changes to restore
+        pending_changes: usize,
+        /// When the crashed session started
+        crashed_at: Option<u64>,
+    },
+    /// Network being repaired
+    Repairing,
+}
 
 pub struct UiStats {
     pub tick: u64,
     pub fps: u16,
     pub latency_ms: u16,
     pub throughput_mbps: u16,
+    /// Network health status (for crash recovery display)
+    pub network_health: NetworkHealth,
 }
 
 pub fn draw(frame: &mut Frame<'_>, globe: &GlobeRenderer, area: Rect, angle: f32, stats: UiStats) {
-    // Main Layout: Header, Content (Globe + Info), Footer
-    let layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Min(10),
-            Constraint::Length(1),
-        ])
-        .split(area);
+    // Check if we need warning banner for orphaned network state
+    let needs_warning = matches!(stats.network_health, NetworkHealth::OrphanedState { .. });
 
-    render_header(frame, layout[0]);
+    // Main Layout: Header, Warning (optional), Content (Globe + Info), Footer
+    let layout = if needs_warning {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1),  // Header
+                Constraint::Length(3),  // Warning banner
+                Constraint::Min(10),    // Content
+                Constraint::Length(1),  // Footer
+            ])
+            .split(area)
+    } else {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1),  // Header
+                Constraint::Length(0),  // No warning
+                Constraint::Min(10),    // Content
+                Constraint::Length(1),  // Footer
+            ])
+            .split(area)
+    };
+
+    render_header(frame, layout[0], &stats.network_health);
+
+    // Render warning banner if needed
+    if needs_warning {
+        render_orphaned_warning(frame, layout[1], &stats.network_health);
+    }
+
+    // Content and footer indices depend on whether warning is shown
+    let (content_idx, footer_idx) = if needs_warning { (2, 3) } else { (2, 3) };
 
     // Content Layout: Globe (Left), Info Panel (Right)
     let content_layout = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
-        .split(layout[1]);
+        .split(layout[content_idx]);
 
     // Render Globe
     let globe_area = content_layout[0];
@@ -56,14 +101,23 @@ pub fn draw(frame: &mut Frame<'_>, globe: &GlobeRenderer, area: Rect, angle: f32
     // Render Info Panel
     render_info_panel(frame, content_layout[1], &stats);
 
-    render_footer(frame, layout[2], &stats);
+    render_footer(frame, layout[footer_idx], &stats);
 }
 
-fn render_header(frame: &mut Frame<'_>, area: Rect) {
+fn render_header(frame: &mut Frame<'_>, area: Rect, health: &NetworkHealth) {
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
+
+    // Status text and color based on network health
+    let (status_text, status_color) = match health {
+        NetworkHealth::Connected => ("SECURE_CHANNEL_ESTABLISHED", Color::Green),
+        NetworkHealth::Disconnected => ("DISCONNECTED", Color::DarkGray),
+        NetworkHealth::OrphanedState { .. } => ("NETWORK_RECOVERY_NEEDED", Color::Yellow),
+        NetworkHealth::Repairing => ("REPAIRING_NETWORK", Color::Cyan),
+    };
+
     let line = Line::from(vec![
         Span::styled(
             " VPR_OS ",
@@ -73,10 +127,7 @@ fn render_header(frame: &mut Frame<'_>, area: Rect) {
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(" :: ", Style::default().fg(Color::DarkGray)),
-        Span::styled(
-            "SECURE_CHANNEL_ESTABLISHED",
-            Style::default().fg(Color::Green),
-        ),
+        Span::styled(status_text, Style::default().fg(status_color)),
         Span::styled(" :: ", Style::default().fg(Color::DarkGray)),
         Span::styled(
             format!("T-{}", timestamp % 10000),
@@ -95,6 +146,43 @@ fn render_header(frame: &mut Frame<'_>, area: Rect) {
         Paragraph::new(line).alignment(ratatui::layout::Alignment::Left),
         area,
     );
+}
+
+/// Render warning banner for orphaned network state (crash recovery needed)
+fn render_orphaned_warning(frame: &mut Frame<'_>, area: Rect, health: &NetworkHealth) {
+    if let NetworkHealth::OrphanedState {
+        pending_changes,
+        crashed_at,
+    } = health
+    {
+        let time_info = crashed_at
+            .map(|ts| format!(" (crashed session from T-{})", ts % 100000))
+            .unwrap_or_default();
+
+        let warning_text = format!(
+            "WARNING: Previous VPN session crashed with {} pending network changes{}\n\
+             Network may be in inconsistent state. Press 'R' to repair or start VPN to auto-repair.",
+            pending_changes, time_info
+        );
+
+        frame.render_widget(
+            Paragraph::new(warning_text)
+                .style(Style::default().fg(Color::Black).bg(Color::Yellow))
+                .alignment(ratatui::layout::Alignment::Center)
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(Color::Yellow))
+                        .title(" NETWORK RECOVERY ")
+                        .title_style(
+                            Style::default()
+                                .fg(Color::Red)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                ),
+            area,
+        );
+    }
 }
 
 fn render_info_panel(frame: &mut Frame<'_>, area: Rect, stats: &UiStats) {
@@ -144,7 +232,7 @@ fn render_info_panel(frame: &mut Frame<'_>, area: Rect, stats: &UiStats) {
     );
 
     // 3. Active Processes / Encryption
-    let processes = vec![
+    let processes = [
         " > key_exchange... OK",
         " > noise_handshake... OK",
         " > packet_shaping... ACTIVE",
@@ -156,7 +244,8 @@ fn render_info_panel(frame: &mut Frame<'_>, area: Rect, stats: &UiStats) {
         .iter()
         .enumerate()
         .map(|(i, p)| {
-            let style = if (stats.tick / 10 + i as u64) % 2 == 0 {
+            #[allow(clippy::incompatible_msrv)]
+            let style = if (stats.tick / 10 + i as u64).is_multiple_of(2) {
                 Style::default().fg(Color::White)
             } else {
                 Style::default().fg(Color::DarkGray)

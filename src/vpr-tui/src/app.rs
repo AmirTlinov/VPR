@@ -11,7 +11,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
 use crate::globe::GlobeRenderer;
-use crate::render::{draw, UiStats};
+use crate::render::{draw, NetworkHealth, UiStats};
 
 /// Run the interactive TUI with the rotating ASCII globe.
 pub fn run() -> Result<()> {
@@ -49,6 +49,7 @@ fn event_loop<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>) -> Resul
                 fps,
                 latency_ms: 18 + ((tick * 7) % 14) as u16,
                 throughput_mbps: 940 + ((tick * 11) % 160) as u16,
+                network_health: NetworkHealth::default(),
             };
 
             draw(frame, &globe, area, angle, stats);
