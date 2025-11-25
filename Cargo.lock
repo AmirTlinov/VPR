@@ -7089,8 +7089,14 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "approx",
+ "chrono",
  "crossterm",
+ "dirs",
  "ratatui",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
