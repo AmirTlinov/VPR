@@ -41,6 +41,7 @@ use masque_core::tun::{
     TunDevice,
 };
 use masque_core::vpn_config::{ConfigAck, VpnConfig};
+use masque_core::network_guard::NetworkStateGuard;
 use masque_core::vpn_tunnel::{
     channel_to_tun, forward_quic_to_tun, forward_tun_to_quic, tun_to_channel, PacketEncapsulator,
 };
@@ -196,6 +197,10 @@ struct Args {
     /// Enable IPv6 support
     #[arg(long)]
     ipv6: bool,
+
+    /// Repair network configuration after crash (restore DNS, routes, cleanup TUN)
+    #[arg(long)]
+    repair: bool,
 }
 
 #[tokio::main]
@@ -211,6 +216,26 @@ async fn main() -> Result<()> {
     let _ = tracing::subscriber::set_global_default(subscriber);
 
     let args = Args::parse();
+
+    // Handle --repair mode: restore network from crash and exit
+    if args.repair {
+        info!("Running network repair mode");
+        match NetworkStateGuard::restore_from_crash() {
+            Ok(true) => {
+                info!("Network configuration restored successfully");
+                return Ok(());
+            }
+            Ok(false) => {
+                info!("No orphaned network state found - nothing to repair");
+                return Ok(());
+            }
+            Err(e) => {
+                error!(%e, "Failed to restore network configuration");
+                return Err(e);
+            }
+        }
+    }
+
     run_vpn_client(args).await
 }
 
