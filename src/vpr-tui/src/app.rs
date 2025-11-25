@@ -13,8 +13,41 @@ use ratatui::Terminal;
 use crate::globe::GlobeRenderer;
 use crate::render::{draw, NetworkHealth, UiStats};
 
+/// TUI event that can be handled by the caller
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TuiEvent {
+    /// User requested network repair (pressed 'R')
+    RepairNetwork,
+    /// User requested quit (pressed 'Q' or Esc)
+    Quit,
+}
+
+/// Callbacks for TUI events and state queries
+pub struct TuiCallbacks<F, G>
+where
+    F: FnMut() -> NetworkHealth,
+    G: FnMut() -> bool,
+{
+    /// Get current network health status
+    pub get_network_health: F,
+    /// Attempt network repair, returns true if successful
+    pub repair_network: G,
+}
+
 /// Run the interactive TUI with the rotating ASCII globe.
 pub fn run() -> Result<()> {
+    run_with_callbacks(TuiCallbacks {
+        get_network_health: || NetworkHealth::default(),
+        repair_network: || false,
+    })
+}
+
+/// Run TUI with custom callbacks for network status and repair
+pub fn run_with_callbacks<F, G>(callbacks: TuiCallbacks<F, G>) -> Result<()>
+where
+    F: FnMut() -> NetworkHealth,
+    G: FnMut() -> bool,
+{
     let mut stdout = io::stdout();
     enable_raw_mode()?;
     stdout.execute(EnterAlternateScreen)?;
@@ -23,7 +56,7 @@ pub fn run() -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
     terminal.hide_cursor()?;
 
-    let result = event_loop(&mut terminal);
+    let result = event_loop_with_callbacks(&mut terminal, callbacks);
 
     disable_raw_mode()?;
     terminal.backend_mut().execute(LeaveAlternateScreen)?;
@@ -32,7 +65,15 @@ pub fn run() -> Result<()> {
     result
 }
 
-fn event_loop<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>) -> Result<()> {
+fn event_loop_with_callbacks<B, F, G>(
+    terminal: &mut Terminal<B>,
+    mut callbacks: TuiCallbacks<F, G>,
+) -> Result<()>
+where
+    B: ratatui::backend::Backend,
+    F: FnMut() -> NetworkHealth,
+    G: FnMut() -> bool,
+{
     let globe = GlobeRenderer::new(4200, 0.32, 0.18);
     let mut angle = 0.0f32;
     let mut tick: u64 = 0;
@@ -41,6 +82,9 @@ fn event_loop<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>) -> Resul
     let mut last_tick = Instant::now();
 
     loop {
+        // Get current network health from callback
+        let network_health = (callbacks.get_network_health)();
+
         terminal.draw(|frame| {
             let area = frame.size();
             let fps = (1000.0 / tick_rate.as_millis() as f64).round() as u16;
@@ -49,7 +93,7 @@ fn event_loop<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>) -> Resul
                 fps,
                 latency_ms: 18 + ((tick * 7) % 14) as u16,
                 throughput_mbps: 940 + ((tick * 11) % 160) as u16,
-                network_health: NetworkHealth::default(),
+                network_health,
             };
 
             draw(frame, &globe, area, angle, stats);
@@ -60,6 +104,10 @@ fn event_loop<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>) -> Resul
             if let Event::Key(key) = event::read()? {
                 match key.code {
                     KeyCode::Char('q') | KeyCode::Esc => break,
+                    KeyCode::Char('r') | KeyCode::Char('R') => {
+                        // Attempt network repair via callback
+                        let _ = (callbacks.repair_network)();
+                    }
                     _ => {}
                 }
             }

@@ -268,14 +268,35 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, stats: &UiStats) {
     let offset = (stats.tick / 2) as usize % len;
     let scrolled_msg = format!("{}{}", &msg[offset..], &msg[..offset]);
 
-    let line = Line::from(vec![
+    // Show repair option if network needs recovery
+    let needs_repair = matches!(stats.network_health, NetworkHealth::OrphanedState { .. });
+
+    let mut spans = vec![
         Span::styled(" COMMAND > ", Style::default().fg(Color::Yellow)),
         Span::styled(scrolled_msg, Style::default().fg(Color::DarkGray)),
-        Span::styled(
-            " [Q: ABORT] ",
-            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-        ),
-    ]);
+    ];
+
+    // Add repair button when needed (blinking to attract attention)
+    if needs_repair {
+        let repair_style = if stats.tick % 20 < 10 {
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
+        };
+        spans.push(Span::styled(" [R: REPAIR] ", repair_style));
+    }
+
+    spans.push(Span::styled(
+        " [Q: QUIT] ",
+        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+    ));
+
+    let line = Line::from(spans);
 
     frame.render_widget(
         Paragraph::new(line).alignment(ratatui::layout::Alignment::Left),
