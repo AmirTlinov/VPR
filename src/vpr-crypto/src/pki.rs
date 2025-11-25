@@ -260,4 +260,308 @@ mod tests {
         assert!(dir.path().join("intermediate.crt").exists());
         assert!(dir.path().join("masque.chain.crt").exists());
     }
+
+    #[test]
+    fn test_pki_config_default() {
+        let config = PkiConfig::default();
+        assert_eq!(config.org_name, "VPR");
+        assert_eq!(config.root_cn, "VPR Root CA");
+        assert_eq!(config.root_validity_days, 3650);
+        assert_eq!(config.intermediate_validity_days, 365);
+        assert_eq!(config.service_validity_days, 90);
+    }
+
+    #[test]
+    fn test_pki_config_clone() {
+        let config = PkiConfig::default();
+        let cloned = config.clone();
+        assert_eq!(config.org_name, cloned.org_name);
+        assert_eq!(config.root_cn, cloned.root_cn);
+    }
+
+    #[test]
+    fn test_pki_config_debug() {
+        let config = PkiConfig::default();
+        let debug_str = format!("{:?}", config);
+        assert!(debug_str.contains("PkiConfig"));
+        assert!(debug_str.contains("VPR"));
+    }
+
+    #[test]
+    fn test_pki_config_serialization() {
+        let config = PkiConfig::default();
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(json.contains("org_name"));
+        assert!(json.contains("VPR"));
+
+        let parsed: PkiConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.org_name, config.org_name);
+        assert_eq!(parsed.root_validity_days, config.root_validity_days);
+    }
+
+    #[test]
+    fn test_pki_config_custom() {
+        let config = PkiConfig {
+            org_name: "CustomOrg".to_string(),
+            root_cn: "Custom Root".to_string(),
+            root_validity_days: 7300,
+            intermediate_validity_days: 730,
+            service_validity_days: 30,
+        };
+        assert_eq!(config.org_name, "CustomOrg");
+        assert_eq!(config.root_validity_days, 7300);
+    }
+
+    #[test]
+    fn test_generate_root_ca_cert_contains_org() {
+        let config = PkiConfig::default();
+        let root = generate_root_ca(&config).unwrap();
+        assert!(root.cert_pem.starts_with("-----BEGIN CERTIFICATE-----"));
+        assert!(root.key_pem.starts_with("-----BEGIN PRIVATE KEY-----"));
+    }
+
+    #[test]
+    fn test_generate_root_ca_custom_org() {
+        let config = PkiConfig {
+            org_name: "TestOrganization".to_string(),
+            root_cn: "Test Root CA".to_string(),
+            ..Default::default()
+        };
+        let root = generate_root_ca(&config).unwrap();
+        assert!(!root.cert_pem.is_empty());
+        assert!(!root.key_pem.is_empty());
+    }
+
+    #[test]
+    fn test_generate_intermediate_ca() {
+        let config = PkiConfig::default();
+        let root = generate_root_ca(&config).unwrap();
+        let intermediate =
+            generate_intermediate_ca(&config, "test-node", &root.cert, &root.key).unwrap();
+
+        assert!(intermediate.cert_pem.starts_with("-----BEGIN CERTIFICATE-----"));
+        assert!(intermediate.key_pem.starts_with("-----BEGIN PRIVATE KEY-----"));
+    }
+
+    #[test]
+    fn test_generate_service_cert_multiple_dns() {
+        let config = PkiConfig::default();
+        let root = generate_root_ca(&config).unwrap();
+        let intermediate =
+            generate_intermediate_ca(&config, "node", &root.cert, &root.key).unwrap();
+
+        let dns_names = vec![
+            "vpn.example.com".to_string(),
+            "api.example.com".to_string(),
+            "www.example.com".to_string(),
+        ];
+        let service = generate_service_cert(
+            &config,
+            "multi-dns",
+            &dns_names,
+            &intermediate.cert,
+            &intermediate.key,
+        )
+        .unwrap();
+
+        assert!(service.cert_pem.starts_with("-----BEGIN CERTIFICATE-----"));
+        assert!(service.key_pem.starts_with("-----BEGIN PRIVATE KEY-----"));
+        // Chain should contain both certs
+        assert!(service.chain_pem.contains("-----BEGIN CERTIFICATE-----"));
+        // Should contain at least 2 certificate blocks
+        assert!(
+            service
+                .chain_pem
+                .matches("-----BEGIN CERTIFICATE-----")
+                .count()
+                >= 2
+        );
+    }
+
+    #[test]
+    fn test_service_cert_chain_contains_intermediate() {
+        let config = PkiConfig::default();
+        let root = generate_root_ca(&config).unwrap();
+        let intermediate =
+            generate_intermediate_ca(&config, "node", &root.cert, &root.key).unwrap();
+
+        let service = generate_service_cert(
+            &config,
+            "test-svc",
+            &["test.example.com".to_string()],
+            &intermediate.cert,
+            &intermediate.key,
+        )
+        .unwrap();
+
+        // Chain should contain the intermediate cert PEM
+        assert!(service.chain_pem.contains(&intermediate.cert_pem.trim()));
+    }
+
+    #[test]
+    fn test_save_and_load_ca_bundle() {
+        let config = PkiConfig::default();
+        let dir = tempdir().unwrap();
+        let root = generate_root_ca(&config).unwrap();
+
+        save_ca_bundle(&root, dir.path(), "test-ca").unwrap();
+
+        let (loaded_cert, loaded_key) = load_ca_bundle(dir.path(), "test-ca").unwrap();
+        assert_eq!(loaded_cert, root.cert_pem);
+        assert_eq!(loaded_key, root.key_pem);
+    }
+
+    #[test]
+    fn test_load_ca_bundle_not_found() {
+        let dir = tempdir().unwrap();
+        let result = load_ca_bundle(dir.path(), "nonexistent");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_ca_for_signing() {
+        let config = PkiConfig::default();
+        let root = generate_root_ca(&config).unwrap();
+
+        // Parse the generated CA for re-use
+        let (parsed_cert, parsed_key) =
+            parse_ca_for_signing(&root.cert_pem, &root.key_pem).unwrap();
+
+        // Should be able to sign with parsed CA
+        let intermediate =
+            generate_intermediate_ca(&config, "parsed-test", &parsed_cert, &parsed_key).unwrap();
+        assert!(!intermediate.cert_pem.is_empty());
+    }
+
+    #[test]
+    fn test_parse_ca_invalid_cert() {
+        let result = parse_ca_for_signing("not a cert", "not a key");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_cert_fingerprint() {
+        let config = PkiConfig::default();
+        let root = generate_root_ca(&config).unwrap();
+
+        let fp = cert_fingerprint(&root.cert_pem).unwrap();
+        // SHA-256 fingerprint is 64 hex chars
+        assert_eq!(fp.len(), 64);
+        // Should be valid hex
+        assert!(fp.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn test_cert_fingerprint_deterministic() {
+        let config = PkiConfig::default();
+        let root = generate_root_ca(&config).unwrap();
+
+        let fp1 = cert_fingerprint(&root.cert_pem).unwrap();
+        let fp2 = cert_fingerprint(&root.cert_pem).unwrap();
+        assert_eq!(fp1, fp2);
+    }
+
+    #[test]
+    fn test_cert_fingerprint_invalid_pem() {
+        let result = cert_fingerprint("not a valid pem");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_different_certs_different_fingerprints() {
+        let config = PkiConfig::default();
+        let root1 = generate_root_ca(&config).unwrap();
+        let root2 = generate_root_ca(&config).unwrap();
+
+        let fp1 = cert_fingerprint(&root1.cert_pem).unwrap();
+        let fp2 = cert_fingerprint(&root2.cert_pem).unwrap();
+        assert_ne!(fp1, fp2);
+    }
+
+    #[test]
+    fn test_save_service_cert_creates_files() {
+        let config = PkiConfig::default();
+        let dir = tempdir().unwrap();
+
+        let root = generate_root_ca(&config).unwrap();
+        let intermediate =
+            generate_intermediate_ca(&config, "node", &root.cert, &root.key).unwrap();
+        let service = generate_service_cert(
+            &config,
+            "test",
+            &["test.local".to_string()],
+            &intermediate.cert,
+            &intermediate.key,
+        )
+        .unwrap();
+
+        save_service_cert(&service, dir.path(), "svc").unwrap();
+
+        assert!(dir.path().join("svc.crt").exists());
+        assert!(dir.path().join("svc.key").exists());
+        assert!(dir.path().join("svc.chain.crt").exists());
+    }
+
+    #[test]
+    fn test_save_ca_bundle_creates_directory() {
+        let dir = tempdir().unwrap();
+        let nested_path = dir.path().join("nested").join("deep");
+
+        let config = PkiConfig::default();
+        let root = generate_root_ca(&config).unwrap();
+
+        save_ca_bundle(&root, &nested_path, "ca").unwrap();
+        assert!(nested_path.join("ca.crt").exists());
+        assert!(nested_path.join("ca.key").exists());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_key_file_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let config = PkiConfig::default();
+        let dir = tempdir().unwrap();
+        let root = generate_root_ca(&config).unwrap();
+
+        save_ca_bundle(&root, dir.path(), "secure").unwrap();
+
+        let key_path = dir.path().join("secure.key");
+        let metadata = std::fs::metadata(&key_path).unwrap();
+        let mode = metadata.permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+
+    #[test]
+    fn test_generate_service_cert_empty_dns() {
+        let config = PkiConfig::default();
+        let root = generate_root_ca(&config).unwrap();
+        let intermediate =
+            generate_intermediate_ca(&config, "node", &root.cert, &root.key).unwrap();
+
+        // Empty DNS names should still work (no SANs)
+        let service = generate_service_cert(
+            &config,
+            "no-san",
+            &[],
+            &intermediate.cert,
+            &intermediate.key,
+        )
+        .unwrap();
+        assert!(!service.cert_pem.is_empty());
+    }
+
+    #[test]
+    fn test_ca_bundle_pem_format() {
+        let config = PkiConfig::default();
+        let root = generate_root_ca(&config).unwrap();
+
+        // Cert PEM format
+        assert!(root.cert_pem.starts_with("-----BEGIN CERTIFICATE-----"));
+        assert!(root.cert_pem.trim().ends_with("-----END CERTIFICATE-----"));
+
+        // Key PEM format
+        assert!(root.key_pem.starts_with("-----BEGIN PRIVATE KEY-----"));
+        assert!(root.key_pem.trim().ends_with("-----END PRIVATE KEY-----"));
+    }
 }
