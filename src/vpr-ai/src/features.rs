@@ -265,4 +265,227 @@ mod tests {
         let p3 = ctx.add_packet(&[0u8; 100], Direction::Inbound);
         assert_eq!(p3.burst_position, 0);
     }
+
+    #[test]
+    fn test_constants() {
+        assert_eq!(CONTEXT_WINDOW_SIZE, 32);
+        assert_eq!(CONTEXT_WINDOW_SIZE_LEGACY, 16);
+    }
+
+    #[test]
+    fn test_direction_values() {
+        assert_eq!(Direction::Outbound as u8, 0);
+        assert_eq!(Direction::Inbound as u8, 1);
+    }
+
+    #[test]
+    fn test_direction_clone_copy() {
+        let dir = Direction::Outbound;
+        let cloned = dir.clone();
+        let copied = dir;
+        assert_eq!(dir, cloned);
+        assert_eq!(dir, copied);
+    }
+
+    #[test]
+    fn test_direction_debug() {
+        let dir = Direction::Inbound;
+        let debug = format!("{:?}", dir);
+        assert!(debug.contains("Inbound"));
+    }
+
+    #[test]
+    fn test_packet_features_clone() {
+        let packet = vec![0u8; 500];
+        let features = PacketFeatures::from_packet(&packet, Direction::Inbound, None);
+        let cloned = features.clone();
+        assert_eq!(features.size_raw, cloned.size_raw);
+        assert_eq!(features.direction, cloned.direction);
+    }
+
+    #[test]
+    fn test_packet_features_debug() {
+        let packet = vec![0u8; 100];
+        let features = PacketFeatures::from_packet(&packet, Direction::Outbound, None);
+        let debug = format!("{:?}", features);
+        assert!(debug.contains("PacketFeatures"));
+        assert!(debug.contains("size_raw: 100"));
+    }
+
+    #[test]
+    fn test_packet_features_to_tensor() {
+        let packet = vec![0u8; 750]; // 750/1500 = 0.5
+        let mut features = PacketFeatures::from_packet(&packet, Direction::Outbound, None);
+        features.burst_position = 8; // 8/15 ≈ 0.533
+
+        let tensor = features.to_tensor();
+        assert_eq!(tensor.len(), 4);
+        assert!((tensor[0] - 0.5).abs() < 0.01); // size_normalized
+        assert_eq!(tensor[2], 0.0); // direction (Outbound = 0)
+        assert!((tensor[3] - 8.0 / 15.0).abs() < 0.01); // burst_position normalized
+    }
+
+    #[test]
+    fn test_packet_features_max_size_clamped() {
+        let packet = vec![0u8; 2000]; // > 1500, should clamp to 1.0
+        let features = PacketFeatures::from_packet(&packet, Direction::Outbound, None);
+        assert_eq!(features.size_normalized, 1.0);
+        assert_eq!(features.size_raw, 2000);
+    }
+
+    #[test]
+    fn test_packet_context_default() {
+        let ctx = PacketContext::default();
+        assert!(ctx.is_empty());
+        assert_eq!(ctx.len(), 0);
+    }
+
+    #[test]
+    fn test_packet_context_with_burst_threshold() {
+        let ctx = PacketContext::with_burst_threshold(100.0);
+        assert!(ctx.is_empty());
+    }
+
+    #[test]
+    fn test_packet_context_clear() {
+        let mut ctx = PacketContext::new();
+        ctx.add_packet(&[0u8; 100], Direction::Outbound);
+        ctx.add_packet(&[0u8; 200], Direction::Inbound);
+        assert_eq!(ctx.len(), 2);
+
+        ctx.clear();
+        assert!(ctx.is_empty());
+        assert_eq!(ctx.len(), 0);
+    }
+
+    #[test]
+    fn test_packet_context_to_tensor() {
+        let mut ctx = PacketContext::new();
+        ctx.add_packet(&[0u8; 100], Direction::Outbound);
+        ctx.add_packet(&[0u8; 200], Direction::Inbound);
+
+        let tensor = ctx.to_tensor();
+        assert_eq!(tensor.len(), CONTEXT_WINDOW_SIZE * 4);
+
+        // First packet features at offset 0
+        assert!(tensor[0] > 0.0); // size_normalized
+        // Second packet at offset 4
+        assert!(tensor[4] > 0.0);
+        // Rest should be zeros
+        assert_eq!(tensor[8], 0.0);
+    }
+
+    #[test]
+    fn test_packet_context_fills_window() {
+        let mut ctx = PacketContext::new();
+
+        // Add more than window size
+        for i in 0..40 {
+            ctx.add_packet(&vec![0u8; 100 + i], Direction::Outbound);
+        }
+
+        // Should cap at CONTEXT_WINDOW_SIZE
+        assert_eq!(ctx.len(), CONTEXT_WINDOW_SIZE);
+    }
+
+    #[test]
+    fn test_packet_context_debug() {
+        let ctx = PacketContext::new();
+        let debug = format!("{:?}", ctx);
+        assert!(debug.contains("PacketContext"));
+    }
+
+    #[test]
+    fn test_traffic_stats_default() {
+        let stats = TrafficStats::default();
+        assert_eq!(stats.mean_size, 0.0);
+        assert_eq!(stats.size_std, 0.0);
+        assert_eq!(stats.mean_delay_log, 0.0);
+        assert_eq!(stats.delay_std, 0.0);
+        assert_eq!(stats.outbound_ratio, 0.0);
+        assert_eq!(stats.packet_count, 0);
+    }
+
+    #[test]
+    fn test_traffic_stats_clone() {
+        let stats = TrafficStats {
+            mean_size: 500.0,
+            size_std: 100.0,
+            mean_delay_log: 2.5,
+            delay_std: 0.5,
+            outbound_ratio: 0.7,
+            packet_count: 10,
+        };
+        let cloned = stats.clone();
+        assert_eq!(stats.mean_size, cloned.mean_size);
+        assert_eq!(stats.packet_count, cloned.packet_count);
+    }
+
+    #[test]
+    fn test_traffic_stats_debug() {
+        let stats = TrafficStats::default();
+        let debug = format!("{:?}", stats);
+        assert!(debug.contains("TrafficStats"));
+    }
+
+    #[test]
+    fn test_packet_context_stats_empty() {
+        let ctx = PacketContext::new();
+        let stats = ctx.stats();
+        assert_eq!(stats.packet_count, 0);
+        assert_eq!(stats.mean_size, 0.0);
+    }
+
+    #[test]
+    fn test_packet_context_stats_with_data() {
+        let mut ctx = PacketContext::new();
+        ctx.add_packet(&[0u8; 100], Direction::Outbound);
+        ctx.add_packet(&[0u8; 200], Direction::Outbound);
+        ctx.add_packet(&[0u8; 300], Direction::Inbound);
+
+        let stats = ctx.stats();
+        assert_eq!(stats.packet_count, 3);
+        assert!((stats.mean_size - 200.0).abs() < 0.01); // (100+200+300)/3 = 200
+        assert!(stats.outbound_ratio > 0.6); // 2/3 ≈ 0.667
+        assert!(stats.outbound_ratio < 0.7);
+    }
+
+    #[test]
+    fn test_packet_context_stats_variance() {
+        let mut ctx = PacketContext::new();
+        // Add identical packets - variance should be 0
+        for _ in 0..5 {
+            ctx.add_packet(&[0u8; 100], Direction::Outbound);
+        }
+
+        let stats = ctx.stats();
+        assert!(stats.size_std < 0.01); // Should be essentially 0
+    }
+
+    #[test]
+    fn test_packet_features_with_prev_timestamp() {
+        let packet1 = vec![0u8; 100];
+        let features1 = PacketFeatures::from_packet(&packet1, Direction::Outbound, None);
+        let ts = features1.timestamp;
+
+        // Small delay
+        std::thread::sleep(std::time::Duration::from_millis(1));
+
+        let packet2 = vec![0u8; 200];
+        let features2 = PacketFeatures::from_packet(&packet2, Direction::Inbound, Some(ts));
+
+        // delay_log_ms should be > 0 when there's a previous timestamp
+        assert!(features2.delay_log_ms > 0.0);
+    }
+
+    #[test]
+    fn test_burst_counter_saturation() {
+        let mut ctx = PacketContext::with_burst_threshold(1000.0); // High threshold, no burst breaks
+
+        // Add many packets quickly - burst_position should saturate at 15
+        for _ in 0..20 {
+            let features = ctx.add_packet(&[0u8; 100], Direction::Outbound);
+            assert!(features.burst_position <= 15);
+        }
+    }
 }
