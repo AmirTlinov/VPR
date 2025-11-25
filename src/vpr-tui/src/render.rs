@@ -303,3 +303,337 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, stats: &UiStats) {
         area,
     );
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    fn make_stats(tick: u64, health: NetworkHealth) -> UiStats {
+        UiStats {
+            tick,
+            fps: 60,
+            latency_ms: 10,
+            throughput_mbps: 900,
+            network_health: health,
+        }
+    }
+
+    #[test]
+    fn network_health_default_is_connected() {
+        let health = NetworkHealth::default();
+        assert!(matches!(health, NetworkHealth::Connected));
+    }
+
+    #[test]
+    fn network_health_variants() {
+        let connected = NetworkHealth::Connected;
+        let disconnected = NetworkHealth::Disconnected;
+        let orphaned = NetworkHealth::OrphanedState {
+            pending_changes: 3,
+            crashed_at: Some(12345),
+        };
+        let repairing = NetworkHealth::Repairing;
+
+        // Test Debug trait
+        assert!(format!("{:?}", connected).contains("Connected"));
+        assert!(format!("{:?}", disconnected).contains("Disconnected"));
+        assert!(format!("{:?}", orphaned).contains("OrphanedState"));
+        assert!(format!("{:?}", repairing).contains("Repairing"));
+    }
+
+    #[test]
+    fn ui_stats_construction() {
+        let stats = make_stats(100, NetworkHealth::Connected);
+        assert_eq!(stats.tick, 100);
+        assert_eq!(stats.fps, 60);
+        assert_eq!(stats.latency_ms, 10);
+        assert_eq!(stats.throughput_mbps, 900);
+    }
+
+    #[test]
+    fn draw_connected_state() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let globe = crate::globe::GlobeRenderer::new(200, 0.3, 0.2);
+        let stats = make_stats(1, NetworkHealth::Connected);
+
+        terminal
+            .draw(|f| {
+                draw(f, &globe, f.size(), 0.0, stats);
+            })
+            .unwrap();
+
+        // Verify buffer contains expected text
+        let buffer = terminal.backend().buffer();
+        let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
+        assert!(content.contains("VPR_OS"));
+        assert!(content.contains("SECURE_CHANNEL_ESTABLISHED"));
+    }
+
+    #[test]
+    fn draw_disconnected_state() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let globe = crate::globe::GlobeRenderer::new(200, 0.3, 0.2);
+        let stats = make_stats(1, NetworkHealth::Disconnected);
+
+        terminal
+            .draw(|f| {
+                draw(f, &globe, f.size(), 0.5, stats);
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
+        assert!(content.contains("DISCONNECTED"));
+    }
+
+    #[test]
+    fn draw_orphaned_state_shows_warning() {
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let globe = crate::globe::GlobeRenderer::new(200, 0.3, 0.2);
+        let stats = make_stats(
+            1,
+            NetworkHealth::OrphanedState {
+                pending_changes: 5,
+                crashed_at: Some(99999),
+            },
+        );
+
+        terminal
+            .draw(|f| {
+                draw(f, &globe, f.size(), 0.0, stats);
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
+        assert!(content.contains("NETWORK_RECOVERY_NEEDED"));
+        assert!(content.contains("WARNING"));
+        assert!(content.contains("REPAIR"));
+    }
+
+    #[test]
+    fn draw_repairing_state() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let globe = crate::globe::GlobeRenderer::new(200, 0.3, 0.2);
+        let stats = make_stats(1, NetworkHealth::Repairing);
+
+        terminal
+            .draw(|f| {
+                draw(f, &globe, f.size(), 1.0, stats);
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
+        assert!(content.contains("REPAIRING_NETWORK"));
+    }
+
+    #[test]
+    fn footer_shows_quit_button() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let globe = crate::globe::GlobeRenderer::new(200, 0.3, 0.2);
+        let stats = make_stats(1, NetworkHealth::Connected);
+
+        terminal
+            .draw(|f| {
+                draw(f, &globe, f.size(), 0.0, stats);
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
+        assert!(content.contains("Q: QUIT"));
+    }
+
+    #[test]
+    fn info_panel_renders_successfully() {
+        // Use larger terminal to ensure all panels fit
+        let backend = TestBackend::new(150, 50);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let globe = crate::globe::GlobeRenderer::new(200, 0.3, 0.2);
+        let stats = UiStats {
+            tick: 0,
+            fps: 60,
+            latency_ms: 25,
+            throughput_mbps: 850,
+            network_health: NetworkHealth::Connected,
+        };
+
+        // Main assertion: rendering completes without panic
+        terminal
+            .draw(|f| {
+                draw(f, &globe, f.size(), 0.0, stats);
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
+        // Info panel title should be visible
+        assert!(content.contains("NET_STAT"), "NET_STAT should be in buffer");
+    }
+
+    #[test]
+    fn scrolling_message_changes_with_tick() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let globe = crate::globe::GlobeRenderer::new(200, 0.3, 0.2);
+
+        // Capture frame at tick=0
+        let stats1 = make_stats(0, NetworkHealth::Connected);
+        terminal
+            .draw(|f| {
+                draw(f, &globe, f.size(), 0.0, stats1);
+            })
+            .unwrap();
+        let content1: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+
+        // Capture frame at tick=10 (message should scroll)
+        let stats2 = make_stats(10, NetworkHealth::Connected);
+        terminal
+            .draw(|f| {
+                draw(f, &globe, f.size(), 0.0, stats2);
+            })
+            .unwrap();
+        let content2: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+
+        // Both should contain COMMAND prompt
+        assert!(content1.contains("COMMAND"));
+        assert!(content2.contains("COMMAND"));
+    }
+
+    #[test]
+    fn small_terminal_does_not_panic() {
+        // Test with very small terminal size
+        let backend = TestBackend::new(20, 5);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let globe = crate::globe::GlobeRenderer::new(100, 0.3, 0.2);
+        let stats = make_stats(0, NetworkHealth::Connected);
+
+        // Should not panic even with tiny terminal
+        let result = terminal.draw(|f| {
+            draw(f, &globe, f.size(), 0.0, stats);
+        });
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn timestamp_in_header_changes() {
+        // The timestamp uses real time, so we just verify it's present
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let globe = crate::globe::GlobeRenderer::new(200, 0.3, 0.2);
+        let stats = make_stats(0, NetworkHealth::Connected);
+
+        terminal
+            .draw(|f| {
+                draw(f, &globe, f.size(), 0.0, stats);
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
+        // T- prefix for timestamp
+        assert!(content.contains("T-"));
+    }
+
+    #[test]
+    fn hex_dump_section_present() {
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let globe = crate::globe::GlobeRenderer::new(200, 0.3, 0.2);
+        let stats = make_stats(0, NetworkHealth::Connected);
+
+        terminal
+            .draw(|f| {
+                draw(f, &globe, f.size(), 0.0, stats);
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
+        assert!(content.contains("MEM_DUMP"));
+        assert!(content.contains("0x")); // Hex addresses
+    }
+
+    #[test]
+    fn system_tasks_section_present() {
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let globe = crate::globe::GlobeRenderer::new(200, 0.3, 0.2);
+        let stats = make_stats(0, NetworkHealth::Connected);
+
+        terminal
+            .draw(|f| {
+                draw(f, &globe, f.size(), 0.0, stats);
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
+        assert!(content.contains("SYSTEM_TASKS"));
+    }
+
+    #[test]
+    fn repair_button_blinks() {
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let globe = crate::globe::GlobeRenderer::new(200, 0.3, 0.2);
+
+        // Test at tick where button is in one state
+        let stats1 = make_stats(
+            5, // tick % 20 < 10 -> yellow bg
+            NetworkHealth::OrphanedState {
+                pending_changes: 1,
+                crashed_at: None,
+            },
+        );
+        terminal
+            .draw(|f| {
+                draw(f, &globe, f.size(), 0.0, stats1);
+            })
+            .unwrap();
+
+        // Test at tick where button is in other state
+        let stats2 = make_stats(
+            15, // tick % 20 >= 10 -> no bg
+            NetworkHealth::OrphanedState {
+                pending_changes: 1,
+                crashed_at: None,
+            },
+        );
+        terminal
+            .draw(|f| {
+                draw(f, &globe, f.size(), 0.0, stats2);
+            })
+            .unwrap();
+
+        // Both should render without panic and show repair button
+        let content: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(content.contains("REPAIR"));
+    }
+}

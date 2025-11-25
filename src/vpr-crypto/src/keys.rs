@@ -211,7 +211,7 @@ impl KeyMetadata {
             role,
             created_at: now
                 .format(&time::format_description::well_known::Rfc3339)
-                .unwrap(),
+                .expect("RFC3339 format should always succeed"),
             expires_at: None,
             fingerprint,
         }
@@ -273,10 +273,11 @@ mod tests {
 
     #[test]
     fn noise_keypair_roundtrip() {
-        let dir = tempdir().unwrap();
+        let dir = tempdir().expect("test: failed to create temp directory");
         let kp = NoiseKeypair::generate();
-        kp.save(dir.path(), "test").unwrap();
-        let loaded = NoiseKeypair::load(dir.path(), "test").unwrap();
+        kp.save(dir.path(), "test")
+            .expect("test: failed to save keypair");
+        let loaded = NoiseKeypair::load(dir.path(), "test").expect("test: failed to load keypair");
         assert_eq!(kp.public_bytes(), loaded.public_bytes());
     }
 
@@ -285,6 +286,203 @@ mod tests {
         let kp = SigningKeypair::generate();
         let msg = b"hello world";
         let sig = kp.sign(msg);
-        kp.verify(msg, &sig).unwrap();
+        kp.verify(msg, &sig)
+            .expect("test: signature verification failed");
+    }
+
+    #[test]
+    fn noise_keypair_from_secret_bytes() {
+        let original = NoiseKeypair::generate();
+        let secret = original.secret_bytes();
+        let restored = NoiseKeypair::from_secret_bytes(&secret);
+        assert_eq!(original.public_bytes(), restored.public_bytes());
+        assert_eq!(original.secret_bytes(), restored.secret_bytes());
+    }
+
+    #[test]
+    fn noise_keypair_load_public() {
+        let dir = tempdir().unwrap();
+        let kp = NoiseKeypair::generate();
+        kp.save(dir.path(), "test").unwrap();
+
+        let pk_path = dir.path().join("test.noise.pub");
+        let loaded_pub = NoiseKeypair::load_public(&pk_path).unwrap();
+        assert_eq!(kp.public_bytes(), loaded_pub);
+    }
+
+    #[test]
+    fn noise_keypair_load_invalid_size() {
+        let dir = tempdir().unwrap();
+        let sk_path = dir.path().join("bad.noise.key");
+        std::fs::write(&sk_path, vec![0u8; 16]).unwrap(); // Wrong size
+
+        let result = NoiseKeypair::load(dir.path(), "bad");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn noise_keypair_load_public_invalid_size() {
+        let dir = tempdir().unwrap();
+        let pk_path = dir.path().join("bad.noise.pub");
+        std::fs::write(&pk_path, vec![0u8; 64]).unwrap(); // Wrong size
+
+        let result = NoiseKeypair::load_public(&pk_path);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn signing_keypair_roundtrip() {
+        let dir = tempdir().unwrap();
+        let kp = SigningKeypair::generate();
+        kp.save(dir.path(), "test").unwrap();
+
+        let loaded = SigningKeypair::load(dir.path(), "test").unwrap();
+        assert_eq!(kp.public_bytes(), loaded.public_bytes());
+        assert_eq!(kp.secret_bytes(), loaded.secret_bytes());
+    }
+
+    #[test]
+    fn signing_keypair_from_secret_bytes() {
+        let original = SigningKeypair::generate();
+        let secret = original.secret_bytes();
+        let restored = SigningKeypair::from_secret_bytes(&secret).unwrap();
+        assert_eq!(original.public_bytes(), restored.public_bytes());
+    }
+
+    #[test]
+    fn signing_keypair_load_invalid_size() {
+        let dir = tempdir().unwrap();
+        let sk_path = dir.path().join("bad.sign.key");
+        std::fs::write(&sk_path, vec![0u8; 48]).unwrap(); // Wrong size
+
+        let result = SigningKeypair::load(dir.path(), "bad");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn signing_keypair_verify_wrong_signature() {
+        let kp = SigningKeypair::generate();
+        let msg = b"hello";
+        let mut bad_sig = kp.sign(msg);
+        bad_sig[0] ^= 0xFF; // Corrupt signature
+
+        let result = kp.verify(msg, &bad_sig);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn signing_keypair_verify_wrong_message() {
+        let kp = SigningKeypair::generate();
+        let msg = b"hello";
+        let sig = kp.sign(msg);
+
+        let result = kp.verify(b"goodbye", &sig);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn signature_verifier_from_public_bytes() {
+        let kp = SigningKeypair::generate();
+        let verifier = SignatureVerifier::from_public_bytes(&kp.public_bytes()).unwrap();
+        assert_eq!(verifier.public_bytes(), kp.public_bytes());
+
+        let msg = b"test message";
+        let sig = kp.sign(msg);
+        verifier.verify(msg, &sig).unwrap();
+    }
+
+    #[test]
+    fn signature_verifier_load() {
+        let dir = tempdir().unwrap();
+        let kp = SigningKeypair::generate();
+        kp.save(dir.path(), "test").unwrap();
+
+        let pk_path = dir.path().join("test.sign.pub");
+        let verifier = SignatureVerifier::load(&pk_path).unwrap();
+        assert_eq!(verifier.public_bytes(), kp.public_bytes());
+    }
+
+    #[test]
+    fn signature_verifier_load_invalid_size() {
+        let dir = tempdir().unwrap();
+        let pk_path = dir.path().join("bad.sign.pub");
+        std::fs::write(&pk_path, vec![0u8; 20]).unwrap();
+
+        let result = SignatureVerifier::load(&pk_path);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn signature_verifier_verify_fails_bad_sig() {
+        let kp = SigningKeypair::generate();
+        let verifier = SignatureVerifier::from_public_bytes(&kp.public_bytes()).unwrap();
+
+        let bad_sig = [0u8; 64];
+        let result = verifier.verify(b"test", &bad_sig);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn key_metadata_new_and_fingerprint() {
+        let kp = NoiseKeypair::generate();
+        let meta = KeyMetadata::new("mykey", KeyRole::Noise, &kp.public_bytes());
+
+        assert_eq!(meta.name, "mykey");
+        assert_eq!(meta.role, KeyRole::Noise);
+        assert!(!meta.fingerprint.is_empty());
+        assert_eq!(meta.fingerprint.len(), 32); // 16 bytes hex = 32 chars
+        assert!(meta.expires_at.is_none());
+    }
+
+    #[test]
+    fn key_metadata_roundtrip() {
+        let dir = tempdir().unwrap();
+        let kp = NoiseKeypair::generate();
+        let meta = KeyMetadata::new("testkey", KeyRole::Signing, &kp.public_bytes());
+        meta.save(dir.path()).unwrap();
+
+        let loaded = KeyMetadata::load(dir.path(), "testkey").unwrap();
+        assert_eq!(loaded.name, meta.name);
+        assert_eq!(loaded.role, meta.role);
+        assert_eq!(loaded.fingerprint, meta.fingerprint);
+        assert_eq!(loaded.created_at, meta.created_at);
+    }
+
+    #[test]
+    fn key_role_variants() {
+        // Ensure all variants are serializable
+        let roles = [
+            KeyRole::RootCa,
+            KeyRole::IntermediateCa,
+            KeyRole::Service,
+            KeyRole::Noise,
+            KeyRole::Signing,
+        ];
+        for role in roles {
+            let json = serde_json::to_string(&role).unwrap();
+            let restored: KeyRole = serde_json::from_str(&json).unwrap();
+            assert_eq!(role, restored);
+        }
+    }
+
+    #[test]
+    fn secret_bytes_zeroize() {
+        let mut sb = SecretBytes::new(vec![1, 2, 3, 4, 5]);
+        assert_eq!(sb.as_slice(), &[1, 2, 3, 4, 5]);
+
+        // Manually zeroize - Vec<u8> zeroize clears the vector
+        sb.0.zeroize();
+        assert!(sb.as_slice().is_empty());
+    }
+
+    #[test]
+    fn secret_bytes_drop_clears_memory() {
+        // Create SecretBytes with known data
+        let data = vec![0xAB; 32];
+        let sb = SecretBytes::new(data);
+        assert_eq!(sb.as_slice().len(), 32);
+        assert_eq!(sb.as_slice()[0], 0xAB);
+        // Drop will zeroize (can't directly verify without unsafe, but exercise the path)
+        drop(sb);
     }
 }
