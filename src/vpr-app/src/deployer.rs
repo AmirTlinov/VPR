@@ -65,7 +65,7 @@ pub enum SshAuth {
 }
 
 /// VPS configuration stored in app config
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VpsConfig {
     pub host: String,
     #[serde(default = "default_ssh_port")]
@@ -82,6 +82,19 @@ pub struct VpsConfig {
 
 fn default_ssh_port() -> u16 { 22 }
 fn default_ssh_user() -> String { "root".into() }
+
+impl Default for VpsConfig {
+    fn default() -> Self {
+        Self {
+            host: String::new(),
+            ssh_port: default_ssh_port(),
+            ssh_user: default_ssh_user(),
+            ssh_password: None,
+            ssh_key_path: None,
+            deployed: false,
+        }
+    }
+}
 
 impl VpsConfig {
     pub fn is_configured(&self) -> bool {
