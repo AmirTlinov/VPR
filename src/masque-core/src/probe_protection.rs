@@ -544,4 +544,293 @@ mod tests {
         assert_eq!(restored.nonce, challenge.nonce);
         assert_eq!(restored.difficulty, challenge.difficulty);
     }
+
+    #[test]
+    fn test_probe_detection_equality() {
+        assert_eq!(ProbeDetection::Legitimate, ProbeDetection::Legitimate);
+        assert_ne!(ProbeDetection::Legitimate, ProbeDetection::Suspicious("x".to_string()));
+        assert_ne!(ProbeDetection::Suspicious("a".to_string()), ProbeDetection::Blocked("b".to_string()));
+    }
+
+    #[test]
+    fn test_probe_detection_debug() {
+        let legitimate = ProbeDetection::Legitimate;
+        assert!(format!("{:?}", legitimate).contains("Legitimate"));
+
+        let suspicious = ProbeDetection::Suspicious("test reason".to_string());
+        let debug_str = format!("{:?}", suspicious);
+        assert!(debug_str.contains("Suspicious"));
+        assert!(debug_str.contains("test reason"));
+
+        let blocked = ProbeDetection::Blocked("blocked reason".to_string());
+        let debug_str = format!("{:?}", blocked);
+        assert!(debug_str.contains("Blocked"));
+    }
+
+    #[test]
+    fn test_probe_detection_clone() {
+        let original = ProbeDetection::Suspicious("clone test".to_string());
+        let cloned = original.clone();
+        assert_eq!(original, cloned);
+    }
+
+    #[test]
+    fn test_probe_protection_config_default() {
+        let config = ProbeProtectionConfig::default();
+        assert!(config.challenge_enabled);
+        assert_eq!(config.challenge_difficulty, 2);
+        assert_eq!(config.ban_duration, DEFAULT_BAN_DURATION);
+        assert_eq!(config.max_failed_attempts, MAX_FAILED_ATTEMPTS);
+        assert!(config.timing_analysis);
+    }
+
+    #[test]
+    fn test_probe_protection_config_clone() {
+        let config = ProbeProtectionConfig::default();
+        let cloned = config.clone();
+        assert_eq!(cloned.challenge_enabled, config.challenge_enabled);
+        assert_eq!(cloned.challenge_difficulty, config.challenge_difficulty);
+    }
+
+    #[test]
+    fn test_probe_protection_config_debug() {
+        let config = ProbeProtectionConfig::default();
+        let debug_str = format!("{:?}", config);
+        assert!(debug_str.contains("ProbeProtectionConfig"));
+        assert!(debug_str.contains("challenge_enabled"));
+    }
+
+    #[test]
+    fn test_probe_metrics_default() {
+        let metrics = ProbeMetrics::default();
+        let snap = metrics.snapshot();
+        assert_eq!(snap.connections_checked, 0);
+        assert_eq!(snap.probes_blocked, 0);
+        assert_eq!(snap.suspicious_detected, 0);
+    }
+
+    #[test]
+    fn test_probe_metrics_to_prometheus() {
+        let metrics = ProbeMetrics::default();
+        metrics.connections_checked.fetch_add(10, Ordering::Relaxed);
+        metrics.probes_blocked.fetch_add(2, Ordering::Relaxed);
+
+        let prom = metrics.to_prometheus("probe");
+        assert!(prom.contains("probe_connections_checked 10"));
+        assert!(prom.contains("probe_probes_blocked 2"));
+        assert!(prom.contains("# TYPE probe_connections_checked counter"));
+    }
+
+    #[test]
+    fn test_probe_metrics_snapshot_clone() {
+        let metrics = ProbeMetrics::default();
+        metrics.connections_checked.fetch_add(5, Ordering::Relaxed);
+        let snap = metrics.snapshot();
+        let cloned = snap;
+        assert_eq!(cloned.connections_checked, 5);
+    }
+
+    #[test]
+    fn test_probe_metrics_snapshot_debug() {
+        let metrics = ProbeMetrics::default();
+        let snap = metrics.snapshot();
+        let debug_str = format!("{:?}", snap);
+        assert!(debug_str.contains("ProbeMetricsSnapshot"));
+        assert!(debug_str.contains("connections_checked"));
+    }
+
+    #[test]
+    fn test_challenge_debug() {
+        let challenge = Challenge::new(1, test_ip());
+        let debug_str = format!("{:?}", challenge);
+        assert!(debug_str.contains("Challenge"));
+        assert!(debug_str.contains("difficulty"));
+    }
+
+    #[test]
+    fn test_challenge_clone() {
+        let challenge = Challenge::new(2, test_ip());
+        let cloned = challenge.clone();
+        assert_eq!(cloned.nonce, challenge.nonce);
+        assert_eq!(cloned.difficulty, challenge.difficulty);
+    }
+
+    #[test]
+    fn test_challenge_from_bytes_invalid_length() {
+        let short_data = [0u8; 10];
+        assert!(Challenge::from_bytes(&short_data).is_none());
+
+        let long_data = [0u8; 50];
+        assert!(Challenge::from_bytes(&long_data).is_none());
+    }
+
+    #[test]
+    fn test_challenge_verify_wrong_difficulty() {
+        let challenge = Challenge::new(4, test_ip()); // 4 leading zeros required
+
+        // Random response unlikely to have 4 leading zero bytes
+        let mut response = [0u8; 32];
+        response[0] = 0xFF; // First byte is definitely not zero
+        assert!(!challenge.verify(&response));
+    }
+
+    #[test]
+    fn test_timing_disabled() {
+        let protector = ProbeProtector::new(ProbeProtectionConfig {
+            timing_analysis: false,
+            ..Default::default()
+        });
+
+        // Even very fast should be legitimate when timing disabled
+        let result = protector.check_timing(Duration::from_micros(1));
+        assert_eq!(result, ProbeDetection::Legitimate);
+    }
+
+    #[test]
+    fn test_timing_too_slow() {
+        let protector = ProbeProtector::new(ProbeProtectionConfig {
+            timing_analysis: true,
+            max_handshake_time: Duration::from_secs(5),
+            ..Default::default()
+        });
+
+        let result = protector.check_timing(Duration::from_secs(10));
+        match result {
+            ProbeDetection::Blocked(_) => (),
+            other => panic!("Expected Blocked for timeout, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_verify_challenge_wrong_ip() {
+        let protector = ProbeProtector::default();
+        let ip1 = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
+        let ip2 = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 2));
+
+        // Issue challenge for ip1
+        let challenge = protector.issue_challenge(ip1);
+
+        // Try to verify with ip2 - should fail
+        let response = [0u8; 32]; // Won't matter since IP check fails first
+        assert!(!protector.verify_challenge(ip2, &challenge.nonce, &response));
+    }
+
+    #[test]
+    fn test_verify_challenge_unknown_nonce() {
+        let protector = ProbeProtector::default();
+        let ip = test_ip();
+
+        let unknown_nonce = [1u8; 32];
+        let response = [0u8; 32];
+
+        assert!(!protector.verify_challenge(ip, &unknown_nonce, &response));
+    }
+
+    #[test]
+    fn test_cleanup() {
+        let protector = ProbeProtector::new(ProbeProtectionConfig {
+            ban_duration: Duration::from_millis(10), // Very short ban
+            ..Default::default()
+        });
+
+        let ip = test_ip();
+
+        // Ban the IP
+        for _ in 0..5 {
+            protector.record_failure(ip);
+        }
+
+        // Verify it's banned
+        match protector.check_ip(ip) {
+            ProbeDetection::Blocked(_) => (),
+            other => panic!("Expected Blocked, got {:?}", other),
+        }
+
+        // Wait for ban to expire
+        std::thread::sleep(Duration::from_millis(20));
+
+        // Cleanup should remove expired bans
+        protector.cleanup();
+
+        // Now should be legitimate (ban expired, entry cleaned)
+        // Note: entry might still exist but ban_until is in past
+    }
+
+    #[test]
+    fn test_challenge_limit() {
+        let protector = ProbeProtector::default();
+        let ip = test_ip();
+
+        // Issue many challenges (more than MAX_PENDING_CHALLENGES)
+        for _ in 0..MAX_PENDING_CHALLENGES + 100 {
+            protector.issue_challenge(ip);
+        }
+
+        // Verify metrics
+        let snap = protector.metrics().snapshot();
+        assert!(snap.challenges_issued >= MAX_PENDING_CHALLENGES as u64);
+    }
+
+    #[test]
+    fn test_record_success_for_unknown_ip() {
+        let protector = ProbeProtector::default();
+        let unknown_ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+
+        // Should not panic on unknown IP
+        protector.record_success(unknown_ip);
+
+        // IP should still be legitimate
+        assert_eq!(protector.check_ip(unknown_ip), ProbeDetection::Legitimate);
+    }
+
+    #[test]
+    fn test_suspicious_before_ban() {
+        let protector = ProbeProtector::new(ProbeProtectionConfig {
+            max_failed_attempts: 5,
+            ..Default::default()
+        });
+
+        let ip = test_ip();
+
+        // Rack up failures just below ban threshold
+        for _ in 0..4 {
+            protector.record_failure(ip);
+        }
+
+        // Should still be legitimate (not banned yet)
+        assert_eq!(protector.check_ip(ip), ProbeDetection::Legitimate);
+
+        // One more failure triggers ban
+        protector.record_failure(ip);
+
+        // Now should be blocked
+        match protector.check_ip(ip) {
+            ProbeDetection::Blocked(_) => (),
+            other => panic!("Expected Blocked, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_ipv6_support() {
+        let protector = ProbeProtector::default();
+        let ipv6 = IpAddr::V6(std::net::Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1));
+
+        assert_eq!(protector.check_ip(ipv6), ProbeDetection::Legitimate);
+
+        protector.record_failure(ipv6);
+        protector.record_failure(ipv6);
+        protector.record_failure(ipv6);
+
+        match protector.check_ip(ipv6) {
+            ProbeDetection::Blocked(_) => (),
+            other => panic!("Expected Blocked for IPv6, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_constants() {
+        assert_eq!(DEFAULT_BAN_DURATION, Duration::from_secs(300));
+        assert_eq!(MAX_FAILED_ATTEMPTS, 3);
+        assert_eq!(CHALLENGE_VALIDITY, Duration::from_secs(30));
+    }
 }

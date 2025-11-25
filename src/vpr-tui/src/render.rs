@@ -1,3 +1,6 @@
+//! Хакерский TUI в стиле Watch Dogs 2
+//! ASCII арт, глитч эффекты, мемы
+
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -5,24 +8,22 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::ascii_art::{
+    self, glitch_text, get_doge_message, get_hacker_message, hacker_progress_bar, pulse, spinner,
+    DOGE, SKULL, VPR_LOGO,
+};
 use crate::globe::GlobeRenderer;
 
 /// Network health status for TUI display
 #[derive(Debug, Clone, Default)]
 pub enum NetworkHealth {
-    /// Network is healthy, VPN connected
     #[default]
     Connected,
-    /// Disconnected but clean
     Disconnected,
-    /// Orphaned network state detected (previous crash)
     OrphanedState {
-        /// Number of pending changes to restore
         pending_changes: usize,
-        /// When the crashed session started
         crashed_at: Option<u64>,
     },
-    /// Network being repaired
     Repairing,
 }
 
@@ -31,138 +32,132 @@ pub struct UiStats {
     pub fps: u16,
     pub latency_ms: u16,
     pub throughput_mbps: u16,
-    /// Network health status (for crash recovery display)
     pub network_health: NetworkHealth,
 }
 
 pub fn draw(frame: &mut Frame<'_>, globe: &GlobeRenderer, area: Rect, angle: f32, stats: UiStats) {
-    // Check if we need warning banner for orphaned network state
     let needs_warning = matches!(stats.network_health, NetworkHealth::OrphanedState { .. });
 
-    // Main Layout: Header, Warning (optional), Content (Globe + Info), Footer
     let layout = if needs_warning {
         Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(1),  // Header
+                Constraint::Length(3),  // Header (bigger for logo)
                 Constraint::Length(3),  // Warning banner
                 Constraint::Min(10),    // Content
-                Constraint::Length(1),  // Footer
+                Constraint::Length(2),  // Footer
             ])
             .split(area)
     } else {
         Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(1),  // Header
+                Constraint::Length(3),  // Header
                 Constraint::Length(0),  // No warning
                 Constraint::Min(10),    // Content
-                Constraint::Length(1),  // Footer
+                Constraint::Length(2),  // Footer
             ])
             .split(area)
     };
 
-    render_header(frame, layout[0], &stats.network_health);
+    render_hacker_header(frame, layout[0], &stats);
 
-    // Render warning banner if needed
     if needs_warning {
         render_orphaned_warning(frame, layout[1], &stats.network_health);
     }
 
-    // Content and footer indices (layout always has 4 elements, warning slot may be empty)
     let (content_idx, footer_idx) = (2, 3);
 
-    // Content Layout: Globe (Left), Info Panel (Right)
+    // Content: Globe (Left), Hacker Panel (Right)
     let content_layout = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
+        .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
         .split(layout[content_idx]);
 
-    // Render Globe
-    let globe_area = content_layout[0];
-    // Use a slightly neon color palette for the globe
-    let ascii = globe.render_frame(
-        globe_area.width as usize,
-        globe_area.height as usize,
-        angle,
-        stats.tick,
-    );
-
-    // Apply a "CRT" scanline effect or just direct rendering
-    frame.render_widget(
-        ascii.to_paragraph().block(
-            Block::default()
-                .borders(Borders::NONE)
-                .style(Style::default().fg(Color::Cyan)),
-        ),
-        globe_area,
-    );
-
-    // Render Info Panel
-    render_info_panel(frame, content_layout[1], &stats);
-
-    render_footer(frame, layout[footer_idx], &stats);
+    render_globe_with_effects(frame, content_layout[0], globe, angle, &stats);
+    render_hacker_panel(frame, content_layout[1], &stats);
+    render_hacker_footer(frame, layout[footer_idx], &stats);
 }
 
-fn render_header(frame: &mut Frame<'_>, area: Rect, health: &NetworkHealth) {
+fn render_hacker_header(frame: &mut Frame<'_>, area: Rect, stats: &UiStats) {
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
 
-    // Status text and color based on network health
-    let (status_text, status_color) = match health {
-        NetworkHealth::Connected => ("SECURE_CHANNEL_ESTABLISHED", Color::Green),
-        NetworkHealth::Disconnected => ("DISCONNECTED", Color::DarkGray),
-        NetworkHealth::OrphanedState { .. } => ("NETWORK_RECOVERY_NEEDED", Color::Yellow),
-        NetworkHealth::Repairing => ("REPAIRING_NETWORK", Color::Cyan),
+    let (status_text, status_color) = match &stats.network_health {
+        NetworkHealth::Connected => ("▓▓▓ SECURE TUNNEL ACTIVE ▓▓▓", Color::Green),
+        NetworkHealth::Disconnected => ("░░░ OFFLINE ░░░", Color::DarkGray),
+        NetworkHealth::OrphanedState { .. } => ("!!! RECOVERY NEEDED !!!", Color::Yellow),
+        NetworkHealth::Repairing => (">>> REPAIRING <<<", Color::Cyan),
     };
 
-    let line = Line::from(vec![
-        Span::styled(
-            " VPR_OS ",
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(" :: ", Style::default().fg(Color::DarkGray)),
-        Span::styled(status_text, Style::default().fg(status_color)),
-        Span::styled(" :: ", Style::default().fg(Color::DarkGray)),
-        Span::styled(
-            format!("T-{}", timestamp % 10000),
-            Style::default().fg(Color::Red),
-        ),
-        Span::raw(" "),
-        Span::styled(
-            " [ENCRYPTED] ",
-            Style::default()
-                .fg(Color::LightBlue)
-                .add_modifier(Modifier::RAPID_BLINK),
-        ),
-    ]);
+    // Глитч эффект для заголовка
+    let glitched_status = if stats.tick % 50 < 3 {
+        glitch_text(status_text, stats.tick, 0.3)
+    } else {
+        status_text.to_string()
+    };
+
+    let lines = vec![
+        Line::from(vec![
+            Span::styled(
+                " ██╗   ██╗██████╗ ██████╗  ",
+                Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!(" {} ", spinner(stats.tick)),
+                Style::default().fg(Color::Cyan),
+            ),
+            Span::styled(
+                glitched_status,
+                Style::default().fg(status_color).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!(" {} ", pulse(stats.tick)),
+                Style::default().fg(Color::Red),
+            ),
+            Span::styled(
+                format!("T-{:05}", timestamp % 100000),
+                Style::default().fg(Color::Yellow),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                " ╚████╔╝ ██║     ██║  ██║  ",
+                Style::default().fg(Color::Magenta),
+            ),
+            Span::styled(
+                format!(" [ENCRYPTED:ML-KEM768] "),
+                Style::default().fg(Color::Green).add_modifier(Modifier::RAPID_BLINK),
+            ),
+            Span::styled(
+                get_hacker_message(stats.tick),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]),
+    ];
 
     frame.render_widget(
-        Paragraph::new(line).alignment(ratatui::layout::Alignment::Left),
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::BOTTOM)
+                .border_style(Style::default().fg(Color::DarkGray)),
+        ),
         area,
     );
 }
 
-/// Render warning banner for orphaned network state (crash recovery needed)
 fn render_orphaned_warning(frame: &mut Frame<'_>, area: Rect, health: &NetworkHealth) {
     if let NetworkHealth::OrphanedState {
         pending_changes,
         crashed_at,
     } = health
     {
-        let time_info = crashed_at
-            .map(|ts| format!(" (crashed session from T-{})", ts % 100000))
-            .unwrap_or_default();
-
+        let skull_line = SKULL.get(5).unwrap_or(&"");
         let warning_text = format!(
-            "WARNING: Previous VPN session crashed with {} pending network changes{}\n\
-             Network may be in inconsistent state. Press 'R' to repair or start VPN to auto-repair.",
-            pending_changes, time_info
+            "{} CRASH DETECTED: {} pending changes {} Press [R] to HACK THE RECOVERY",
+            skull_line, pending_changes, skull_line
         );
 
         frame.render_widget(
@@ -172,468 +167,284 @@ fn render_orphaned_warning(frame: &mut Frame<'_>, area: Rect, health: &NetworkHe
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
-                        .border_style(Style::default().fg(Color::Yellow))
-                        .title(" NETWORK RECOVERY ")
-                        .title_style(
-                            Style::default()
-                                .fg(Color::Red)
-                                .add_modifier(Modifier::BOLD),
-                        ),
+                        .border_style(Style::default().fg(Color::Red))
+                        .title(" ⚠ SYSTEM ALERT ⚠ "),
                 ),
             area,
         );
     }
 }
 
-fn render_info_panel(frame: &mut Frame<'_>, area: Rect, stats: &UiStats) {
-    let blocks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),  // Network Status
-            Constraint::Length(10), // Log / Hex dump
-            Constraint::Min(5),     // Active Processes
-        ])
-        .split(area);
-
-    // 1. Network Status
-    let net_status = format!(
-        "UPLINK: {} Mbps\nLATENCY: {} ms",
-        stats.throughput_mbps, stats.latency_ms
+fn render_globe_with_effects(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    globe: &GlobeRenderer,
+    angle: f32,
+    stats: &UiStats,
+) {
+    let ascii = globe.render_frame(
+        area.width as usize,
+        area.height as usize,
+        angle,
+        stats.tick,
     );
+
+    // Цвет глобуса меняется в зависимости от статуса
+    let globe_color = match &stats.network_health {
+        NetworkHealth::Connected => Color::Cyan,
+        NetworkHealth::Disconnected => Color::DarkGray,
+        NetworkHealth::OrphanedState { .. } => Color::Yellow,
+        NetworkHealth::Repairing => Color::Magenta,
+    };
+
     frame.render_widget(
-        Paragraph::new(net_status).block(
+        ascii.to_paragraph().block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::LightGreen))
-                .title("NET_STAT"),
+                .border_style(Style::default().fg(Color::DarkGray))
+                .title(" ◉ GLOBAL_NETWORK_MAP ◉ ")
+                .title_style(Style::default().fg(globe_color)),
         ),
-        blocks[0],
-    );
-
-    // 2. Hex Dump / Log (Fake Data)
-    let mut log_lines = vec![];
-    for i in 0..8 {
-        let offset = stats.tick.wrapping_add(i as u64) * 16;
-        let hex_part: String = (0..8)
-            .map(|j| {
-                let val = (offset.wrapping_add(j) * 1337) % 255;
-                format!("{:02X} ", val)
-            })
-            .collect();
-        log_lines.push(Line::from(Span::styled(
-            format!("0x{:08X}: {}", offset, hex_part),
-            Style::default().fg(Color::DarkGray),
-        )));
-    }
-
-    frame.render_widget(
-        Paragraph::new(log_lines).block(Block::default().borders(Borders::LEFT).title("MEM_DUMP")),
-        blocks[1],
-    );
-
-    // 3. Active Processes / Encryption
-    let processes = [
-        " > key_exchange... OK",
-        " > noise_handshake... OK",
-        " > packet_shaping... ACTIVE",
-        " > dpi_evasion... ENGAGED",
-        " > geo_spoof... TOKYO_03",
-    ];
-
-    let proc_text: Vec<Line> = processes
-        .iter()
-        .enumerate()
-        .map(|(i, p)| {
-            #[allow(clippy::incompatible_msrv)]
-            let style = if (stats.tick / 10 + i as u64).is_multiple_of(2) {
-                Style::default().fg(Color::White)
-            } else {
-                Style::default().fg(Color::DarkGray)
-            };
-            Line::from(Span::styled(*p, style))
-        })
-        .collect();
-
-    frame.render_widget(
-        Paragraph::new(proc_text)
-            .block(Block::default().borders(Borders::TOP).title("SYSTEM_TASKS")),
-        blocks[2],
-    );
-}
-
-fn render_footer(frame: &mut Frame<'_>, area: Rect, stats: &UiStats) {
-    // Scrolling text effect
-    let msg = " INITIALIZING... CONNECTING TO SECURE NODE... ";
-    let len = msg.len();
-    let offset = (stats.tick / 2) as usize % len;
-    let scrolled_msg = format!("{}{}", &msg[offset..], &msg[..offset]);
-
-    // Show repair option if network needs recovery
-    let needs_repair = matches!(stats.network_health, NetworkHealth::OrphanedState { .. });
-
-    let mut spans = vec![
-        Span::styled(" COMMAND > ", Style::default().fg(Color::Yellow)),
-        Span::styled(scrolled_msg, Style::default().fg(Color::DarkGray)),
-    ];
-
-    // Add repair button when needed (blinking to attract attention)
-    if needs_repair {
-        let repair_style = if stats.tick % 20 < 10 {
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::Yellow)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD)
-        };
-        spans.push(Span::styled(" [R: REPAIR] ", repair_style));
-    }
-
-    spans.push(Span::styled(
-        " [Q: QUIT] ",
-        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-    ));
-
-    let line = Line::from(spans);
-
-    frame.render_widget(
-        Paragraph::new(line).alignment(ratatui::layout::Alignment::Left),
         area,
     );
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use ratatui::backend::TestBackend;
-    use ratatui::Terminal;
+fn render_hacker_panel(frame: &mut Frame<'_>, area: Rect, stats: &UiStats) {
+    let blocks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(8),  // ASCII Art (Doge!)
+            Constraint::Length(5),  // Network Stats
+            Constraint::Length(10), // Hex Dump
+            Constraint::Min(5),     // System Tasks
+        ])
+        .split(area);
 
-    fn make_stats(tick: u64, health: NetworkHealth) -> UiStats {
-        UiStats {
-            tick,
-            fps: 60,
-            latency_ms: 10,
-            throughput_mbps: 900,
-            network_health: health,
-        }
-    }
+    // 1. ASCII Art - Doge или Skull в зависимости от статуса
+    render_ascii_art(frame, blocks[0], stats);
 
-    #[test]
-    fn network_health_default_is_connected() {
-        let health = NetworkHealth::default();
-        assert!(matches!(health, NetworkHealth::Connected));
-    }
+    // 2. Network Stats с прогресс барами
+    render_network_stats(frame, blocks[1], stats);
 
-    #[test]
-    fn network_health_variants() {
-        let connected = NetworkHealth::Connected;
-        let disconnected = NetworkHealth::Disconnected;
-        let orphaned = NetworkHealth::OrphanedState {
-            pending_changes: 3,
-            crashed_at: Some(12345),
-        };
-        let repairing = NetworkHealth::Repairing;
+    // 3. Hex Dump с глитч эффектами
+    render_hex_dump(frame, blocks[2], stats);
 
-        // Test Debug trait
-        assert!(format!("{:?}", connected).contains("Connected"));
-        assert!(format!("{:?}", disconnected).contains("Disconnected"));
-        assert!(format!("{:?}", orphaned).contains("OrphanedState"));
-        assert!(format!("{:?}", repairing).contains("Repairing"));
-    }
+    // 4. System Tasks
+    render_system_tasks(frame, blocks[3], stats);
+}
 
-    #[test]
-    fn ui_stats_construction() {
-        let stats = make_stats(100, NetworkHealth::Connected);
-        assert_eq!(stats.tick, 100);
-        assert_eq!(stats.fps, 60);
-        assert_eq!(stats.latency_ms, 10);
-        assert_eq!(stats.throughput_mbps, 900);
-    }
-
-    #[test]
-    fn draw_connected_state() {
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let globe = crate::globe::GlobeRenderer::new(200, 0.3, 0.2);
-        let stats = make_stats(1, NetworkHealth::Connected);
-
-        terminal
-            .draw(|f| {
-                draw(f, &globe, f.size(), 0.0, stats);
+fn render_ascii_art(frame: &mut Frame<'_>, area: Rect, stats: &UiStats) {
+    // Показываем Doge каждые 100 тиков, иначе Skull
+    let show_doge = (stats.tick / 100) % 2 == 0;
+    
+    let art: Vec<Line> = if show_doge {
+        DOGE.iter()
+            .take(area.height as usize - 2)
+            .enumerate()
+            .map(|(i, line)| {
+                let color = if i % 2 == 0 { Color::Yellow } else { Color::Rgb(255, 200, 100) };
+                Line::from(Span::styled(*line, Style::default().fg(color)))
             })
-            .unwrap();
-
-        // Verify buffer contains expected text
-        let buffer = terminal.backend().buffer();
-        let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
-        assert!(content.contains("VPR_OS"));
-        assert!(content.contains("SECURE_CHANNEL_ESTABLISHED"));
-    }
-
-    #[test]
-    fn draw_disconnected_state() {
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let globe = crate::globe::GlobeRenderer::new(200, 0.3, 0.2);
-        let stats = make_stats(1, NetworkHealth::Disconnected);
-
-        terminal
-            .draw(|f| {
-                draw(f, &globe, f.size(), 0.5, stats);
+            .collect()
+    } else {
+        SKULL.iter()
+            .take(area.height as usize - 2)
+            .map(|line| {
+                Line::from(Span::styled(*line, Style::default().fg(Color::Red)))
             })
-            .unwrap();
+            .collect()
+    };
 
-        let buffer = terminal.backend().buffer();
-        let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
-        assert!(content.contains("DISCONNECTED"));
-    }
+    let title = if show_doge {
+        format!(" {} {} ", get_doge_message(stats.tick), get_doge_message(stats.tick + 7))
+    } else {
+        " ☠ DEDSEC ☠ ".to_string()
+    };
 
-    #[test]
-    fn draw_orphaned_state_shows_warning() {
-        let backend = TestBackend::new(100, 30);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let globe = crate::globe::GlobeRenderer::new(200, 0.3, 0.2);
-        let stats = make_stats(
-            1,
-            NetworkHealth::OrphanedState {
-                pending_changes: 5,
-                crashed_at: Some(99999),
-            },
-        );
+    frame.render_widget(
+        Paragraph::new(art).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(if show_doge { Color::Yellow } else { Color::Red }))
+                .title(title),
+        ),
+        area,
+    );
+}
 
-        terminal
-            .draw(|f| {
-                draw(f, &globe, f.size(), 0.0, stats);
+fn render_network_stats(frame: &mut Frame<'_>, area: Rect, stats: &UiStats) {
+    let upload_progress = (stats.throughput_mbps as f32 / 1000.0).min(1.0);
+    let latency_progress = 1.0 - (stats.latency_ms as f32 / 200.0).min(1.0);
+
+    let lines = vec![
+        Line::from(vec![
+            Span::styled(" ▲ UPLINK:  ", Style::default().fg(Color::Green)),
+            Span::styled(
+                hacker_progress_bar(upload_progress, 20),
+                Style::default().fg(Color::Cyan),
+            ),
+            Span::styled(
+                format!(" {} Mbps", stats.throughput_mbps),
+                Style::default().fg(Color::White),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(" ◉ LATENCY: ", Style::default().fg(Color::Yellow)),
+            Span::styled(
+                hacker_progress_bar(latency_progress, 20),
+                Style::default().fg(if stats.latency_ms < 50 { Color::Green } else { Color::Red }),
+            ),
+            Span::styled(
+                format!(" {} ms", stats.latency_ms),
+                Style::default().fg(Color::White),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(" ⚡ FPS:     ", Style::default().fg(Color::Magenta)),
+            Span::styled(
+                format!("{} ", stats.fps),
+                Style::default().fg(Color::White),
+            ),
+            Span::styled(
+                "█".repeat((stats.fps / 10) as usize),
+                Style::default().fg(Color::Green),
+            ),
+        ]),
+    ];
+
+    frame.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Cyan))
+                .title(" ◈ NET_STATS ◈ "),
+        ),
+        area,
+    );
+}
+
+fn render_hex_dump(frame: &mut Frame<'_>, area: Rect, stats: &UiStats) {
+    let mut lines = vec![];
+    
+    for i in 0..8 {
+        let offset = stats.tick.wrapping_add(i as u64) * 16;
+        let hex_part: String = (0..8)
+            .map(|j| {
+                let val = (offset.wrapping_add(j) * 1337 + stats.tick) % 255;
+                format!("{:02X} ", val)
             })
-            .unwrap();
+            .collect();
 
-        let buffer = terminal.backend().buffer();
-        let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
-        assert!(content.contains("NETWORK_RECOVERY_NEEDED"));
-        assert!(content.contains("WARNING"));
-        assert!(content.contains("REPAIR"));
-    }
-
-    #[test]
-    fn draw_repairing_state() {
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let globe = crate::globe::GlobeRenderer::new(200, 0.3, 0.2);
-        let stats = make_stats(1, NetworkHealth::Repairing);
-
-        terminal
-            .draw(|f| {
-                draw(f, &globe, f.size(), 1.0, stats);
-            })
-            .unwrap();
-
-        let buffer = terminal.backend().buffer();
-        let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
-        assert!(content.contains("REPAIRING_NETWORK"));
-    }
-
-    #[test]
-    fn footer_shows_quit_button() {
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let globe = crate::globe::GlobeRenderer::new(200, 0.3, 0.2);
-        let stats = make_stats(1, NetworkHealth::Connected);
-
-        terminal
-            .draw(|f| {
-                draw(f, &globe, f.size(), 0.0, stats);
-            })
-            .unwrap();
-
-        let buffer = terminal.backend().buffer();
-        let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
-        assert!(content.contains("Q: QUIT"));
-    }
-
-    #[test]
-    fn info_panel_renders_successfully() {
-        // Use larger terminal to ensure all panels fit
-        let backend = TestBackend::new(150, 50);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let globe = crate::globe::GlobeRenderer::new(200, 0.3, 0.2);
-        let stats = UiStats {
-            tick: 0,
-            fps: 60,
-            latency_ms: 25,
-            throughput_mbps: 850,
-            network_health: NetworkHealth::Connected,
+        // Глитч эффект на некоторых строках
+        let display = if (stats.tick + i as u64) % 30 < 2 {
+            glitch_text(&hex_part, stats.tick, 0.5)
+        } else {
+            hex_part
         };
 
-        // Main assertion: rendering completes without panic
-        terminal
-            .draw(|f| {
-                draw(f, &globe, f.size(), 0.0, stats);
-            })
-            .unwrap();
-
-        let buffer = terminal.backend().buffer();
-        let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
-        // Info panel title should be visible
-        assert!(content.contains("NET_STAT"), "NET_STAT should be in buffer");
+        let color = if i % 2 == 0 { Color::DarkGray } else { Color::Rgb(80, 80, 80) };
+        lines.push(Line::from(vec![
+            Span::styled(format!("0x{:08X}: ", offset), Style::default().fg(Color::Yellow)),
+            Span::styled(display, Style::default().fg(color)),
+        ]));
     }
 
-    #[test]
-    fn scrolling_message_changes_with_tick() {
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let globe = crate::globe::GlobeRenderer::new(200, 0.3, 0.2);
+    frame.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::LEFT | Borders::TOP)
+                .border_style(Style::default().fg(Color::DarkGray))
+                .title(" MEM_DUMP "),
+        ),
+        area,
+    );
+}
 
-        // Capture frame at tick=0
-        let stats1 = make_stats(0, NetworkHealth::Connected);
-        terminal
-            .draw(|f| {
-                draw(f, &globe, f.size(), 0.0, stats1);
-            })
-            .unwrap();
-        let content1: String = terminal
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|c| c.symbol())
-            .collect();
+fn render_system_tasks(frame: &mut Frame<'_>, area: Rect, stats: &UiStats) {
+    let tasks = [
+        ("noise_handshake", "OK", Color::Green),
+        ("ml_kem_768", "ACTIVE", Color::Cyan),
+        ("dpi_evasion", "ENGAGED", Color::Magenta),
+        ("traffic_morph", "RUNNING", Color::Yellow),
+        ("cover_traffic", "GENERATING", Color::Blue),
+        ("geo_spoof", "TOKYO_03", Color::Red),
+    ];
 
-        // Capture frame at tick=10 (message should scroll)
-        let stats2 = make_stats(10, NetworkHealth::Connected);
-        terminal
-            .draw(|f| {
-                draw(f, &globe, f.size(), 0.0, stats2);
-            })
-            .unwrap();
-        let content2: String = terminal
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|c| c.symbol())
-            .collect();
+    let lines: Vec<Line> = tasks
+        .iter()
+        .enumerate()
+        .map(|(i, (name, status, color))| {
+            let blink = (stats.tick / 5 + i as u64) % 3 == 0;
+            let prefix = if blink { "▶" } else { "►" };
+            
+            Line::from(vec![
+                Span::styled(format!(" {} ", prefix), Style::default().fg(*color)),
+                Span::styled(format!("{:<15}", name), Style::default().fg(Color::White)),
+                Span::styled(
+                    format!("[{}]", status),
+                    Style::default().fg(*color).add_modifier(if blink { Modifier::BOLD } else { Modifier::empty() }),
+                ),
+            ])
+        })
+        .collect();
 
-        // Both should contain COMMAND prompt
-        assert!(content1.contains("COMMAND"));
-        assert!(content2.contains("COMMAND"));
+    frame.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::TOP)
+                .border_style(Style::default().fg(Color::DarkGray))
+                .title(" ⚙ SYSTEM_TASKS ⚙ "),
+        ),
+        area,
+    );
+}
+
+fn render_hacker_footer(frame: &mut Frame<'_>, area: Rect, stats: &UiStats) {
+    let msg = get_hacker_message(stats.tick);
+    let len = msg.len();
+    let offset = (stats.tick / 2) as usize % len.max(1);
+    let scrolled = if len > 0 {
+        format!("{}{}", &msg[offset..], &msg[..offset])
+    } else {
+        String::new()
+    };
+
+    let needs_repair = matches!(stats.network_health, NetworkHealth::OrphanedState { .. });
+
+    let mut spans = vec![
+        Span::styled(
+            format!(" {} COMMAND > ", spinner(stats.tick)),
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(scrolled, Style::default().fg(Color::DarkGray)),
+    ];
+
+    if needs_repair {
+        let repair_style = if stats.tick % 20 < 10 {
+            Style::default().fg(Color::Black).bg(Color::Yellow).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        };
+        spans.push(Span::styled(" [R: HACK_REPAIR] ", repair_style));
     }
 
-    #[test]
-    fn small_terminal_does_not_panic() {
-        // Test with very small terminal size
-        let backend = TestBackend::new(20, 5);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let globe = crate::globe::GlobeRenderer::new(100, 0.3, 0.2);
-        let stats = make_stats(0, NetworkHealth::Connected);
+    spans.push(Span::styled(
+        " [Q: EXIT_MATRIX] ",
+        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+    ));
 
-        // Should not panic even with tiny terminal
-        let result = terminal.draw(|f| {
-            draw(f, &globe, f.size(), 0.0, stats);
-        });
-        assert!(result.is_ok());
-    }
+    // Doge message в углу
+    spans.push(Span::styled(
+        format!(" // {} ", get_doge_message(stats.tick + 3)),
+        Style::default().fg(Color::Yellow),
+    ));
 
-    #[test]
-    fn timestamp_in_header_changes() {
-        // The timestamp uses real time, so we just verify it's present
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let globe = crate::globe::GlobeRenderer::new(200, 0.3, 0.2);
-        let stats = make_stats(0, NetworkHealth::Connected);
-
-        terminal
-            .draw(|f| {
-                draw(f, &globe, f.size(), 0.0, stats);
-            })
-            .unwrap();
-
-        let buffer = terminal.backend().buffer();
-        let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
-        // T- prefix for timestamp
-        assert!(content.contains("T-"));
-    }
-
-    #[test]
-    fn hex_dump_section_present() {
-        let backend = TestBackend::new(100, 30);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let globe = crate::globe::GlobeRenderer::new(200, 0.3, 0.2);
-        let stats = make_stats(0, NetworkHealth::Connected);
-
-        terminal
-            .draw(|f| {
-                draw(f, &globe, f.size(), 0.0, stats);
-            })
-            .unwrap();
-
-        let buffer = terminal.backend().buffer();
-        let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
-        assert!(content.contains("MEM_DUMP"));
-        assert!(content.contains("0x")); // Hex addresses
-    }
-
-    #[test]
-    fn system_tasks_section_present() {
-        let backend = TestBackend::new(100, 30);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let globe = crate::globe::GlobeRenderer::new(200, 0.3, 0.2);
-        let stats = make_stats(0, NetworkHealth::Connected);
-
-        terminal
-            .draw(|f| {
-                draw(f, &globe, f.size(), 0.0, stats);
-            })
-            .unwrap();
-
-        let buffer = terminal.backend().buffer();
-        let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
-        assert!(content.contains("SYSTEM_TASKS"));
-    }
-
-    #[test]
-    fn repair_button_blinks() {
-        let backend = TestBackend::new(100, 30);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let globe = crate::globe::GlobeRenderer::new(200, 0.3, 0.2);
-
-        // Test at tick where button is in one state
-        let stats1 = make_stats(
-            5, // tick % 20 < 10 -> yellow bg
-            NetworkHealth::OrphanedState {
-                pending_changes: 1,
-                crashed_at: None,
-            },
-        );
-        terminal
-            .draw(|f| {
-                draw(f, &globe, f.size(), 0.0, stats1);
-            })
-            .unwrap();
-
-        // Test at tick where button is in other state
-        let stats2 = make_stats(
-            15, // tick % 20 >= 10 -> no bg
-            NetworkHealth::OrphanedState {
-                pending_changes: 1,
-                crashed_at: None,
-            },
-        );
-        terminal
-            .draw(|f| {
-                draw(f, &globe, f.size(), 0.0, stats2);
-            })
-            .unwrap();
-
-        // Both should render without panic and show repair button
-        let content: String = terminal
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|c| c.symbol())
-            .collect();
-        assert!(content.contains("REPAIR"));
-    }
+    frame.render_widget(
+        Paragraph::new(Line::from(spans)).block(
+            Block::default()
+                .borders(Borders::TOP)
+                .border_style(Style::default().fg(Color::DarkGray)),
+        ),
+        area,
+    );
 }

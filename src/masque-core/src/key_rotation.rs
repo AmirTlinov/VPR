@@ -661,4 +661,301 @@ mod tests {
         state.track_bytes(SESSION_KEY_DATA_LIMIT);
         assert!(state.needs_rekey());
     }
+
+    // === Additional tests for increased coverage ===
+
+    #[test]
+    fn test_rotation_event_equality_and_clone() {
+        assert_eq!(RotationEvent::SessionKey, RotationEvent::SessionKey);
+        assert_eq!(RotationEvent::NoiseKey, RotationEvent::NoiseKey);
+        assert_eq!(RotationEvent::TlsCert, RotationEvent::TlsCert);
+        assert_ne!(RotationEvent::SessionKey, RotationEvent::NoiseKey);
+        assert_ne!(RotationEvent::NoiseKey, RotationEvent::TlsCert);
+
+        let event = RotationEvent::SessionKey;
+        let cloned = event;
+        assert_eq!(event, cloned);
+    }
+
+    #[test]
+    fn test_rotation_event_debug() {
+        let session = format!("{:?}", RotationEvent::SessionKey);
+        let noise = format!("{:?}", RotationEvent::NoiseKey);
+        let tls = format!("{:?}", RotationEvent::TlsCert);
+
+        assert!(session.contains("SessionKey"));
+        assert!(noise.contains("NoiseKey"));
+        assert!(tls.contains("TlsCert"));
+    }
+
+    #[test]
+    fn test_session_key_limits_debug() {
+        let limits = SessionKeyLimits::default();
+        let debug_str = format!("{:?}", limits);
+        assert!(debug_str.contains("SessionKeyLimits"));
+        assert!(debug_str.contains("time_limit"));
+        assert!(debug_str.contains("data_limit"));
+    }
+
+    #[test]
+    fn test_key_rotation_config_debug() {
+        let config = KeyRotationConfig::default();
+        let debug_str = format!("{:?}", config);
+        assert!(debug_str.contains("KeyRotationConfig"));
+        assert!(debug_str.contains("session_limits"));
+        assert!(debug_str.contains("check_interval"));
+    }
+
+    #[test]
+    fn test_key_rotation_config_with_check_interval() {
+        let config = KeyRotationConfig::default().with_check_interval(Duration::from_secs(30));
+        assert_eq!(config.check_interval, Duration::from_secs(30));
+        assert_eq!(config.session_limits.time_limit, SESSION_KEY_TIME_LIMIT);
+    }
+
+    #[test]
+    fn test_session_rotation_reason_manual_and_debug() {
+        let manual = SessionRotationReason::Manual;
+        let debug_str = format!("{:?}", manual);
+        assert!(debug_str.contains("Manual"));
+
+        let time_limit = SessionRotationReason::TimeLimit(Duration::from_secs(60));
+        let debug_time = format!("{:?}", time_limit);
+        assert!(debug_time.contains("TimeLimit"));
+
+        let data_limit = SessionRotationReason::DataLimit(1_000_000);
+        let debug_data = format!("{:?}", data_limit);
+        assert!(debug_data.contains("DataLimit"));
+        assert!(debug_data.contains("1000000"));
+    }
+
+    #[test]
+    fn test_session_rotation_reason_clone() {
+        let reason = SessionRotationReason::TimeLimit(Duration::from_secs(30));
+        let cloned = reason;
+        match cloned {
+            SessionRotationReason::TimeLimit(d) => assert_eq!(d, Duration::from_secs(30)),
+            _ => panic!("Expected TimeLimit"),
+        }
+    }
+
+    #[test]
+    fn test_long_term_key_state_reset_and_age() {
+        let mut state = LongTermKeyState::new("test_key", Duration::from_secs(100));
+
+        // Age should be very small initially
+        let initial_age = state.age();
+        assert!(initial_age < Duration::from_secs(1));
+
+        // Reset and check rotation count
+        state.reset();
+        assert_eq!(state.rotation_count.load(Ordering::Relaxed), 1);
+
+        // Age should be reset
+        let after_reset_age = state.age();
+        assert!(after_reset_age < Duration::from_secs(1));
+
+        // Reset again
+        state.reset();
+        assert_eq!(state.rotation_count.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn test_long_term_key_state_time_until_rotation() {
+        let state = LongTermKeyState::new("test_key", Duration::from_secs(100));
+
+        // Time until rotation should be close to interval
+        let time_until = state.time_until_rotation();
+        assert!(time_until <= Duration::from_secs(100));
+        assert!(time_until > Duration::from_secs(99));
+    }
+
+    #[test]
+    fn test_rotation_stats_debug_and_clone() {
+        let stats = RotationStats {
+            active_sessions: 5,
+            total_session_rotations: 10,
+            noise_key_age: Duration::from_secs(3600),
+            noise_rotations: 2,
+            tls_cert_age: Duration::from_secs(1800),
+            tls_rotations: 4,
+        };
+
+        let debug_str = format!("{:?}", stats);
+        assert!(debug_str.contains("RotationStats"));
+        assert!(debug_str.contains("active_sessions"));
+        assert!(debug_str.contains("5"));
+
+        let cloned = stats.clone();
+        assert_eq!(cloned.active_sessions, 5);
+        assert_eq!(cloned.total_session_rotations, 10);
+        assert_eq!(cloned.noise_rotations, 2);
+        assert_eq!(cloned.tls_rotations, 4);
+    }
+
+    #[test]
+    fn test_session_key_state_debug() {
+        let state = SessionKeyState::new();
+        let debug_str = format!("{:?}", state);
+        assert!(debug_str.contains("SessionKeyState"));
+    }
+
+    #[test]
+    fn test_long_term_key_state_debug() {
+        let state = LongTermKeyState::noise_key();
+        let debug_str = format!("{:?}", state);
+        assert!(debug_str.contains("LongTermKeyState"));
+        assert!(debug_str.contains("noise_static"));
+    }
+
+    #[test]
+    fn test_constants() {
+        assert_eq!(SESSION_KEY_TIME_LIMIT, Duration::from_secs(60));
+        assert_eq!(SESSION_KEY_DATA_LIMIT, 1024 * 1024 * 1024);
+        assert_eq!(NOISE_KEY_ROTATION_INTERVAL, Duration::from_secs(14 * 24 * 60 * 60));
+        assert_eq!(TLS_CERT_ROTATION_INTERVAL, Duration::from_secs(6 * 60 * 60));
+    }
+
+    #[tokio::test]
+    async fn test_manager_check_interval() {
+        let config = KeyRotationConfig::default().with_check_interval(Duration::from_secs(5));
+        let manager = KeyRotationManager::with_config(config);
+        assert_eq!(manager.check_interval(), Duration::from_secs(5));
+    }
+
+    #[tokio::test]
+    async fn test_manager_session_limits() {
+        let config = KeyRotationConfig::with_session_limits(Duration::from_secs(30), 1024);
+        let manager = KeyRotationManager::with_config(config);
+        let limits = manager.session_limits();
+        assert_eq!(limits.time_limit, Duration::from_secs(30));
+        assert_eq!(limits.data_limit, 1024);
+    }
+
+    #[tokio::test]
+    async fn test_manager_check_noise_key() {
+        let manager = KeyRotationManager::new();
+        // Should not need rotation initially
+        assert!(!manager.check_noise_key().await);
+    }
+
+    #[tokio::test]
+    async fn test_manager_check_tls_cert() {
+        let manager = KeyRotationManager::new();
+        // Should not need rotation initially
+        assert!(!manager.check_tls_cert().await);
+    }
+
+    #[tokio::test]
+    async fn test_manager_rotate_tls_cert_event() {
+        let manager = KeyRotationManager::new();
+        let mut rx = manager.subscribe();
+
+        manager.rotate_tls_cert().await;
+
+        let event = rx.try_recv().unwrap();
+        assert_eq!(event, RotationEvent::TlsCert);
+    }
+
+    #[tokio::test]
+    async fn test_rotation_check_task_shutdown() {
+        let manager = Arc::new(KeyRotationManager::new());
+        let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
+
+        let task = tokio::spawn(rotation_check_task(
+            manager.clone(),
+            shutdown_rx,
+            Duration::from_millis(100),
+        ));
+
+        // Let it run briefly
+        tokio::time::sleep(Duration::from_millis(150)).await;
+
+        // Send shutdown
+        let _ = shutdown_tx.send(());
+
+        // Task should complete
+        tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("task should complete after shutdown")
+            .expect("task should not panic");
+    }
+
+    #[test]
+    fn test_session_state_with_custom_limits() {
+        let limits = SessionKeyLimits {
+            time_limit: Duration::from_secs(10),
+            data_limit: 1000,
+        };
+        let state = SessionKeyState::with_limits(limits);
+        assert_eq!(state.limits().time_limit, Duration::from_secs(10));
+        assert_eq!(state.limits().data_limit, 1000);
+    }
+
+    #[test]
+    fn test_session_state_age() {
+        let state = SessionKeyState::new();
+        // Age should be very small
+        assert!(state.age() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn test_session_state_time_limit_rotation() {
+        let limits = SessionKeyLimits {
+            time_limit: Duration::from_millis(0), // Immediate timeout
+            data_limit: u64::MAX,
+        };
+        let state = SessionKeyState::with_limits(limits);
+
+        // Should need rotation due to time
+        assert!(state.needs_rotation());
+
+        match state.rotation_reason() {
+            Some(SessionRotationReason::TimeLimit(_)) => {}
+            other => panic!("Expected TimeLimit reason, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_maybe_rotate_not_triggered_when_not_needed() {
+        let state = SessionKeyState::new();
+        let mut called = false;
+
+        state.maybe_rotate_with(|_| {
+            called = true;
+        });
+
+        assert!(!called, "Callback should not be called when no rotation needed");
+    }
+
+    #[tokio::test]
+    async fn test_manager_stats_comprehensive() {
+        let manager = KeyRotationManager::new();
+
+        // Register sessions
+        let session1 = manager.register_session().await;
+        let session2 = manager.register_session().await;
+
+        // Process some bytes
+        session1.record_bytes(1000);
+        session2.record_bytes(2000);
+
+        // Reset one session to increment rotation count
+        session1.reset();
+
+        let stats = manager.stats().await;
+        assert_eq!(stats.active_sessions, 2);
+        assert_eq!(stats.total_session_rotations, 1);
+        assert!(stats.noise_key_age < Duration::from_secs(1));
+        assert!(stats.tls_cert_age < Duration::from_secs(1));
+        assert_eq!(stats.noise_rotations, 0);
+        assert_eq!(stats.tls_rotations, 0);
+    }
+
+    #[tokio::test]
+    async fn test_manager_default() {
+        let manager = KeyRotationManager::default();
+        let stats = manager.stats().await;
+        assert_eq!(stats.active_sessions, 0);
+    }
 }
