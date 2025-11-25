@@ -72,6 +72,54 @@ impl Deployer {
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     }
 
+    /// Execute SSH command in background (SSH exits immediately after launching)
+    /// Uses spawn() to not wait for command completion
+    pub async fn ssh_exec_background(&self, cmd: &str) -> Result<()> {
+        let password = self
+            .config
+            .server
+            .password
+            .as_ref()
+            .context("SSH password required")?;
+
+        // Use spawn() instead of output() to not block waiting for completion
+        // SSH -f flag forks to background, but Rust still waits for SSH process
+        // By using spawn() + wait with timeout we can return early
+        let mut child = Command::new("sshpass")
+            .env("SSHPASS", password)
+            .args([
+                "-e",
+                "ssh",
+                "-o", "StrictHostKeyChecking=no",
+                "-o", "UserKnownHostsFile=/dev/null",
+                "-o", "LogLevel=ERROR",
+                "-o", "ConnectTimeout=30",
+                &format!("{}@{}", self.config.server.user, self.config.server.host),
+                cmd,
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .stdin(Stdio::null())
+            .spawn()
+            .context("SSH background spawn failed")?;
+
+        // Wait up to 10 seconds for SSH to connect and start the command
+        // The remote command runs in background via nohup &, so SSH should exit quickly
+        let timeout = Duration::from_secs(10);
+        match tokio::time::timeout(timeout, child.wait()).await {
+            Ok(Ok(status)) if status.success() => Ok(()),
+            Ok(Ok(status)) => anyhow::bail!("SSH exited with status: {}", status),
+            Ok(Err(e)) => anyhow::bail!("SSH wait error: {}", e),
+            Err(_) => {
+                // Timeout - SSH is hanging, kill it and assume command started
+                // This can happen if SSH keeps connection open for some reason
+                drop(child.kill().await);
+                tracing::warn!("SSH background command timed out, assuming started");
+                Ok(())
+            }
+        }
+    }
+
     /// Check if SSH connection works
     pub async fn test_connection(&self) -> Result<()> {
         tracing::info!(host = %self.config.server.host, "Testing SSH connection");
@@ -282,12 +330,11 @@ impl Deployer {
         // Enable IP forwarding
         let _ = self.ssh_exec("sysctl -w net.ipv4.ip_forward=1").await;
 
-        // Start server in background using setsid to fully detach from SSH session
-        // Triple-fork pattern: bash spawns sh which starts server in new session
-        // The outer `&` returns immediately, setsid creates new session leader
-        self.ssh_exec(&format!(
+        // Start server using SSH -f flag for immediate detachment
+        // The server process continues running after SSH exits
+        self.ssh_exec_background(&format!(
             "cd {remote_dir} && \
-             ( setsid ./bin/vpn-server \
+             nohup ./bin/vpn-server \
              --bind 0.0.0.0:{vpn_port} \
              --tun-name vpr-srv \
              --tun-addr 10.9.0.1 \
@@ -300,7 +347,7 @@ impl Deployer {
              --key secrets/server.key \
              --enable-forwarding \
              --idle-timeout 300 \
-             </dev/null >logs/server.log 2>&1 & ) && exit 0"
+             </dev/null >logs/server.log 2>&1 &"
         ))
         .await?;
 

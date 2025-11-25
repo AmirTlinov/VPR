@@ -491,16 +491,16 @@ impl VpnProcessManager {
                 if let Some(pid) = child.id() {
                     if let Err(e) = signal::kill(Pid::from_raw(pid as i32), Signal::SIGTERM) {
                         warn!(%e, "Failed to send SIGTERM, trying kill");
-                        let _ = child.kill().await;
+                        drop(child.kill().await);
                     }
                 } else {
-                    let _ = child.kill().await;
+                    drop(child.kill().await);
                 }
             }
 
             #[cfg(not(unix))]
             {
-                let _ = child.kill().await;
+                drop(child.kill().await);
             }
 
             // Подождать завершения процесса (graceful shutdown)
@@ -510,7 +510,7 @@ impl VpnProcessManager {
             loop {
                 if start.elapsed() > timeout {
                     warn!("Process did not terminate gracefully, forcing kill");
-                    let _ = child.kill().await;
+                    drop(child.kill().await);
                     break;
                 }
 
