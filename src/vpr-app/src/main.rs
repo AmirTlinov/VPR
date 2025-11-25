@@ -3,6 +3,7 @@
 mod deployer;
 mod killswitch;
 mod process_manager;
+mod tui_bridge;
 
 use process_manager::{VpnClientConfig, VpnProcessManager};
 use serde::{Deserialize, Serialize};
@@ -139,6 +140,7 @@ impl Config {
 struct AppState {
     vpn_manager: Arc<VpnProcessManager>,
     state: Arc<Mutex<VpnState>>,
+    tui: Arc<tui_bridge::TuiState>,
 }
 
 async fn build_killswitch_policy(server: &str, port: u16) -> killswitch::KillSwitchPolicy {
@@ -606,6 +608,36 @@ async fn get_vps_logs(vps: deployer::VpsConfig, lines: u32) -> Result<String, St
         .map_err(|e| format!("Failed to get logs: {}", e))
 }
 
+// ============================================================================
+// TUI Commands
+// ============================================================================
+
+/// Render TUI frame as ANSI string for xterm.js
+#[tauri::command]
+async fn tui_render(
+    width: u16,
+    height: u16,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    Ok(state.tui.render_frame(width, height).await)
+}
+
+/// Handle keyboard input for TUI
+#[tauri::command]
+async fn tui_key(
+    key: String,
+    state: State<'_, AppState>,
+) -> Result<bool, String> {
+    Ok(state.tui.handle_key(&key).await)
+}
+
+/// Advance TUI animation by one tick
+#[tauri::command]
+async fn tui_tick(state: State<'_, AppState>) -> Result<(), String> {
+    state.tui.tick().await;
+    Ok(())
+}
+
 /// Find server binaries for deployment
 fn find_server_binaries() -> Result<(PathBuf, PathBuf), String> {
     let exe_dir = std::env::current_exe()
@@ -686,6 +718,7 @@ fn main() {
     let app_state = AppState {
         vpn_manager: vpn_manager.clone(),
         state: Arc::new(Mutex::new(VpnState::default())),
+        tui: Arc::new(tui_bridge::TuiState::new()),
     };
 
     // Запустить задачу для обновления состояния из менеджера
@@ -808,7 +841,11 @@ fn main() {
             stop_vps_server,
             start_vps_server,
             uninstall_server,
-            get_vps_logs
+            get_vps_logs,
+            // TUI commands
+            tui_render,
+            tui_key,
+            tui_tick
         ])
         .run(tauri::generate_context!())
         .map_err(|e| {

@@ -117,6 +117,15 @@ settingsBtn.addEventListener('click', () => {
   settingsView.classList.remove('hidden');
 });
 
+// TUI Mode - Switch to terminal interface
+const tuiBtn = document.getElementById('tui-btn');
+if (tuiBtn) {
+  tuiBtn.addEventListener('click', () => {
+    // Navigate to TUI page
+    window.location.href = 'tui.html';
+  });
+}
+
 backBtn.addEventListener('click', () => {
   settingsView.classList.add('hidden');
   mainView.classList.remove('hidden');

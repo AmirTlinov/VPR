@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VPR TUI</title>
+    <!-- xterm.js from CDN -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        html, body {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: #0a0a0a;
+            font-family: 'Fira Code', 'JetBrains Mono', monospace;
+        }
+
+        #tui-container {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        #tui-terminal {
+            width: 100%;
+            height: 100%;
+        }
+
+        /* Scanline effect */
+        .scanlines {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            z-index: 1000;
+            background: repeating-linear-gradient(
+                0deg,
+                transparent,
+                transparent 2px,
+                rgba(0, 255, 156, 0.02) 2px,
+                rgba(0, 255, 156, 0.02) 4px
+            );
+        }
+
+        /* CRT flicker */
+        @keyframes flicker {
+            0% { opacity: 0.97; }
+            5% { opacity: 0.95; }
+            10% { opacity: 0.98; }
+            15% { opacity: 0.94; }
+            20% { opacity: 0.97; }
+            50% { opacity: 0.96; }
+            80% { opacity: 0.98; }
+            90% { opacity: 0.95; }
+            100% { opacity: 0.97; }
+        }
+
+        .flicker {
+            animation: flicker 0.15s infinite;
+        }
+
+        /* Loading state */
+        #loading {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: #00ff9c;
+            font-size: 16px;
+            z-index: 100;
+        }
+
+        .hidden {
+            display: none !important;
+        }
+
+        .back-btn {
+            position: fixed;
+            top: 8px;
+            right: 8px;
+            background: transparent;
+            border: 1px solid #00ff9c;
+            color: #00ff9c;
+            font-family: inherit;
+            font-size: 14px;
+            padding: 4px 8px;
+            cursor: pointer;
+            z-index: 1001;
+            opacity: 0.5;
+            transition: opacity 0.2s;
+        }
+
+        .back-btn:hover {
+            opacity: 1;
+            background: rgba(0, 255, 156, 0.1);
+        }
+    </style>
+</head>
+<body class="flicker">
+    <div class="scanlines"></div>
+    <div id="loading">
+        <pre>
+▓▓▓ VPR ▓▓▓
+LOADING...
+        </pre>
+    </div>
+    <button id="back-to-gui" class="back-btn" title="Back to GUI">[←]</button>
+    <div id="tui-container"></div>
+
+    <!-- xterm.js -->
+    <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>
+    
+    <!-- Tauri -->
+    <script>
+        // Tauri API will be available after load
+        window.__TAURI__ = window.__TAURI__ || {};
+    </script>
+    
+    <!-- TUI Bridge -->
+    <script src="tui.js"></script>
+    
+    <script>
+        // Main initialization
+        document.addEventListener('DOMContentLoaded', async () => {
+            const loading = document.getElementById('loading');
+            const container = document.getElementById('tui-container');
+
+            try {
+                // Wait for Tauri to be ready
+                let attempts = 0;
+                while (!window.__TAURI__?.core?.invoke && attempts < 50) {
+                    await new Promise(r => setTimeout(r, 100));
+                    attempts++;
+                }
+
+                if (!window.__TAURI__?.core?.invoke) {
+                    throw new Error('Tauri not available');
+                }
+
+                // Initialize TUI
+                const tui = new TuiBridge(container);
+                await tui.init();
+                
+                // Hide loading
+                loading.classList.add('hidden');
+                
+                // Start render loop
+                tui.start();
+
+                // Store globally for debugging
+                window.tui = tui;
+
+                console.log('[VPR] TUI initialized');
+
+                // Back button handler
+                document.getElementById('back-to-gui').addEventListener('click', () => {
+                    tui.stop();
+                    window.location.href = 'index.html';
+                });
+            } catch (e) {
+                console.error('[VPR] Failed to initialize TUI:', e);
+                loading.innerHTML = `<pre style="color: #ff4444;">
+▓▓▓ VPR ▓▓▓
+ERROR: ${e.message}
+
+Press F5 to retry
+                </pre>`;
+            }
+        });
+    </script>
+</body>
+</html>
