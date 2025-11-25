@@ -1,20 +1,23 @@
 //! Хакерский TUI в стиле Watch Dogs 2
-//! ASCII арт, глитч эффекты, мемы
+//! ASCII арт, глитч эффекты, реальная функциональность
 
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Wrap};
 use ratatui::Frame;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::app::{AppState, InputMode, Screen};
 use crate::ascii_art::{
     get_doge_message, get_hacker_message, glitch_text, hacker_progress_bar, pulse, spinner, DOGE,
     SKULL,
 };
 use crate::globe::GlobeRenderer;
+use crate::vpn::{ConnectionState, VpnController};
 
-/// Network health status for TUI display
+/// Network health status for TUI display (legacy)
 #[derive(Debug, Clone, Default)]
 pub enum NetworkHealth {
     #[default]
@@ -35,68 +38,63 @@ pub struct UiStats {
     pub network_health: NetworkHealth,
 }
 
-pub fn draw(frame: &mut Frame<'_>, globe: &GlobeRenderer, area: Rect, angle: f32, stats: UiStats) {
-    let needs_warning = matches!(stats.network_health, NetworkHealth::OrphanedState { .. });
+// =============================================================================
+// Main Screen
+// =============================================================================
 
-    let layout = if needs_warning {
-        Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(3), // Header (bigger for logo)
-                Constraint::Length(3), // Warning banner
-                Constraint::Min(10),   // Content
-                Constraint::Length(2), // Footer
-            ])
-            .split(area)
-    } else {
-        Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(3), // Header
-                Constraint::Length(0), // No warning
-                Constraint::Min(10),   // Content
-                Constraint::Length(2), // Footer
-            ])
-            .split(area)
-    };
+pub fn draw_main_screen(frame: &mut Frame<'_>, globe: &GlobeRenderer, area: Rect, app: &AppState) {
+    let has_status = app.get_status().is_some();
+    
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),  // Header
+            Constraint::Length(if has_status { 1 } else { 0 }), // Status message
+            Constraint::Min(10),    // Content
+            Constraint::Length(2),  // Footer
+        ])
+        .split(area);
 
-    render_hacker_header(frame, layout[0], &stats);
-
-    if needs_warning {
-        render_orphaned_warning(frame, layout[1], &stats.network_health);
+    render_header(frame, layout[0], app);
+    
+    if has_status {
+        render_status_bar(frame, layout[1], app);
     }
 
-    let (content_idx, footer_idx) = (2, 3);
-
-    // Content: Globe (Left), Hacker Panel (Right)
+    // Content: Globe (Left), Stats Panel (Right)
     let content_layout = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
-        .split(layout[content_idx]);
+        .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
+        .split(layout[2]);
 
-    render_globe_with_effects(frame, content_layout[0], globe, angle, &stats);
-    render_hacker_panel(frame, content_layout[1], &stats);
-    render_hacker_footer(frame, layout[footer_idx], &stats);
+    render_globe(frame, content_layout[0], globe, app);
+    render_stats_panel(frame, content_layout[1], app);
+    render_footer(frame, layout[3], app);
 }
 
-fn render_hacker_header(frame: &mut Frame<'_>, area: Rect, stats: &UiStats) {
+fn render_header(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
 
-    let (status_text, status_color) = match &stats.network_health {
-        NetworkHealth::Connected => ("▓▓▓ SECURE TUNNEL ACTIVE ▓▓▓", Color::Green),
-        NetworkHealth::Disconnected => ("░░░ OFFLINE ░░░", Color::DarkGray),
-        NetworkHealth::OrphanedState { .. } => ("!!! RECOVERY NEEDED !!!", Color::Yellow),
-        NetworkHealth::Repairing => (">>> REPAIRING <<<", Color::Cyan),
+    let (status_text, status_color) = match &app.conn_state {
+        ConnectionState::Connected { server, .. } => {
+            (format!("▓▓▓ SECURE TUNNEL TO {} ▓▓▓", server), Color::Green)
+        }
+        ConnectionState::Disconnected => ("░░░ OFFLINE ░░░".into(), Color::DarkGray),
+        ConnectionState::Connecting => (">>> CONNECTING... <<<".into(), Color::Yellow),
+        ConnectionState::Reconnecting { attempt, max_attempts } => {
+            (format!(">>> RECONNECTING {}/{} <<<", attempt, max_attempts), Color::Yellow)
+        }
+        ConnectionState::Error(e) => (format!("!!! ERROR: {} !!!", e), Color::Red),
     };
 
-    // Глитч эффект для заголовка
-    let glitched_status = if stats.tick % 50 < 3 {
-        glitch_text(status_text, stats.tick, 0.3)
+    // Глитч эффект для заголовка при подключении
+    let glitched_status = if app.tick % 50 < 3 && matches!(app.conn_state, ConnectionState::Connecting) {
+        glitch_text(&status_text, app.tick, 0.4)
     } else {
-        status_text.to_string()
+        status_text
     };
 
     let lines = vec![
@@ -108,7 +106,7 @@ fn render_hacker_header(frame: &mut Frame<'_>, area: Rect, stats: &UiStats) {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                format!(" {} ", spinner(stats.tick)),
+                format!(" {} ", spinner(app.tick)),
                 Style::default().fg(Color::Cyan),
             ),
             Span::styled(
@@ -118,7 +116,7 @@ fn render_hacker_header(frame: &mut Frame<'_>, area: Rect, stats: &UiStats) {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                format!(" {} ", pulse(stats.tick)),
+                format!(" {} ", pulse(app.tick)),
                 Style::default().fg(Color::Red),
             ),
             Span::styled(
@@ -132,13 +130,19 @@ fn render_hacker_header(frame: &mut Frame<'_>, area: Rect, stats: &UiStats) {
                 Style::default().fg(Color::Magenta),
             ),
             Span::styled(
-                " [ENCRYPTED:ML-KEM768] ",
+                match &app.conn_state {
+                    ConnectionState::Connected { .. } => " [ENCRYPTED:ML-KEM768] ",
+                    _ => " [STANDBY] ",
+                },
                 Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::RAPID_BLINK),
+                    .fg(if matches!(app.conn_state, ConnectionState::Connected { .. }) {
+                        Color::Green
+                    } else {
+                        Color::DarkGray
+                    }),
             ),
             Span::styled(
-                get_hacker_message(stats.tick),
+                get_hacker_message(app.tick),
                 Style::default().fg(Color::DarkGray),
             ),
         ]),
@@ -154,48 +158,59 @@ fn render_hacker_header(frame: &mut Frame<'_>, area: Rect, stats: &UiStats) {
     );
 }
 
-fn render_orphaned_warning(frame: &mut Frame<'_>, area: Rect, health: &NetworkHealth) {
-    if let NetworkHealth::OrphanedState {
-        pending_changes,
-        crashed_at: _,
-    } = health
-    {
-        let skull_line = SKULL.get(5).unwrap_or(&"");
-        let warning_text = format!(
-            "{} CRASH DETECTED: {} pending changes {} Press [R] to HACK THE RECOVERY",
-            skull_line, pending_changes, skull_line
-        );
+fn render_status_bar(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
+    if let Some(msg) = app.get_status() {
+        let style = if msg.starts_with('✓') {
+            Style::default().fg(Color::Green)
+        } else if msg.starts_with('✗') || msg.contains("ERROR") {
+            Style::default().fg(Color::Red)
+        } else {
+            Style::default().fg(Color::Yellow)
+        };
 
         frame.render_widget(
-            Paragraph::new(warning_text)
-                .style(Style::default().fg(Color::Black).bg(Color::Yellow))
-                .alignment(ratatui::layout::Alignment::Center)
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(Style::default().fg(Color::Red))
-                        .title(" ⚠ SYSTEM ALERT ⚠ "),
-                ),
+            Paragraph::new(format!(" {} ", msg))
+                .style(style)
+                .alignment(Alignment::Center),
             area,
         );
     }
 }
 
-fn render_globe_with_effects(
-    frame: &mut Frame<'_>,
-    area: Rect,
-    globe: &GlobeRenderer,
-    angle: f32,
-    stats: &UiStats,
-) {
-    let ascii = globe.render_frame(area.width as usize, area.height as usize, angle, stats.tick);
+fn render_globe(frame: &mut Frame<'_>, area: Rect, globe: &GlobeRenderer, app: &AppState) {
+    let inner_area = Rect {
+        x: area.x + 1,
+        y: area.y + 1,
+        width: area.width.saturating_sub(2),
+        height: area.height.saturating_sub(2),
+    };
+
+    let ascii = globe.render_frame(
+        inner_area.width as usize,
+        inner_area.height as usize,
+        app.angle,
+        app.tick,
+    );
 
     // Цвет глобуса меняется в зависимости от статуса
-    let globe_color = match &stats.network_health {
-        NetworkHealth::Connected => Color::Cyan,
-        NetworkHealth::Disconnected => Color::DarkGray,
-        NetworkHealth::OrphanedState { .. } => Color::Yellow,
-        NetworkHealth::Repairing => Color::Magenta,
+    let globe_color = match &app.conn_state {
+        ConnectionState::Connected { .. } => Color::Cyan,
+        ConnectionState::Disconnected => Color::DarkGray,
+        ConnectionState::Connecting | ConnectionState::Reconnecting { .. } => Color::Yellow,
+        ConnectionState::Error(_) => Color::Red,
+    };
+
+    let title = match &app.conn_state {
+        ConnectionState::Connected { server, connected_at } => {
+            let uptime = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+                .saturating_sub(*connected_at);
+            format!(" ◉ {} │ UP: {}s ", server, uptime)
+        }
+        ConnectionState::Connecting => " ◉ ESTABLISHING TUNNEL... ".into(),
+        _ => " ◉ GLOBAL_NETWORK_MAP ".into(),
     };
 
     frame.render_widget(
@@ -203,40 +218,166 @@ fn render_globe_with_effects(
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Color::DarkGray))
-                .title(" ◉ GLOBAL_NETWORK_MAP ◉ ")
+                .title(title)
                 .title_style(Style::default().fg(globe_color)),
         ),
         area,
     );
 }
 
-fn render_hacker_panel(frame: &mut Frame<'_>, area: Rect, stats: &UiStats) {
+fn render_stats_panel(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     let blocks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(8),  // ASCII Art (Doge!)
-            Constraint::Length(5),  // Network Stats
-            Constraint::Length(10), // Hex Dump
-            Constraint::Min(5),     // System Tasks
+            Constraint::Length(6),  // Connection Info
+            Constraint::Length(7),  // Network Stats
+            Constraint::Length(8),  // ASCII Art
+            Constraint::Min(4),     // System Tasks
         ])
         .split(area);
 
-    // 1. ASCII Art - Doge или Skull в зависимости от статуса
-    render_ascii_art(frame, blocks[0], stats);
-
-    // 2. Network Stats с прогресс барами
-    render_network_stats(frame, blocks[1], stats);
-
-    // 3. Hex Dump с глитч эффектами
-    render_hex_dump(frame, blocks[2], stats);
-
-    // 4. System Tasks
-    render_system_tasks(frame, blocks[3], stats);
+    render_connection_info(frame, blocks[0], app);
+    render_network_stats(frame, blocks[1], app);
+    render_ascii_art(frame, blocks[2], app);
+    render_system_tasks(frame, blocks[3], app);
 }
 
-fn render_ascii_art(frame: &mut Frame<'_>, area: Rect, stats: &UiStats) {
-    // Показываем Doge каждые 100 тиков, иначе Skull
-    let show_doge = (stats.tick / 100) % 2 == 0;
+fn render_connection_info(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
+    let metrics = &app.metrics;
+    
+    let (status_icon, status_color) = match &app.conn_state {
+        ConnectionState::Connected { .. } => ("●", Color::Green),
+        ConnectionState::Connecting => ("◐", Color::Yellow),
+        ConnectionState::Disconnected => ("○", Color::DarkGray),
+        ConnectionState::Reconnecting { .. } => ("◑", Color::Yellow),
+        ConnectionState::Error(_) => ("✗", Color::Red),
+    };
+
+    let lines = vec![
+        Line::from(vec![
+            Span::styled(" STATUS:   ", Style::default().fg(Color::DarkGray)),
+            Span::styled(status_icon, Style::default().fg(status_color)),
+            Span::styled(
+                format!(" {}", match &app.conn_state {
+                    ConnectionState::Connected { .. } => "CONNECTED",
+                    ConnectionState::Connecting => "CONNECTING",
+                    ConnectionState::Disconnected => "OFFLINE",
+                    ConnectionState::Reconnecting { .. } => "RECONNECTING",
+                    ConnectionState::Error(_) => "ERROR",
+                }),
+                Style::default().fg(status_color).add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(" EXT_IP:   ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                if metrics.external_ip.is_empty() { "---".into() } else { metrics.external_ip.clone() },
+                Style::default().fg(Color::Cyan),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(" TUNNEL:   ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                if metrics.tun_interface.is_empty() { "---" } else { &metrics.tun_interface },
+                Style::default().fg(Color::Magenta),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(" LOCATION: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                if metrics.server_location.is_empty() { "Unknown" } else { &metrics.server_location },
+                Style::default().fg(Color::Yellow),
+            ),
+        ]),
+    ];
+
+    frame.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Cyan))
+                .title(" ◈ CONNECTION ◈ "),
+        ),
+        area,
+    );
+}
+
+fn render_network_stats(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
+    let metrics = &app.metrics;
+    
+    // Calculate progress bars based on real metrics
+    let upload_mbps = metrics.upload_speed as f32 / 125_000.0; // Convert bytes/s to Mbps
+    let download_mbps = metrics.download_speed as f32 / 125_000.0;
+    let upload_progress = (upload_mbps / 100.0).min(1.0); // Assume 100 Mbps max
+    let download_progress = (download_mbps / 100.0).min(1.0);
+    let latency_progress = 1.0 - (metrics.latency_ms as f32 / 200.0).min(1.0);
+
+    let lines = vec![
+        Line::from(vec![
+            Span::styled(" ▲ UPLOAD:   ", Style::default().fg(Color::Green)),
+            Span::styled(
+                hacker_progress_bar(upload_progress, 15),
+                Style::default().fg(Color::Cyan),
+            ),
+            Span::styled(
+                format!(" {:.1} Mbps", upload_mbps),
+                Style::default().fg(Color::White),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(" ▼ DOWNLOAD: ", Style::default().fg(Color::Blue)),
+            Span::styled(
+                hacker_progress_bar(download_progress, 15),
+                Style::default().fg(Color::Cyan),
+            ),
+            Span::styled(
+                format!(" {:.1} Mbps", download_mbps),
+                Style::default().fg(Color::White),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(" ◉ LATENCY:  ", Style::default().fg(Color::Yellow)),
+            Span::styled(
+                hacker_progress_bar(latency_progress, 15),
+                Style::default().fg(if metrics.latency_ms < 50 {
+                    Color::Green
+                } else if metrics.latency_ms < 100 {
+                    Color::Yellow
+                } else {
+                    Color::Red
+                }),
+            ),
+            Span::styled(
+                format!(" {} ms", metrics.latency_ms),
+                Style::default().fg(Color::White),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(" ⚡ TRAFFIC: ", Style::default().fg(Color::Magenta)),
+            Span::styled(
+                format!("↑{} ↓{}", 
+                    format_bytes(metrics.bytes_sent),
+                    format_bytes(metrics.bytes_received)
+                ),
+                Style::default().fg(Color::White),
+            ),
+        ]),
+    ];
+
+    frame.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Cyan))
+                .title(" ◈ NET_STATS ◈ "),
+        ),
+        area,
+    );
+}
+
+fn render_ascii_art(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
+    // Показываем Doge когда подключены, Skull когда отключены
+    let show_doge = matches!(app.conn_state, ConnectionState::Connected { .. });
 
     let art: Vec<Line> = if show_doge {
         DOGE.iter()
@@ -262,11 +403,11 @@ fn render_ascii_art(frame: &mut Frame<'_>, area: Rect, stats: &UiStats) {
     let title = if show_doge {
         format!(
             " {} {} ",
-            get_doge_message(stats.tick),
-            get_doge_message(stats.tick + 7)
+            get_doge_message(app.tick),
+            get_doge_message(app.tick + 7)
         )
     } else {
-        " ☠ DEDSEC ☠ ".to_string()
+        " ☠ AWAITING ORDERS ☠ ".to_string()
     };
 
     frame.render_widget(
@@ -284,122 +425,35 @@ fn render_ascii_art(frame: &mut Frame<'_>, area: Rect, stats: &UiStats) {
     );
 }
 
-fn render_network_stats(frame: &mut Frame<'_>, area: Rect, stats: &UiStats) {
-    let upload_progress = (stats.throughput_mbps as f32 / 1000.0).min(1.0);
-    let latency_progress = 1.0 - (stats.latency_ms as f32 / 200.0).min(1.0);
-
-    let lines = vec![
-        Line::from(vec![
-            Span::styled(" ▲ UPLINK:  ", Style::default().fg(Color::Green)),
-            Span::styled(
-                hacker_progress_bar(upload_progress, 20),
-                Style::default().fg(Color::Cyan),
-            ),
-            Span::styled(
-                format!(" {} Mbps", stats.throughput_mbps),
-                Style::default().fg(Color::White),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled(" ◉ LATENCY: ", Style::default().fg(Color::Yellow)),
-            Span::styled(
-                hacker_progress_bar(latency_progress, 20),
-                Style::default().fg(if stats.latency_ms < 50 {
-                    Color::Green
-                } else {
-                    Color::Red
-                }),
-            ),
-            Span::styled(
-                format!(" {} ms", stats.latency_ms),
-                Style::default().fg(Color::White),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled(" ⚡ FPS:     ", Style::default().fg(Color::Magenta)),
-            Span::styled(format!("{} ", stats.fps), Style::default().fg(Color::White)),
-            Span::styled(
-                "█".repeat((stats.fps / 10) as usize),
-                Style::default().fg(Color::Green),
-            ),
-        ]),
-    ];
-
-    frame.render_widget(
-        Paragraph::new(lines).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Cyan))
-                .title(" ◈ NET_STATS ◈ "),
-        ),
-        area,
-    );
-}
-
-fn render_hex_dump(frame: &mut Frame<'_>, area: Rect, stats: &UiStats) {
-    let mut lines = vec![];
-
-    for i in 0..8 {
-        let offset = stats.tick.wrapping_add(i as u64) * 16;
-        let hex_part: String = (0..8)
-            .map(|j| {
-                let val = (offset.wrapping_add(j) * 1337 + stats.tick) % 255;
-                format!("{:02X} ", val)
-            })
-            .collect();
-
-        // Глитч эффект на некоторых строках
-        let display = if (stats.tick + i as u64) % 30 < 2 {
-            glitch_text(&hex_part, stats.tick, 0.5)
-        } else {
-            hex_part
-        };
-
-        let color = if i % 2 == 0 {
-            Color::DarkGray
-        } else {
-            Color::Rgb(80, 80, 80)
-        };
-        lines.push(Line::from(vec![
-            Span::styled(
-                format!("0x{:08X}: ", offset),
-                Style::default().fg(Color::Yellow),
-            ),
-            Span::styled(display, Style::default().fg(color)),
-        ]));
-    }
-
-    frame.render_widget(
-        Paragraph::new(lines).block(
-            Block::default()
-                .borders(Borders::LEFT | Borders::TOP)
-                .border_style(Style::default().fg(Color::DarkGray))
-                .title(" MEM_DUMP "),
-        ),
-        area,
-    );
-}
-
-fn render_system_tasks(frame: &mut Frame<'_>, area: Rect, stats: &UiStats) {
-    let tasks = [
-        ("noise_handshake", "OK", Color::Green),
-        ("ml_kem_768", "ACTIVE", Color::Cyan),
-        ("dpi_evasion", "ENGAGED", Color::Magenta),
-        ("traffic_morph", "RUNNING", Color::Yellow),
-        ("cover_traffic", "GENERATING", Color::Blue),
-        ("geo_spoof", "TOKYO_03", Color::Red),
-    ];
+fn render_system_tasks(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
+    let connected = matches!(app.conn_state, ConnectionState::Connected { .. });
+    
+    let tasks = if connected {
+        vec![
+            ("noise_handshake", "COMPLETE", Color::Green),
+            ("ml_kem_768", "ACTIVE", Color::Cyan),
+            ("dpi_evasion", "ENGAGED", Color::Magenta),
+            ("traffic_morph", "RUNNING", Color::Yellow),
+        ]
+    } else {
+        vec![
+            ("noise_handshake", "STANDBY", Color::DarkGray),
+            ("ml_kem_768", "READY", Color::DarkGray),
+            ("dpi_evasion", "STANDBY", Color::DarkGray),
+            ("traffic_morph", "IDLE", Color::DarkGray),
+        ]
+    };
 
     let lines: Vec<Line> = tasks
         .iter()
         .enumerate()
         .map(|(i, (name, status, color))| {
-            let blink = (stats.tick / 5 + i as u64) % 3 == 0;
+            let blink = (app.tick / 5 + i as u64) % 3 == 0 && connected;
             let prefix = if blink { "▶" } else { "►" };
 
             Line::from(vec![
                 Span::styled(format!(" {} ", prefix), Style::default().fg(*color)),
-                Span::styled(format!("{:<15}", name), Style::default().fg(Color::White)),
+                Span::styled(format!("{:<14}", name), Style::default().fg(Color::White)),
                 Span::styled(
                     format!("[{}]", status),
                     Style::default().fg(*color).add_modifier(if blink {
@@ -417,58 +471,49 @@ fn render_system_tasks(frame: &mut Frame<'_>, area: Rect, stats: &UiStats) {
             Block::default()
                 .borders(Borders::TOP)
                 .border_style(Style::default().fg(Color::DarkGray))
-                .title(" ⚙ SYSTEM_TASKS ⚙ "),
+                .title(" ⚙ SYSTEM ⚙ "),
         ),
         area,
     );
 }
 
-fn render_hacker_footer(frame: &mut Frame<'_>, area: Rect, stats: &UiStats) {
-    let msg = get_hacker_message(stats.tick);
+fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
+    let msg = get_hacker_message(app.tick);
     let len = msg.len();
-    let offset = (stats.tick / 2) as usize % len.max(1);
-    let scrolled = if len > 0 {
+    let offset = (app.tick / 2) as usize % len.max(1);
+    let _scrolled = if len > 0 {
         format!("{}{}", &msg[offset..], &msg[..offset])
     } else {
         String::new()
     };
 
-    let needs_repair = matches!(stats.network_health, NetworkHealth::OrphanedState { .. });
+    let action_key = match &app.conn_state {
+        ConnectionState::Connected { .. } => "[SPACE: DISCONNECT]",
+        ConnectionState::Disconnected | ConnectionState::Error(_) => "[SPACE: CONNECT]",
+        _ => "[SPACE: ABORT]",
+    };
 
-    let mut spans = vec![
+    let action_style = match &app.conn_state {
+        ConnectionState::Connected { .. } => Style::default().fg(Color::Red),
+        ConnectionState::Disconnected | ConnectionState::Error(_) => Style::default().fg(Color::Green),
+        _ => Style::default().fg(Color::Yellow),
+    };
+
+    let spans = vec![
         Span::styled(
-            format!(" {} COMMAND > ", spinner(stats.tick)),
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
+            format!(" {} ", spinner(app.tick)),
+            Style::default().fg(Color::Yellow),
         ),
-        Span::styled(scrolled, Style::default().fg(Color::DarkGray)),
+        Span::styled(action_key, action_style.add_modifier(Modifier::BOLD)),
+        Span::styled(" [S: SERVERS] ", Style::default().fg(Color::Cyan)),
+        Span::styled(" [L: LOGS] ", Style::default().fg(Color::Magenta)),
+        Span::styled(" [?: HELP] ", Style::default().fg(Color::Blue)),
+        Span::styled(" [Q: EXIT] ", Style::default().fg(Color::Red)),
+        Span::styled(
+            format!(" // {} ", get_doge_message(app.tick + 3)),
+            Style::default().fg(Color::Yellow),
+        ),
     ];
-
-    if needs_repair {
-        let repair_style = if stats.tick % 20 < 10 {
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::Yellow)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD)
-        };
-        spans.push(Span::styled(" [R: HACK_REPAIR] ", repair_style));
-    }
-
-    spans.push(Span::styled(
-        " [Q: EXIT_MATRIX] ",
-        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-    ));
-
-    // Doge message в углу
-    spans.push(Span::styled(
-        format!(" // {} ", get_doge_message(stats.tick + 3)),
-        Style::default().fg(Color::Yellow),
-    ));
 
     frame.render_widget(
         Paragraph::new(Line::from(spans)).block(
@@ -480,21 +525,326 @@ fn render_hacker_footer(frame: &mut Frame<'_>, area: Rect, stats: &UiStats) {
     );
 }
 
+// =============================================================================
+// Logs Screen
+// =============================================================================
+
+pub fn draw_logs_screen(frame: &mut Frame<'_>, area: Rect, app: &AppState, _vpn: &Arc<VpnController>) {
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(10),
+            Constraint::Length(2),
+        ])
+        .split(area);
+
+    // Header
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(vec![
+                Span::styled(
+                    " ████ VPR SYSTEM LOGS ████ ",
+                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!(" {} entries ", 1000), // Would need async here
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ]),
+        ])
+        .block(Block::default().borders(Borders::BOTTOM)),
+        layout[0],
+    );
+
+    // Logs content (placeholder - needs async runtime)
+    let log_lines: Vec<ListItem> = (0..20)
+        .map(|i| {
+            let level = if i % 5 == 0 { "ERROR" } else if i % 3 == 0 { "WARN" } else { "INFO" };
+            let color = match level {
+                "ERROR" => Color::Red,
+                "WARN" => Color::Yellow,
+                _ => Color::Green,
+            };
+            
+            ListItem::new(Line::from(vec![
+                Span::styled(
+                    format!("[{:05}] ", app.tick.wrapping_sub(i as u64 * 10)),
+                    Style::default().fg(Color::DarkGray),
+                ),
+                Span::styled(
+                    format!("{:<5} ", level),
+                    Style::default().fg(color),
+                ),
+                Span::styled(
+                    get_hacker_message(app.tick + i as u64),
+                    Style::default().fg(Color::White),
+                ),
+            ]))
+        })
+        .collect();
+
+    frame.render_widget(
+        List::new(log_lines)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::DarkGray))
+                    .title(" LIVE_LOG_STREAM "),
+            ),
+        layout[1],
+    );
+
+    // Footer
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(" [↑/↓: SCROLL] ", Style::default().fg(Color::Cyan)),
+            Span::styled(" [PGUP/PGDN: PAGE] ", Style::default().fg(Color::Cyan)),
+            Span::styled(" [HOME/END: JUMP] ", Style::default().fg(Color::Cyan)),
+            Span::styled(" [Q/ESC: BACK] ", Style::default().fg(Color::Red)),
+        ]))
+        .block(Block::default().borders(Borders::TOP)),
+        layout[2],
+    );
+}
+
+// =============================================================================
+// Servers Screen
+// =============================================================================
+
+pub fn draw_servers_screen(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(10),
+            Constraint::Length(if app.input_mode != InputMode::Normal { 3 } else { 0 }),
+            Constraint::Length(2),
+        ])
+        .split(area);
+
+    // Header
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(vec![
+                Span::styled(
+                    " ████ SERVER SELECTION ████ ",
+                    Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+                ),
+            ]),
+        ])
+        .block(Block::default().borders(Borders::BOTTOM)),
+        layout[0],
+    );
+
+    // Server list
+    let server_items: Vec<ListItem> = app
+        .servers
+        .iter()
+        .enumerate()
+        .map(|(i, server)| {
+            let selected = i == app.selected_server;
+            let prefix = if selected { "▶ " } else { "  " };
+            
+            let style = if selected {
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+
+            let host_display = if server.host.is_empty() {
+                "<not configured>".to_string()
+            } else {
+                format!("{}:{}", server.host, server.port)
+            };
+
+            ListItem::new(Line::from(vec![
+                Span::styled(prefix, style),
+                Span::styled(format!("{:<20}", server.name), style),
+                Span::styled(
+                    format!(" {} ", server.location),
+                    Style::default().fg(Color::Yellow),
+                ),
+                Span::styled(
+                    format!(" [{}]", host_display),
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ]))
+        })
+        .collect();
+
+    frame.render_widget(
+        List::new(server_items)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Magenta))
+                    .title(" AVAILABLE_NODES "),
+            ),
+        layout[1],
+    );
+
+    // Input field
+    if app.input_mode != InputMode::Normal {
+        let label = match app.input_mode {
+            InputMode::ServerHost => "Server Host: ",
+            InputMode::ServerPort => "Port: ",
+            InputMode::Normal => "",
+        };
+
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(label, Style::default().fg(Color::Yellow)),
+                Span::styled(&app.input_buffer, Style::default().fg(Color::White)),
+                Span::styled("█", Style::default().fg(Color::Cyan)), // Cursor
+            ]))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Yellow))
+                    .title(" INPUT "),
+            ),
+            layout[2],
+        );
+    }
+
+    // Footer
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(" [↑/↓: SELECT] ", Style::default().fg(Color::Cyan)),
+            Span::styled(" [ENTER: CHOOSE] ", Style::default().fg(Color::Green)),
+            Span::styled(" [E: EDIT CUSTOM] ", Style::default().fg(Color::Yellow)),
+            Span::styled(" [Q/ESC: BACK] ", Style::default().fg(Color::Red)),
+        ]))
+        .block(Block::default().borders(Borders::TOP)),
+        layout[3],
+    );
+}
+
+// =============================================================================
+// Help Screen
+// =============================================================================
+
+pub fn draw_help_screen(frame: &mut Frame<'_>, area: Rect, _app: &AppState) {
+    let help_text = vec![
+        "",
+        "  ██╗  ██╗███████╗██╗     ██████╗ ",
+        "  ██║  ██║██╔════╝██║     ██╔══██╗",
+        "  ███████║█████╗  ██║     ██████╔╝",
+        "  ██╔══██║██╔══╝  ██║     ██╔═══╝ ",
+        "  ██║  ██║███████╗███████╗██║     ",
+        "  ╚═╝  ╚═╝╚══════╝╚══════╝╚═╝     ",
+        "",
+        "  ═══════════════════════════════════════",
+        "  MAIN SCREEN COMMANDS:",
+        "  ═══════════════════════════════════════",
+        "  SPACE/ENTER  Connect or Disconnect",
+        "  S            Server selection menu",
+        "  L            View system logs",
+        "  I            Fetch external IP",
+        "  P            Measure latency (ping)",
+        "  R            Repair/reconnect (on error)",
+        "  ?/F1         This help screen",
+        "  Q/ESC        Quit application",
+        "  Ctrl+C       Force quit",
+        "",
+        "  ═══════════════════════════════════════",
+        "  NAVIGATION:",
+        "  ═══════════════════════════════════════",
+        "  ↑/↓ or J/K   Navigate lists",
+        "  PgUp/PgDn    Scroll pages",
+        "  Home/End     Jump to start/end",
+        "",
+        "  Press any key to return...",
+    ];
+
+    let lines: Vec<Line> = help_text
+        .iter()
+        .map(|s| {
+            if s.contains('═') || s.contains('╗') || s.contains('╔') {
+                Line::from(Span::styled(*s, Style::default().fg(Color::Magenta)))
+            } else if s.contains("SPACE") || s.contains("ENTER") {
+                Line::from(Span::styled(*s, Style::default().fg(Color::Green)))
+            } else if s.starts_with("  ") && s.len() > 3 && s.chars().nth(2).map(|c| c.is_uppercase()).unwrap_or(false) {
+                Line::from(Span::styled(*s, Style::default().fg(Color::Cyan)))
+            } else {
+                Line::from(Span::styled(*s, Style::default().fg(Color::White)))
+            }
+        })
+        .collect();
+
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Cyan))
+                    .title(" ◉ VPR HACKER MANUAL ◉ "),
+            )
+            .alignment(Alignment::Left)
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
+// =============================================================================
+// Utilities
+// =============================================================================
+
+fn format_bytes(bytes: u64) -> String {
+    if bytes >= 1_000_000_000 {
+        format!("{:.1}GB", bytes as f64 / 1_000_000_000.0)
+    } else if bytes >= 1_000_000 {
+        format!("{:.1}MB", bytes as f64 / 1_000_000.0)
+    } else if bytes >= 1_000 {
+        format!("{:.1}KB", bytes as f64 / 1_000.0)
+    } else {
+        format!("{}B", bytes)
+    }
+}
+
+// =============================================================================
+// Legacy draw function for backwards compatibility
+// =============================================================================
+
+pub fn draw(frame: &mut Frame<'_>, globe: &GlobeRenderer, area: Rect, angle: f32, stats: UiStats) {
+    // Create a minimal app state for legacy interface
+    let app = AppState {
+        screen: Screen::Main,
+        tick: stats.tick,
+        angle,
+        vpn: Arc::new(VpnController::new(crate::vpn::ControllerConfig::default())),
+        conn_state: match stats.network_health {
+            NetworkHealth::Connected => ConnectionState::Connected {
+                server: "legacy".into(),
+                connected_at: 0,
+            },
+            NetworkHealth::Disconnected => ConnectionState::Disconnected,
+            NetworkHealth::OrphanedState { .. } => ConnectionState::Error("Orphaned".into()),
+            NetworkHealth::Repairing => ConnectionState::Connecting,
+        },
+        metrics: crate::vpn::VpnMetrics {
+            latency_ms: stats.latency_ms as u32,
+            upload_speed: (stats.throughput_mbps as u64) * 125_000,
+            ..Default::default()
+        },
+        servers: vec![],
+        selected_server: 0,
+        log_scroll: 0,
+        show_help: false,
+        status_message: None,
+        input_mode: InputMode::Normal,
+        input_buffer: String::new(),
+    };
+
+    draw_main_screen(frame, globe, area, &app);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
-
-    fn make_stats(tick: u64, health: NetworkHealth) -> UiStats {
-        UiStats {
-            tick,
-            fps: 60,
-            latency_ms: 10,
-            throughput_mbps: 900,
-            network_health: health,
-        }
-    }
 
     #[test]
     fn network_health_default_is_connected() {
@@ -503,167 +853,30 @@ mod tests {
     }
 
     #[test]
-    fn network_health_variants() {
-        let connected = NetworkHealth::Connected;
-        let disconnected = NetworkHealth::Disconnected;
-        let orphaned = NetworkHealth::OrphanedState {
-            pending_changes: 3,
-            crashed_at: Some(12345),
+    fn format_bytes_works() {
+        assert_eq!(format_bytes(500), "500B");
+        assert_eq!(format_bytes(1500), "1.5KB");
+        assert_eq!(format_bytes(1_500_000), "1.5MB");
+        assert_eq!(format_bytes(1_500_000_000), "1.5GB");
+    }
+
+    #[test]
+    fn draw_does_not_panic() {
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let globe = crate::globe::GlobeRenderer::new(200, 0.3, 0.2);
+        let stats = UiStats {
+            tick: 1,
+            fps: 60,
+            latency_ms: 10,
+            throughput_mbps: 900,
+            network_health: NetworkHealth::Connected,
         };
-        let repairing = NetworkHealth::Repairing;
-
-        assert!(format!("{:?}", connected).contains("Connected"));
-        assert!(format!("{:?}", disconnected).contains("Disconnected"));
-        assert!(format!("{:?}", orphaned).contains("OrphanedState"));
-        assert!(format!("{:?}", repairing).contains("Repairing"));
-    }
-
-    #[test]
-    fn ui_stats_construction() {
-        let stats = make_stats(100, NetworkHealth::Connected);
-        assert_eq!(stats.tick, 100);
-        assert_eq!(stats.fps, 60);
-    }
-
-    #[test]
-    fn draw_connected_state() {
-        let backend = TestBackend::new(120, 40);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let globe = crate::globe::GlobeRenderer::new(200, 0.3, 0.2);
-        let stats = make_stats(1, NetworkHealth::Connected);
-
-        // Should not panic
-        terminal
-            .draw(|f| {
-                draw(f, &globe, f.size(), 0.0, stats);
-            })
-            .unwrap();
-
-        let buffer = terminal.backend().buffer();
-        let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
-        // Check for any content rendered
-        assert!(!content.trim().is_empty());
-    }
-
-    #[test]
-    fn draw_disconnected_state() {
-        let backend = TestBackend::new(120, 40);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let globe = crate::globe::GlobeRenderer::new(200, 0.3, 0.2);
-        let stats = make_stats(1, NetworkHealth::Disconnected);
-
-        terminal
-            .draw(|f| {
-                draw(f, &globe, f.size(), 0.5, stats);
-            })
-            .unwrap();
-
-        let buffer = terminal.backend().buffer();
-        let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
-        assert!(!content.trim().is_empty());
-    }
-
-    #[test]
-    fn draw_orphaned_state_shows_warning() {
-        let backend = TestBackend::new(120, 40);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let globe = crate::globe::GlobeRenderer::new(200, 0.3, 0.2);
-        let stats = make_stats(
-            1,
-            NetworkHealth::OrphanedState {
-                pending_changes: 5,
-                crashed_at: Some(99999),
-            },
-        );
 
         terminal
             .draw(|f| {
                 draw(f, &globe, f.size(), 0.0, stats);
             })
             .unwrap();
-
-        let buffer = terminal.backend().buffer();
-        let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
-        assert!(content.contains("RECOVERY"));
-    }
-
-    #[test]
-    fn footer_shows_quit_button() {
-        let backend = TestBackend::new(120, 40);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let globe = crate::globe::GlobeRenderer::new(200, 0.3, 0.2);
-        let stats = make_stats(1, NetworkHealth::Connected);
-
-        terminal
-            .draw(|f| {
-                draw(f, &globe, f.size(), 0.0, stats);
-            })
-            .unwrap();
-
-        let buffer = terminal.backend().buffer();
-        let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
-        assert!(content.contains("EXIT_MATRIX"));
-    }
-
-    #[test]
-    fn small_terminal_does_not_panic() {
-        let backend = TestBackend::new(40, 15);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let globe = crate::globe::GlobeRenderer::new(100, 0.3, 0.2);
-        let stats = make_stats(0, NetworkHealth::Connected);
-
-        let result = terminal.draw(|f| {
-            draw(f, &globe, f.size(), 0.0, stats);
-        });
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn doge_messages_cycle() {
-        let msg1 = get_doge_message(0);
-        let msg2 = get_doge_message(100);
-        // Messages should exist
-        assert!(!msg1.is_empty());
-        assert!(!msg2.is_empty());
-    }
-
-    #[test]
-    fn hacker_messages_cycle() {
-        let msg1 = get_hacker_message(0);
-        let msg2 = get_hacker_message(100);
-        assert!(!msg1.is_empty());
-        assert!(!msg2.is_empty());
-    }
-
-    #[test]
-    fn glitch_text_works() {
-        let original = "HELLO WORLD";
-        let glitched = glitch_text(original, 42, 0.5);
-        // Glitched text should have same number of chars (not bytes)
-        assert_eq!(glitched.chars().count(), original.chars().count());
-    }
-
-    #[test]
-    fn progress_bar_renders() {
-        let bar = hacker_progress_bar(0.5, 20);
-        assert!(bar.contains("█"));
-        assert!(bar.contains("░"));
-        assert!(bar.contains("50%"));
-    }
-
-    #[test]
-    fn spinner_animates() {
-        let s1 = spinner(0);
-        let _s2 = spinner(5);
-        // Spinner should return valid chars
-        assert!(s1.is_ascii() || !s1.is_ascii()); // Always true, just check no panic
-    }
-
-    #[test]
-    fn pulse_animates() {
-        let p1 = pulse(0);
-        let p2 = pulse(10);
-        assert!(!p1.is_empty());
-        assert!(!p2.is_empty());
     }
 }

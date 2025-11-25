@@ -1,17 +1,131 @@
+//! Main TUI Application with full VPN control
+//!
+//! Watch Dogs 2 hacker aesthetic with real functionality
+
 use std::io;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode};
+use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use crossterm::ExecutableCommand;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
+use tokio::sync::RwLock;
 
 use crate::globe::GlobeRenderer;
-use crate::render::{draw, NetworkHealth, UiStats};
+use crate::render::{draw_main_screen, draw_logs_screen, draw_servers_screen, draw_help_screen};
+use crate::vpn::{ConnectionState, ControllerConfig, ServerConfig, VpnController, VpnMetrics};
+
+/// Active screen in TUI
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Screen {
+    Main,
+    Logs,
+    Servers,
+    Help,
+}
+
+impl Default for Screen {
+    fn default() -> Self {
+        Self::Main
+    }
+}
+
+/// Application state
+pub struct AppState {
+    /// Current active screen
+    pub screen: Screen,
+    /// Animation tick counter
+    pub tick: u64,
+    /// Globe rotation angle
+    pub angle: f32,
+    /// VPN controller
+    pub vpn: Arc<VpnController>,
+    /// Cached connection state
+    pub conn_state: ConnectionState,
+    /// Cached metrics
+    pub metrics: VpnMetrics,
+    /// Available servers
+    pub servers: Vec<ServerConfig>,
+    /// Selected server index
+    pub selected_server: usize,
+    /// Log scroll offset
+    pub log_scroll: usize,
+    /// Show help overlay
+    pub show_help: bool,
+    /// Status message (temporary)
+    pub status_message: Option<(String, Instant)>,
+    /// Input mode for server entry
+    pub input_mode: InputMode,
+    /// Input buffer
+    pub input_buffer: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum InputMode {
+    #[default]
+    Normal,
+    ServerHost,
+    ServerPort,
+}
+
+impl AppState {
+    pub fn new(vpn: Arc<VpnController>) -> Self {
+        Self {
+            screen: Screen::Main,
+            tick: 0,
+            angle: 0.0,
+            vpn,
+            conn_state: ConnectionState::Disconnected,
+            metrics: VpnMetrics::default(),
+            servers: default_servers(),
+            selected_server: 0,
+            log_scroll: 0,
+            show_help: false,
+            status_message: None,
+            input_mode: InputMode::Normal,
+            input_buffer: String::new(),
+        }
+    }
+
+    /// Set temporary status message
+    pub fn set_status(&mut self, msg: impl Into<String>) {
+        self.status_message = Some((msg.into(), Instant::now()));
+    }
+
+    /// Get status message if not expired
+    pub fn get_status(&self) -> Option<&str> {
+        self.status_message.as_ref().and_then(|(msg, time)| {
+            if time.elapsed() < Duration::from_secs(5) {
+                Some(msg.as_str())
+            } else {
+                None
+            }
+        })
+    }
+}
+
+/// Default server list
+fn default_servers() -> Vec<ServerConfig> {
+    vec![
+        ServerConfig {
+            host: "64.176.70.203".into(),
+            port: 443,
+            name: "VPR-Tokyo".into(),
+            location: "Tokyo, Japan".into(),
+        },
+        ServerConfig {
+            host: String::new(),
+            port: 443,
+            name: "Custom Server".into(),
+            location: "Enter manually".into(),
+        },
+    ]
+}
 
 /// TUI event that can be handled by the caller
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -22,10 +136,10 @@ pub enum TuiEvent {
     Quit,
 }
 
-/// Callbacks for TUI events and state queries
+/// Callbacks for TUI events and state queries (legacy interface)
 pub struct TuiCallbacks<F, G>
 where
-    F: FnMut() -> NetworkHealth,
+    F: FnMut() -> crate::render::NetworkHealth,
     G: FnMut() -> bool,
 {
     /// Get current network health status
@@ -34,20 +148,35 @@ where
     pub repair_network: G,
 }
 
-/// Run the interactive TUI with the rotating ASCII globe.
+/// Run the interactive TUI with the rotating ASCII globe (legacy interface)
 pub fn run() -> Result<()> {
     run_with_callbacks(TuiCallbacks {
-        get_network_health: || NetworkHealth::default(),
+        get_network_health: || crate::render::NetworkHealth::default(),
         repair_network: || false,
     })
 }
 
-/// Run TUI with custom callbacks for network status and repair
-pub fn run_with_callbacks<F, G>(callbacks: TuiCallbacks<F, G>) -> Result<()>
+/// Run TUI with custom callbacks for network status and repair (legacy interface)
+pub fn run_with_callbacks<F, G>(_callbacks: TuiCallbacks<F, G>) -> Result<()>
 where
-    F: FnMut() -> NetworkHealth,
+    F: FnMut() -> crate::render::NetworkHealth,
     G: FnMut() -> bool,
 {
+    // Use new async runtime
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(run_async())
+}
+
+/// Main async TUI entry point
+pub async fn run_async() -> Result<()> {
+    run_with_config(ControllerConfig::default()).await
+}
+
+/// Run TUI with custom VPN configuration
+pub async fn run_with_config(config: ControllerConfig) -> Result<()> {
+    let vpn = Arc::new(VpnController::new(config));
+    let state = Arc::new(RwLock::new(AppState::new(Arc::clone(&vpn))));
+
     let mut stdout = io::stdout();
     enable_raw_mode()?;
     stdout.execute(EnterAlternateScreen)?;
@@ -56,7 +185,7 @@ where
     let mut terminal = Terminal::new(backend)?;
     terminal.hide_cursor()?;
 
-    let result = event_loop_with_callbacks(&mut terminal, callbacks);
+    let result = event_loop(&mut terminal, state, vpn).await;
 
     disable_raw_mode()?;
     terminal.backend_mut().execute(LeaveAlternateScreen)?;
@@ -65,60 +194,305 @@ where
     result
 }
 
-fn event_loop_with_callbacks<B, F, G>(
+/// Main event loop
+async fn event_loop<B>(
     terminal: &mut Terminal<B>,
-    mut callbacks: TuiCallbacks<F, G>,
+    state: Arc<RwLock<AppState>>,
+    vpn: Arc<VpnController>,
 ) -> Result<()>
 where
     B: ratatui::backend::Backend,
-    F: FnMut() -> NetworkHealth,
-    G: FnMut() -> bool,
 {
     let globe = GlobeRenderer::new(4200, 0.32, 0.18);
-    let mut angle = 0.0f32;
-    let mut tick: u64 = 0;
-
     let tick_rate = Duration::from_millis(41); // ~24 FPS
     let mut last_tick = Instant::now();
+    let mut metrics_update = Instant::now();
 
     loop {
-        // Get current network health from callback
-        let network_health = (callbacks.get_network_health)();
+        // Update cached state from VPN controller
+        {
+            let mut app = state.write().await;
+            app.conn_state = vpn.state().await;
+            
+            // Update metrics less frequently
+            if metrics_update.elapsed() > Duration::from_secs(1) {
+                app.metrics = vpn.metrics().await;
+                
+                // Update traffic stats if connected
+                if matches!(app.conn_state, ConnectionState::Connected { .. }) {
+                    vpn.update_traffic_metrics().await;
+                }
+                
+                metrics_update = Instant::now();
+            }
+        }
 
-        terminal.draw(|frame| {
-            let area = frame.size();
-            let fps = (1000.0 / tick_rate.as_millis() as f64).round() as u16;
-            let stats = UiStats {
-                tick,
-                fps,
-                latency_ms: 18 + ((tick * 7) % 14) as u16,
-                throughput_mbps: 940 + ((tick * 11) % 160) as u16,
-                network_health,
-            };
+        // Render
+        {
+            let app = state.read().await;
+            terminal.draw(|frame| {
+                let area = frame.size();
+                
+                match app.screen {
+                    Screen::Main => draw_main_screen(frame, &globe, area, &app),
+                    Screen::Logs => draw_logs_screen(frame, area, &app, &vpn),
+                    Screen::Servers => draw_servers_screen(frame, area, &app),
+                    Screen::Help => draw_help_screen(frame, area, &app),
+                }
+            })?;
+        }
 
-            draw(frame, &globe, area, angle, stats);
-        })?;
-
+        // Handle input
         let timeout = tick_rate.saturating_sub(last_tick.elapsed());
         if event::poll(timeout)? {
             if let Event::Key(key) = event::read()? {
+                let mut app = state.write().await;
+                
+                // Handle input mode first
+                if app.input_mode != InputMode::Normal {
+                    match key.code {
+                        KeyCode::Esc => {
+                            app.input_mode = InputMode::Normal;
+                            app.input_buffer.clear();
+                        }
+                        KeyCode::Enter => {
+                            handle_input_submit(&mut app).await;
+                        }
+                        KeyCode::Backspace => {
+                            app.input_buffer.pop();
+                        }
+                        KeyCode::Char(c) => {
+                            app.input_buffer.push(c);
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
+
+                // Global keys
                 match key.code {
-                    KeyCode::Char('q') | KeyCode::Esc => break,
-                    KeyCode::Char('r') | KeyCode::Char('R') => {
-                        // Attempt network repair via callback
-                        let _ = (callbacks.repair_network)();
+                    KeyCode::Char('q') | KeyCode::Esc => {
+                        if app.screen != Screen::Main {
+                            app.screen = Screen::Main;
+                        } else {
+                            // Disconnect before quitting
+                            if matches!(app.conn_state, ConnectionState::Connected { .. }) {
+                                let _ = vpn.disconnect().await;
+                            }
+                            break;
+                        }
+                    }
+                    KeyCode::Char('?') | KeyCode::F(1) => {
+                        app.screen = Screen::Help;
+                    }
+                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        // Ctrl+C - force quit
+                        let _ = vpn.disconnect().await;
+                        break;
                     }
                     _ => {}
+                }
+
+                // Screen-specific keys
+                match app.screen {
+                    Screen::Main => {
+                        handle_main_keys(&mut app, &vpn, key.code).await;
+                    }
+                    Screen::Logs => {
+                        handle_logs_keys(&mut app, key.code);
+                    }
+                    Screen::Servers => {
+                        handle_servers_keys(&mut app, &vpn, key.code).await;
+                    }
+                    Screen::Help => {
+                        // Any key returns to main
+                        if key.code != KeyCode::Char('q') && key.code != KeyCode::Esc {
+                            app.screen = Screen::Main;
+                        }
+                    }
                 }
             }
         }
 
+        // Update animation
         if last_tick.elapsed() >= tick_rate {
-            angle = (angle + globe.angular_step()) % std::f32::consts::TAU;
-            tick = tick.wrapping_add(1);
+            let mut app = state.write().await;
+            app.angle = (app.angle + globe.angular_step()) % std::f32::consts::TAU;
+            app.tick = app.tick.wrapping_add(1);
             last_tick = Instant::now();
         }
     }
 
     Ok(())
 }
+
+/// Handle main screen keys
+async fn handle_main_keys(app: &mut AppState, vpn: &VpnController, key: KeyCode) {
+    match key {
+        // Connect/Disconnect toggle
+        KeyCode::Char(' ') | KeyCode::Enter => {
+            match app.conn_state {
+                ConnectionState::Disconnected | ConnectionState::Error(_) => {
+                    // Select server first if not configured
+                    let config = vpn.config().await;
+                    if config.server.host.is_empty() {
+                        if let Some(server) = app.servers.get(app.selected_server) {
+                            if !server.host.is_empty() {
+                                vpn.set_server(server.clone()).await;
+                            } else {
+                                app.set_status("⚠ Configure server first (press 's')");
+                                return;
+                            }
+                        }
+                    }
+                    
+                    app.set_status(">>> INITIALIZING SECURE TUNNEL...");
+                    if let Err(e) = vpn.connect().await {
+                        app.set_status(format!("✗ Connection failed: {}", e));
+                    }
+                }
+                ConnectionState::Connected { .. } => {
+                    app.set_status(">>> TERMINATING CONNECTION...");
+                    if let Err(e) = vpn.disconnect().await {
+                        app.set_status(format!("✗ Disconnect failed: {}", e));
+                    } else {
+                        app.set_status("✓ TUNNEL CLOSED");
+                    }
+                }
+                ConnectionState::Connecting | ConnectionState::Reconnecting { .. } => {
+                    app.set_status(">>> ABORTING CONNECTION...");
+                    let _ = vpn.disconnect().await;
+                }
+            }
+        }
+        // Server selection
+        KeyCode::Char('s') | KeyCode::Char('S') => {
+            app.screen = Screen::Servers;
+        }
+        // View logs
+        KeyCode::Char('l') | KeyCode::Char('L') => {
+            app.screen = Screen::Logs;
+        }
+        // Refresh external IP
+        KeyCode::Char('i') | KeyCode::Char('I') => {
+            app.set_status(">>> Fetching external IP...");
+            if let Some(ip) = vpn.fetch_external_ip().await {
+                app.set_status(format!("✓ External IP: {}", ip));
+            } else {
+                app.set_status("✗ Failed to fetch IP");
+            }
+        }
+        // Measure latency
+        KeyCode::Char('p') | KeyCode::Char('P') => {
+            app.set_status(">>> Measuring latency...");
+            if let Some(ms) = vpn.measure_latency().await {
+                app.set_status(format!("✓ Latency: {} ms", ms));
+            } else {
+                app.set_status("✗ Ping failed");
+            }
+        }
+        // Repair (reconnect)
+        KeyCode::Char('r') | KeyCode::Char('R') => {
+            if matches!(app.conn_state, ConnectionState::Error(_)) {
+                app.set_status(">>> INITIATING RECOVERY PROTOCOL...");
+                let _ = vpn.disconnect().await;
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                if let Err(e) = vpn.connect().await {
+                    app.set_status(format!("✗ Recovery failed: {}", e));
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Handle logs screen keys
+fn handle_logs_keys(app: &mut AppState, key: KeyCode) {
+    match key {
+        KeyCode::Up | KeyCode::Char('k') => {
+            app.log_scroll = app.log_scroll.saturating_add(1);
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            app.log_scroll = app.log_scroll.saturating_sub(1);
+        }
+        KeyCode::PageUp => {
+            app.log_scroll = app.log_scroll.saturating_add(10);
+        }
+        KeyCode::PageDown => {
+            app.log_scroll = app.log_scroll.saturating_sub(10);
+        }
+        KeyCode::Home => {
+            app.log_scroll = 1000; // Max scroll
+        }
+        KeyCode::End => {
+            app.log_scroll = 0;
+        }
+        _ => {}
+    }
+}
+
+/// Handle servers screen keys
+async fn handle_servers_keys(app: &mut AppState, vpn: &VpnController, key: KeyCode) {
+    match key {
+        KeyCode::Up | KeyCode::Char('k') => {
+            if app.selected_server > 0 {
+                app.selected_server -= 1;
+            }
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            if app.selected_server < app.servers.len().saturating_sub(1) {
+                app.selected_server += 1;
+            }
+        }
+        KeyCode::Enter | KeyCode::Char(' ') => {
+            if let Some(server) = app.servers.get(app.selected_server) {
+                if server.host.is_empty() {
+                    // Custom server - enter input mode
+                    app.input_mode = InputMode::ServerHost;
+                    app.input_buffer.clear();
+                    app.set_status("Enter server host:");
+                } else {
+                    vpn.set_server(server.clone()).await;
+                    app.set_status(format!("✓ Selected: {}", server.name));
+                    app.screen = Screen::Main;
+                }
+            }
+        }
+        KeyCode::Char('e') | KeyCode::Char('E') => {
+            // Edit custom server
+            app.input_mode = InputMode::ServerHost;
+            app.input_buffer.clear();
+        }
+        _ => {}
+    }
+}
+
+/// Handle input submission
+async fn handle_input_submit(app: &mut AppState) {
+    match app.input_mode {
+        InputMode::ServerHost => {
+            if !app.input_buffer.is_empty() {
+                // Find custom server entry and update
+                if let Some(custom) = app.servers.iter_mut().find(|s| s.name == "Custom Server") {
+                    custom.host = app.input_buffer.clone();
+                }
+                app.input_mode = InputMode::ServerPort;
+                app.input_buffer = "443".to_string();
+                app.set_status("Enter port (default 443):");
+            }
+        }
+        InputMode::ServerPort => {
+            let port: u16 = app.input_buffer.parse().unwrap_or(443);
+            if let Some(custom) = app.servers.iter_mut().find(|s| s.name == "Custom Server") {
+                custom.port = port;
+            }
+            app.input_mode = InputMode::Normal;
+            app.input_buffer.clear();
+            app.set_status("✓ Custom server configured");
+        }
+        InputMode::Normal => {}
+    }
+}
+
+// Re-exports for backwards compatibility
+pub use crate::render::{NetworkHealth, UiStats};
