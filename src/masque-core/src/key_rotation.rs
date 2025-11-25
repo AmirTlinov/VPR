@@ -521,6 +521,31 @@ mod tests {
     }
 
     #[test]
+    fn test_maybe_rotate_invokes_callback_and_resets() {
+        // Set very small limits to trigger immediately
+        let limits = SessionKeyLimits {
+            time_limit: Duration::from_millis(0),
+            data_limit: 16,
+        };
+        let state = SessionKeyState::with_limits(limits);
+        state.record_bytes(32);
+
+        let mut called = false;
+        state.maybe_rotate_with(|reason| {
+            called = true;
+            match reason {
+                SessionRotationReason::DataLimit(bytes) => assert!(bytes >= 16),
+                SessionRotationReason::TimeLimit(_) => {}
+                SessionRotationReason::Manual => panic!("unexpected manual"),
+            }
+        });
+
+        assert!(called, "rotation callback must be invoked");
+        assert_eq!(state.bytes_processed(), 0, "bytes reset after rotation");
+        assert_eq!(state.rotation_count(), 1, "rotation count incremented");
+    }
+
+    #[test]
     fn test_long_term_state_noise() {
         let state = LongTermKeyState::noise_key();
         assert!(!state.needs_rotation());

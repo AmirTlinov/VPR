@@ -220,10 +220,25 @@ impl VpnProcessManager {
         // Найти бинарник
         let binary_path = Self::find_vpn_client_binary().context("finding vpn-client binary")?;
 
-        info!(binary = %binary_path.display(), "Starting VPN client");
+        // Log all config parameters for debugging
+        info!(
+            binary = %binary_path.display(),
+            server = %config.server,
+            port = config.port,
+            server_name = %config.server_name,
+            tun_name = %config.tun_name,
+            noise_dir = %config.noise_dir.display(),
+            noise_name = %config.noise_name,
+            server_pub = %config.server_pub.display(),
+            insecure = config.insecure,
+            "Starting VPN client with config"
+        );
 
         // Построить команду запуска
-        let mut cmd = TokioCommand::new(&binary_path);
+        // VPN client needs root privileges for TUN device creation
+        // Use pkexec for privilege escalation on Linux
+        let mut cmd = TokioCommand::new("pkexec");
+        cmd.arg(&binary_path);
         cmd.arg("--server")
             .arg(format!("{}:{}", config.server, config.port))
             .arg("--server-name")

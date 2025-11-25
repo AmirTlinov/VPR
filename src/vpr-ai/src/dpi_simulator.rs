@@ -75,7 +75,7 @@ impl DpiConfig {
     pub fn paranoid() -> Self {
         Self {
             window_size: 30,
-            block_threshold: 25.0,  // Very low threshold
+            block_threshold: 25.0, // Very low threshold
             warn_threshold: 10.0,
             check_entropy: true,
             check_timing: true,
@@ -142,12 +142,7 @@ impl ParanoidDpi {
     }
 
     /// Analyze a packet and return DPI verdict
-    pub fn analyze_packet(
-        &mut self,
-        size: u16,
-        delay_ms: f64,
-        direction: i8,
-    ) -> DpiVerdict {
+    pub fn analyze_packet(&mut self, size: u16, delay_ms: f64, direction: i8) -> DpiVerdict {
         self.total_packets += 1;
 
         // Update histories
@@ -263,9 +258,12 @@ impl ParanoidDpi {
 
         // Calculate timing variance
         let mean: f64 = self.timing_history.iter().sum::<f64>() / self.timing_history.len() as f64;
-        let variance: f64 = self.timing_history.iter()
+        let variance: f64 = self
+            .timing_history
+            .iter()
             .map(|&t| (t - mean).powi(2))
-            .sum::<f64>() / self.timing_history.len() as f64;
+            .sum::<f64>()
+            / self.timing_history.len() as f64;
         let std_dev = variance.sqrt();
 
         // Very regular timing is suspicious (VPN keepalive)
@@ -282,13 +280,18 @@ impl ParanoidDpi {
 
         // Check for periodic patterns (keepalive)
         if self.timing_history.len() >= 10 {
-            let diffs: Vec<f64> = self.timing_history.iter()
+            let diffs: Vec<f64> = self
+                .timing_history
+                .iter()
                 .zip(self.timing_history.iter().skip(1))
                 .map(|(a, b)| (b - a).abs())
                 .collect();
 
             let mean_diff: f64 = diffs.iter().sum::<f64>() / diffs.len() as f64;
-            let periodic = diffs.iter().filter(|&&d| (d - mean_diff).abs() < 5.0).count();
+            let periodic = diffs
+                .iter()
+                .filter(|&&d| (d - mean_diff).abs() < 5.0)
+                .count();
 
             if periodic > diffs.len() * 7 / 10 {
                 self.suspicion_score += 15.0;
@@ -333,7 +336,8 @@ impl ParanoidDpi {
         }
 
         let total = self.size_history.len() as f64;
-        let entropy: f64 = buckets.iter()
+        let entropy: f64 = buckets
+            .iter()
             .filter(|&&c| c > 0)
             .map(|&c| {
                 let p = c as f64 / total;
@@ -350,7 +354,10 @@ impl ParanoidDpi {
         // Very high entropy with many unique sizes = also suspicious (random padding)
         if entropy > 3.5 {
             self.suspicion_score += 5.0;
-            return Some(format!("high size entropy (random padding?): {:.2}", entropy));
+            return Some(format!(
+                "high size entropy (random padding?): {:.2}",
+                entropy
+            ));
         }
 
         None
@@ -363,9 +370,7 @@ impl ParanoidDpi {
         }
 
         // Count rapid sequences (< 5ms apart)
-        let rapid_count = self.timing_history.iter()
-            .filter(|&&t| t < 5.0)
-            .count();
+        let rapid_count = self.timing_history.iter().filter(|&&t| t < 5.0).count();
 
         let rapid_ratio = rapid_count as f64 / self.timing_history.len() as f64;
 
@@ -380,19 +385,22 @@ impl ParanoidDpi {
     /// Check for MTU-related signatures
     fn check_mtu_signatures(&mut self, size: u16) -> Option<String> {
         // WireGuard-like sizes (148 header + payload)
-        if size > 148 && (size - 148) % 16 == 0 {
+        #[allow(clippy::incompatible_msrv)]
+        if size > 148 && (size - 148).is_multiple_of(16) {
             self.suspicion_score += 4.0;
             return Some("WireGuard-like alignment".into());
         }
 
         // OpenVPN-like sizes
-        if size > 48 && (size - 48) % 16 == 0 {
+        #[allow(clippy::incompatible_msrv)]
+        if size > 48 && (size - 48).is_multiple_of(16) {
             self.suspicion_score += 3.0;
             return Some("OpenVPN-like alignment".into());
         }
 
         // IPsec ESP patterns
-        if size > 20 && (size - 20) % 8 == 0 && size > 100 {
+        #[allow(clippy::incompatible_msrv)]
+        if size > 20 && (size - 20).is_multiple_of(8) && size > 100 {
             self.suspicion_score += 2.0;
         }
 

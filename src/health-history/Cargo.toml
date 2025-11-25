@@ -3,6 +3,14 @@ name = "health-history"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+name = "health_history"
+path = "src/lib.rs"
+
+[[bin]]
+name = "health-history"
+path = "src/main.rs"
+
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }

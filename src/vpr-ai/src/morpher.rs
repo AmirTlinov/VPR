@@ -168,17 +168,15 @@ impl TrafficMorpher for RuleBasedMorpher {
         let padding_size = padding_size.min(max_padding);
 
         // Calculate delay adjustment
-        let delay_ms = self
-            .profile_stats
-            .suggested_delay_ms(features.delay_log_ms);
+        let delay_ms = self.profile_stats.suggested_delay_ms(features.delay_log_ms);
         let delay_ms = delay_ms.min(self.config.max_delay_ms);
         let delay = Duration::from_micros((delay_ms * 1000.0) as u64);
 
         // Decide on cover traffic injection
         self.cover_counter += 1;
-        let inject_cover =
-            self.cover_generator
-                .should_inject(self.cover_counter, self.last_activity_ms);
+        let inject_cover = self
+            .cover_generator
+            .should_inject(self.cover_counter, self.last_activity_ms);
 
         if inject_cover {
             self.cover_counter = 0;
@@ -276,19 +274,17 @@ impl OnnxMorpher {
 #[cfg(feature = "_onnx_core")]
 impl TrafficMorpher for OnnxMorpher {
     fn morph_outgoing(&mut self, packet: &[u8]) -> Result<MorphDecision> {
-        use ndarray::{Array2, Array1};
+        use ndarray::{Array1, Array2};
 
         let _features = self.context.add_packet(packet, Direction::Outbound);
         let context_tensor = self.context.to_tensor();
 
         // Create context input tensor [1, CONTEXT_WINDOW_SIZE, 4]
         let context_flat: Vec<f32> = context_tensor;
-        let context_array = Array2::from_shape_vec(
-            (crate::features::CONTEXT_WINDOW_SIZE, 4),
-            context_flat,
-        )
-        .map_err(|e| AiError::FeatureExtractionFailed(e.to_string()))?;
-        
+        let context_array =
+            Array2::from_shape_vec((crate::features::CONTEXT_WINDOW_SIZE, 4), context_flat)
+                .map_err(|e| AiError::FeatureExtractionFailed(e.to_string()))?;
+
         // Add batch dimension [1, context_size, input_dim]
         let context_3d = context_array.insert_axis(ndarray::Axis(0));
         let context_input = ort::value::Tensor::from_array(context_3d)
@@ -320,7 +316,9 @@ impl TrafficMorpher for OnnxMorpher {
         };
 
         // Extract individual outputs by name
-        let delay_ms = extract_first("delay_ms")?.max(0.0).min(self.config.max_delay_ms);
+        let delay_ms = extract_first("delay_ms")?
+            .max(0.0)
+            .min(self.config.max_delay_ms);
         let padding = extract_first("padding_norm")?.max(0.0) as usize;
         let inject_prob = extract_first("inject_prob")?;
         let confidence = extract_first("confidence")?.clamp(self.config.min_confidence, 1.0);
@@ -576,11 +574,7 @@ mod tests {
             let packet = vec![0u8; 256];
             let decision = morpher.morph_outgoing(&packet).expect("Inference failed");
 
-            assert!(
-                decision.confidence >= 0.0,
-                "Profile {:?} failed",
-                profile
-            );
+            assert!(decision.confidence >= 0.0, "Profile {:?} failed", profile);
         }
     }
 }

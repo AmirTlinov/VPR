@@ -74,7 +74,8 @@ fn shade_char(intensity: f32, is_land: bool, tick: u64) -> char {
 
     if is_land && glyph == ' ' {
         // Occasional glitch effect for water
-        if tick % 17 == 0 {
+        #[allow(clippy::incompatible_msrv)]
+        if tick.is_multiple_of(17) {
             '.'
         } else {
             ' '
@@ -101,7 +102,8 @@ fn shade_color(is_land: bool, intensity: f32, tick: u64) -> Color {
             Color::Rgb(0, 20, 40)
         } else {
             // Glitchy water
-            if tick % 9 == 0 {
+            #[allow(clippy::incompatible_msrv)]
+            if tick.is_multiple_of(9) {
                 Color::Rgb(0, 100, 0)
             } else {
                 Color::Rgb(0, 50, 100)

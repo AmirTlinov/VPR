@@ -9,10 +9,9 @@ use anyhow::{bail, Context, Result};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tracing::{debug, info, warn};
+use std::time::Duration;
+use tracing::info;
 
 /// ACME directory endpoints
 pub mod endpoints {
@@ -56,21 +55,19 @@ impl std::fmt::Debug for AcmeAccountKey {
     }
 }
 
-
-
 impl AcmeAccountKey {
     /// Generate new account key pair
     pub fn generate() -> Result<Self> {
         // Use Ed25519 for account key
         let signing_keypair = vpr_crypto::keys::SigningKeypair::generate();
-        
+
         // Create JWK for public key
         let public_key_jwk = json!({
             "kty": "OKP",
             "crv": "Ed25519",
             "x": base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(signing_keypair.public_bytes())
         });
-        
+
         Ok(Self {
             signing_keypair: Arc::new(signing_keypair),
             public_key_jwk,
@@ -110,7 +107,7 @@ impl AcmeClientConfig {
     pub fn new() -> Result<Self> {
         let account_key = AcmeAccountKey::generate()
             .context("failed to generate ACME account key - system RNG may be unavailable")?;
-        
+
         Ok(Self {
             directory_url: endpoints::LETS_ENCRYPT_STAGING.to_string(),
             account_key,
@@ -119,7 +116,7 @@ impl AcmeClientConfig {
             contact_email: None,
         })
     }
-    
+
     /// Create configuration with a specific account key.
     pub fn with_account_key(account_key: AcmeAccountKey) -> Self {
         Self {
@@ -138,6 +135,7 @@ struct AcmeDirectory {
     new_nonce: String,
     new_account: String,
     new_order: String,
+    #[allow(dead_code)] // Будет использоваться для revocation операций
     revoke_cert: String,
 }
 
@@ -224,7 +222,10 @@ impl AcmeClient {
             .await
             .context("parsing ACME directory")?;
 
-        info!("ACME client initialized with directory: {}", config.directory_url);
+        info!(
+            "ACME client initialized with directory: {}",
+            config.directory_url
+        );
 
         Ok(Self {
             config,
@@ -266,16 +267,14 @@ impl AcmeClient {
         });
 
         // Encode protected header and payload as base64url (RFC 7515)
-        let protected_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
-            serde_json::to_string(&protected)?.as_bytes()
-        );
-        
+        let protected_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(serde_json::to_string(&protected)?.as_bytes());
+
         let payload_b64 = if payload.is_null() {
             String::new() // Empty payload for POST-as-GET
         } else {
-            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
-                serde_json::to_string(payload)?.as_bytes()
-            )
+            base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .encode(serde_json::to_string(payload)?.as_bytes())
         };
 
         // Create signing input: protected.payload (RFC 7515 Section 5.1)
@@ -283,9 +282,10 @@ impl AcmeClient {
 
         // Sign using Ed25519
         let signature_bytes = self.config.account_key.sign(signing_input.as_bytes());
-        
+
         // Encode signature as base64url
-        let signature_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(signature_bytes);
+        let signature_b64 =
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(signature_bytes);
 
         Ok(json!({
             "protected": protected_b64,
@@ -421,7 +421,7 @@ impl AcmeClient {
         // JWK must be in canonical form (sorted keys, no whitespace)
         let jwk_canonical = serde_json::to_string(self.config.account_key.public_key_jwk())
             .context("serializing JWK")?;
-        
+
         use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
         hasher.update(jwk_canonical.as_bytes());
@@ -541,9 +541,15 @@ mod tests {
     fn test_acme_account_key_generation() {
         let key = AcmeAccountKey::generate().expect("failed to generate key");
         assert!(key.public_key_jwk().get("kty").is_some());
-        assert_eq!(key.public_key_jwk().get("kty").unwrap().as_str(), Some("OKP"));
-        assert_eq!(key.public_key_jwk().get("crv").unwrap().as_str(), Some("Ed25519"));
-        
+        assert_eq!(
+            key.public_key_jwk().get("kty").unwrap().as_str(),
+            Some("OKP")
+        );
+        assert_eq!(
+            key.public_key_jwk().get("crv").unwrap().as_str(),
+            Some("Ed25519")
+        );
+
         // Test signing
         let message = b"test message";
         let signature = key.sign(message);

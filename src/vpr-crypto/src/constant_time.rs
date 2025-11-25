@@ -40,8 +40,6 @@ pub fn ct_eq(a: &[u8], b: &[u8]) -> bool {
 /// on `max_len`, not on actual slice lengths or content.
 #[inline]
 pub fn ct_eq_padded(a: &[u8], b: &[u8], max_len: usize) -> bool {
-    use subtle::ConstantTimeEq;
-
     // Length equality check via XOR (constant-time)
     let len_eq = ct_select_u8(a.len() == b.len(), 1, 0);
 
@@ -174,6 +172,13 @@ impl<const N: usize> AsRef<[u8; N]> for SecretBytes<N> {
 impl<const N: usize> Drop for SecretBytes<N> {
     fn drop(&mut self) {
         // Use volatile write to prevent optimization
+        // SAFETY: This unsafe block is necessary for secure memory zeroization:
+        // 1. write_volatile ensures the write is not optimized away by the compiler
+        // 2. We're writing to memory we own (self.0), so there's no memory safety issue
+        // 3. The pointer is derived from a mutable reference (&mut self.0), so it's valid
+        // 4. We're writing zero bytes, which is always safe
+        // This pattern is critical for cryptographic security to prevent secret data
+        // from remaining in memory after the SecretBytes is dropped.
         for byte in &mut self.0 {
             unsafe {
                 std::ptr::write_volatile(byte, 0);

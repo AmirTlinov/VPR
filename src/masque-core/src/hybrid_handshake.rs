@@ -56,6 +56,11 @@ impl HybridServer {
         self.keypair.public_bytes()
     }
 
+    /// Get secret key bytes (for internal use in handshake)
+    pub fn secret_bytes(&self) -> [u8; 32] {
+        self.keypair.secret_bytes()
+    }
+
     /// Perform IK pattern handshake (client knows server's static key)
     pub async fn handshake_ik<S: AsyncRead + AsyncWrite + Unpin>(
         &self,
@@ -355,10 +360,14 @@ mod tests {
             tokio::spawn(async move { server.handshake_ik(&mut server_stream).await });
 
         let client_result = client.handshake_ik(&mut client_stream).await;
-        let server_result = server_handle.await.unwrap();
+        let server_result = server_handle
+            .await
+            .expect("server handshake task should complete successfully");
 
-        let (_client_transport, client_hybrid) = client_result.unwrap();
-        let (_server_transport, server_hybrid) = server_result.unwrap();
+        let (_client_transport, client_hybrid) =
+            client_result.expect("client handshake should succeed");
+        let (_server_transport, server_hybrid) =
+            server_result.expect("server handshake should succeed");
 
         // Hybrid secrets should match
         assert_eq!(client_hybrid.combined, server_hybrid.combined);
@@ -375,23 +384,41 @@ mod tests {
         let (mut client_stream, mut server_stream) = duplex(8192);
 
         let server_handle = tokio::spawn(async move {
-            let (transport, _) = server.handshake_ik(&mut server_stream).await.unwrap();
+            let (transport, _) = server
+                .handshake_ik(&mut server_stream)
+                .await
+                .expect("server handshake should succeed");
             let mut enc = EncryptedStream::new(server_stream, transport);
-            let msg = enc.read_frame().await.unwrap();
-            enc.write_frame(&msg).await.unwrap();
+            let msg = enc
+                .read_frame()
+                .await
+                .expect("server should read frame successfully");
+            enc.write_frame(&msg)
+                .await
+                .expect("server should write frame successfully");
             msg
         });
 
-        let (transport, _) = client.handshake_ik(&mut client_stream).await.unwrap();
+        let (transport, _) = client
+            .handshake_ik(&mut client_stream)
+            .await
+            .expect("client handshake should succeed");
         let mut enc = EncryptedStream::new(client_stream, transport);
 
         let test_msg = b"hello hybrid PQ world!";
-        enc.write_frame(test_msg).await.unwrap();
-        let echo = enc.read_frame().await.unwrap();
+        enc.write_frame(test_msg)
+            .await
+            .expect("client should write frame successfully");
+        let echo = enc
+            .read_frame()
+            .await
+            .expect("client should read frame successfully");
 
         assert_eq!(echo, test_msg);
 
-        let server_msg = server_handle.await.unwrap();
+        let server_msg = server_handle
+            .await
+            .expect("server task should complete successfully");
         assert_eq!(server_msg, test_msg);
     }
 
@@ -414,7 +441,9 @@ mod tests {
         assert!(replay_cache.check_and_record(fake_msg).is_err());
 
         // Verify metrics
-        let metrics = server.replay_metrics().unwrap();
+        let metrics = server
+            .replay_metrics()
+            .expect("replay metrics should be available when replay protection is enabled");
         assert_eq!(metrics.messages_processed, 1);
         assert_eq!(metrics.replays_blocked, 1);
     }

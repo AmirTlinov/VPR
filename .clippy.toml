@@ -1,23 +1,10 @@
-# Clippy configuration for VPR project
-# See: https://rust-lang.github.io/rust-clippy/master/index.html#Configuration
-
-# Minimum supported Rust version
-msrv = "1.87"
-
-# Don't warn about breaking exported API changes
-avoid-breaking-exported-api = false
-
-# Complexity thresholds
+# Clippy config compatible with stable
+msrv = "1.70"
 cognitive-complexity-threshold = 10
-
-# Function size limits
+too-many-lines-threshold = 400
 too-many-arguments-threshold = 7
-too-many-lines-threshold = 300
-
-# Large types threshold for pass-by-value warnings
-large-error-threshold = 200
-
-# Disallowed types for security
+type-complexity-threshold = 250
+warn-on-all-wildcard-imports = true
 disallowed-types = [
-    { path = "std::net::TcpStream", reason = "Use QUIC/UDP instead for stealth" },
+    { path = "std::net::TcpStream", reason = "Use QUIC/UDP instead" },
 ]

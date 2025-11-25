@@ -100,7 +100,15 @@ async fn run(args: Args) -> Result<()> {
     if resp.status() != http::StatusCode::OK {
         return Err(anyhow!("status {}", resp.status()));
     }
-    info!(status = %resp.status(), "connect-udp accepted");
+    let flow_id = resp
+        .headers()
+        .get("datagram-flow-id")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("missing");
+    info!(status = %resp.status(), flow_id = flow_id, "connect-udp accepted");
+
+    // record for e2e checks
+    println!("datagram-flow-id={flow_id}");
 
     // Prepare payload
     let payload = vec![0xAB; args.payload];

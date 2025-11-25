@@ -330,7 +330,7 @@ async fn forward_datagrams(
         let _buf = vec![0u8; 65536];
         use tokio::time::{timeout, Duration};
         const UDP_FORWARDING_TIMEOUT: Duration = Duration::from_secs(300); // 5 minutes
-        
+
         loop {
             match timeout(UDP_FORWARDING_TIMEOUT, conn_clone.read_datagram()).await {
                 Ok(Ok(datagram)) => {
@@ -394,7 +394,10 @@ async fn forward_datagrams(
                     break;
                 }
                 Err(_) => {
-                    warn!("UDP forwarding timeout after {} seconds, closing connection", UDP_FORWARDING_TIMEOUT.as_secs());
+                    warn!(
+                        "UDP forwarding timeout after {} seconds, closing connection",
+                        UDP_FORWARDING_TIMEOUT.as_secs()
+                    );
                     break;
                 }
             }

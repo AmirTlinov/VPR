@@ -444,7 +444,11 @@ async fn run_client_tests(config: &E2eConfig) -> Result<E2eReport> {
             anyhow::bail!(
                 "VPN client exited with status: {:?}\nClient stderr:\n{}",
                 status,
-                if stderr.is_empty() { "(no output)" } else { &stderr }
+                if stderr.is_empty() {
+                    "(no output)"
+                } else {
+                    &stderr
+                }
             );
         }
 

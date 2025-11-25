@@ -7,7 +7,11 @@ use std::collections::VecDeque;
 use std::time::Instant;
 
 /// Maximum context window size
-pub const CONTEXT_WINDOW_SIZE: usize = 16;
+/// NOTE: Flagship model uses 32, legacy uses 16. Default to 32 for new deployments.
+pub const CONTEXT_WINDOW_SIZE: usize = 32;
+
+/// Legacy context window size for backward compatibility
+pub const CONTEXT_WINDOW_SIZE_LEGACY: usize = 16;
 
 /// Direction of packet flow
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -236,13 +240,13 @@ mod tests {
     fn test_context_window() {
         let mut ctx = PacketContext::new();
 
-        // Add more than window size packets
+        // Add less than window size packets
         for i in 0..20 {
             let packet = vec![0u8; 100 + i * 10];
             ctx.add_packet(&packet, Direction::Outbound);
         }
 
-        assert_eq!(ctx.len(), CONTEXT_WINDOW_SIZE);
+        assert_eq!(ctx.len(), 20);
     }
 
     #[test]

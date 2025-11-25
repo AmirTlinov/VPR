@@ -6,11 +6,17 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0"
 clap = { version = "4.5", features = ["derive"] }
-tokio = { version = "1.39", features = ["rt-multi-thread", "macros", "io-util", "io-std", "net", "sync", "signal"] }
+tokio = { version = "1.39", features = ["rt-multi-thread", "macros", "io-util", "io-std", "net", "sync", "signal", "fs"] }
 tokio-rustls = "0.26"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 rustls-pemfile = "2.1"
 rcgen = "0.13"
+x509-parser = "0.18"
+pem = "3.0"
+chrono = "0.4"
+trust-dns-resolver = { version = "0.23", features = ["tokio-runtime"] }
+hmac = "0.12"
+hex = "0.4"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 serde = { version = "1.0", features = ["derive"] }
@@ -24,14 +30,19 @@ tokio-tun = "0.12"
 nix = { version = "0.29", features = ["net", "ioctl"] }
 snow = "0.9"
 x25519-dalek = "2.0"
-hex = "0.4"
 webpki-roots = "0.26"
 serde_json = "1.0"
 rand = "0.8"
+rand_chacha = "0.3"
 sha2 = "0.10"
 md5 = "0.7"
 libc = "0.2"
 async-trait = "0.1"
+reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
+dirs = "5.0"
+ipnetwork = "0.20"
+base64 = "0.22"
+axum = { version = "0.7", features = ["macros"] }
 
 # VPR crypto with hybrid PQ Noise
 vpr-crypto = { path = "../vpr-crypto" }
@@ -48,8 +59,14 @@ path = "src/bin/vpn_server.rs"
 name = "masque-h3-client"
 path = "src/bin/masque_h3_client.rs"
 
+[[bin]]
+name = "manifest-publisher"
+path = "src/bin/manifest_publisher.rs"
+
 [dev-dependencies]
 assert_cmd = "2"
 predicates = "3"
 tempfile = "3"
 tokio = { version = "1.39", features = ["rt-multi-thread", "macros", "io-util", "net", "sync", "time"] }
+anyhow = "1.0"
+proptest = "1.5"

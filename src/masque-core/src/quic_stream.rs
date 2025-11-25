@@ -68,6 +68,7 @@ impl AsyncWrite for QuicBiStream {
     ) -> Poll<io::Result<usize>> {
         match Pin::new(&mut self.send).poll_write(cx, buf) {
             Poll::Ready(Ok(n)) => Poll::Ready(Ok(n)),
+            #[allow(clippy::incompatible_msrv)]
             Poll::Ready(Err(e)) => Poll::Ready(Err(io::Error::other(e))),
             Poll::Pending => Poll::Pending,
         }
@@ -76,6 +77,7 @@ impl AsyncWrite for QuicBiStream {
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         match Pin::new(&mut self.send).poll_flush(cx) {
             Poll::Ready(Ok(())) => Poll::Ready(Ok(())),
+            #[allow(clippy::incompatible_msrv)]
             Poll::Ready(Err(e)) => Poll::Ready(Err(io::Error::other(e))),
             Poll::Pending => Poll::Pending,
         }
@@ -84,6 +86,7 @@ impl AsyncWrite for QuicBiStream {
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         match Pin::new(&mut self.send).poll_shutdown(cx) {
             Poll::Ready(Ok(())) => Poll::Ready(Ok(())),
+            #[allow(clippy::incompatible_msrv)]
             Poll::Ready(Err(e)) => Poll::Ready(Err(io::Error::other(e))),
             Poll::Pending => Poll::Pending,
         }

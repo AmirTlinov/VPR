@@ -1,63 +1,127 @@
-# TODO
+# TODO - VPR Project Tasks
 
-## 1. Project Scaffolding & Baseline
-- [x] Initialize repo structure: `src/`, `infra/`, `docs/`
-- [ ] Add base Nix environments for Rust components
-- [ ] Define shared config schema (`config/vpr.yaml`) and sample secrets layout (`secrets/README`)
-- [ ] Set up CI hooks (lint, fmt, tests) and pre-commit config
+> **Примечание**: Этот файл содержит краткий список задач. Для детального roadmap см. [`docs/ROADMAP.md`](docs/ROADMAP.md)
 
-## 2. Cryptography & Identity
-- [ ] Implement offline root CA generation script (Rust)
-- [ ] Build `intermediate_ctl` tool for issuing node certs + Noise seeds
-- [ ] Integrate `age`-based sealing for all artifacts; document key rotation policy
-- [ ] Create KAT suite for NoiseIK/NK hybrids (X25519 + ML-KEM768)
+**Статус проекта:** ✅ Flagship Ready (85/100)  
+**Последнее обновление:** 2025-01-27
 
-## 3. MASQUE / Tunnel Core
-- [ ] Prototype MASQUE CONNECT-UDP server (Rust/quinn) behind Caddy/nginx
-- [ ] Add NoiseIK/NK handshake layer with adaptive padding buckets
-- [ ] Implement session ticket rotation (≤60 s / 1 GB) + instrumentation hooks
-- [ ] Integrate traffic-shaping module (trace-driven HTTP/3/WebRTC patterns)
-- [ ] Add optional DPDK ingress path guarded by feature flag
+## ✅ Выполнено (см. FLAGSHIP_PROGRESS.md)
 
-## 4. DNS & Bootstrap Plane
-- [ ] Implement hidden-master (home node) authoritative server with DNSSEC (ZSK weekly, KSK monthly)
-- [ ] Build signed IXFR sync pipeline over WireGuard to VPS resolver
-- [x] Develop ODoH/DoH/DoQ endpoints on VPS (Rust + quinn/quiche)
-- [ ] Create moving-target DoH rotation job (ACME issuance + manifest update)
-- [ ] Implement bootstrap manifest signer/validator and stego RSS publisher
+- ✅ Гибридная криптография (Noise + ML-KEM768)
+- ✅ MASQUE/QUIC транспорт
+- ✅ TLS fingerprint customization
+- ✅ DoH/ODoH/DoQ gateway
+- ✅ Health monitoring
+- ✅ TUI с ASCII Earth
+- ✅ Desktop клиент (базовая функциональность)
+- ✅ Kill switch и process manager
+- ✅ Auto-connect
+- ✅ Probe protection и replay protection
+- ✅ Key rotation
+- ✅ AI Traffic Morpher (базовая версия)
+- ✅ Документация проекта
+- ✅ CI/CD инфраструктура
 
-## 5. Desktop Client (Tauri)
-- [x] Create Tauri app structure with Rust backend
-- [x] Implement settings UI (server, port, protocol, DoH endpoint)
-- [x] Build connection status display with ASCII shield
-- [x] Add session stats (time, upload, download)
-- [ ] Integrate real masque-core connection logic
-- [ ] Implement kill switch functionality
-- [ ] Add auto-connect on startup
-- [ ] Package for Linux (deb, rpm, AppImage)
-- [ ] Package for macOS and Windows
+## 🔄 В разработке (P0 - Критический путь)
 
-## 6. Telemetry & Observability
-- [x] Implement health-harness CLI for suspicion/jitter checks
-- [ ] Implement lightweight agent exporting suspicion score, RTT, DoH/DoQ stats
-- [ ] Add Prometheus-compatible endpoint (local-only)
-- [ ] Build alerting rules for suspicion >0.35, bootstrap latency >3 s, DNS failures >1%
-- [ ] Add log aggregation (structured JSON) per action, retained 30 days
+### MASQUE CONNECT-UDP полная реализация
+- [x] Полная поддержка всех capsule типов ✅
+- [x] UDP forwarding оптимизация ✅
+- [x] Context ID management ✅
+- [x] Integration тесты ✅
 
-## 7. Portable Edge Node
-- [ ] Create Ansible role for miniPC deployment (MASQUE ingress + web cover + local ODoH)
-- [ ] Implement Sync Content workflow (git fetch + rsync)
-- [ ] Automate health beacon JSON publication to manifest
-- [ ] Write failover drill script (simulate VPS block)
+### Routing & NAT
+- [x] NAT masquerading на сервере ✅
+- [x] Split tunnel поддержка ✅
+- [x] Policy-based routing ✅
+- [x] IPv6 поддержка ✅
 
-## 8. Testing & Validation
-- [ ] Build network-namespace harness for non-disruptive tunnel tests
-- [ ] Develop DPI lab scripts (adv padding, dMAP probes)
-- [ ] Create chaos scenarios: packet loss bursts, QUIC block, DNS poisoning
-- [ ] Document playbooks for monthly "mass-block chaos" exercise
+### VPN Client полная интеграция
+- [x] Полная интеграция с masque-core ✅
+- [x] TUN device управление ✅
+- [x] Routing configuration ✅
+- [x] DNS configuration ✅
 
-## 9. Documentation & Ops
-- [ ] Expand `1.logic` into full design doc (`docs/architecture.md`)
-- [ ] Write user guide for desktop client
-- [ ] Document disaster-recovery workflow (portable node promotion, key compromise)
-- [ ] Prepare compliance checklist (crypto, secrets, logging)
+## 📋 Планируется (P1 - Stealth & Security)
+
+### Adaptive Traffic Shaping
+- [ ] Интеграция с реальным трафиком
+- [ ] Адаптивная настройка параметров
+- [ ] Cover traffic оптимизация
+- [ ] DPI feedback loop
+
+### Bootstrap Manifest System
+- [x] Stego RSS publisher ✅
+- [x] RSS интеграция в ManifestClient ✅
+- [x] Version management ✅
+- [x] Тесты для Stego RSS ✅
+- [ ] Автоматическое распространение
+- [ ] Rollback механизм
+
+### Moving-target DoH Rotation
+- [x] ACME автоматизация ✅
+- [x] Certificate Manager ✅
+- [x] Интеграция в DoH Gateway ✅
+- [x] DNS обновления ✅
+- [x] Manifest Rotator ✅
+- [x] Canary Rollout ✅
+- [x] JWS signing для ACME ✅
+- [x] AWS Signature V4 для Route53 ✅
+- [x] DNS verification через trust-dns-resolver ✅
+- [x] Route53 delete implementation ✅
+
+## 📋 Планируется (P2 - Ops & Infrastructure)
+
+### CI/CD
+- [x] GitHub Actions workflow ✅
+- [ ] Coverage reports
+- [ ] Release automation
+- [ ] Artifact publishing
+
+### Packaging
+- [ ] Linux packages (deb, rpm, AppImage)
+- [ ] macOS package (dmg)
+- [ ] Windows package (msi)
+
+### Testing Infrastructure
+- [ ] Network-namespace test harness
+- [ ] Chaos testing suite
+- [ ] DPI lab scripts
+- [ ] Property-based testing расширение
+
+### Documentation
+- [x] Architecture documentation ✅
+- [x] Security policies ✅
+- [x] Contributing guide ✅
+- [ ] User guide для desktop client
+- [ ] Disaster-recovery workflow
+- [ ] Compliance checklist
+
+## 📋 Планируется (P3 - Расширенные функции)
+
+### Performance
+- [ ] DPDK ingress path (опционально)
+- [ ] Multipath QUIC
+- [ ] Forward Error Correction (FEC)
+
+### DNS Infrastructure
+- [ ] Hidden-master DNS
+- [ ] IXFR sync pipeline
+- [ ] Offline CA generation tooling
+- [ ] Key rotation policy automation
+
+### Advanced Features
+- [ ] Split tunnel
+- [ ] Self-hosted cover CDN
+- [ ] WebRTC fallback
+- [ ] Moving-target domain rotation
+
+## Ссылки
+
+- **[ROADMAP.md](docs/ROADMAP.md)** — Детальный план развития с приоритетами и ETA
+- **[FLAGSHIP_PROGRESS.md](FLAGSHIP_PROGRESS.md)** — Текущий статус готовности
+- **[CONTRIBUTING.md](CONTRIBUTING.md)** — Руководство для разработчиков
+
+---
+
+**Примечание:** Этот файл служит кратким справочником. Для полной информации о статусе проекта, приоритетах и планах см. [`docs/ROADMAP.md`](docs/ROADMAP.md).

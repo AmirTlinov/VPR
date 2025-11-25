@@ -4,17 +4,17 @@
 //! renewal, and rotation. Integrates with ACME client for automatic
 //! certificate management.
 
-use crate::acme_client::{AcmeClient, AcmeClientConfig, ChallengeType};
+use crate::acme_client::{AcmeClient, AcmeClientConfig};
 use crate::dns_updater::{DnsUpdater, DnsUpdaterConfig, DnsUpdaterFactory};
 use anyhow::{Context, Result};
-use rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair, PKCS_ECDSA_P256_SHA256};
+use rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls_pemfile::{certs, private_key};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime};
 use tokio::fs;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 use x509_parser::prelude::*;
 
 /// Certificate metadata
@@ -99,8 +99,11 @@ impl CertificateManager {
 
         // Initialize ACME client if configured
         let acme_client = if !config.acme_config.directory_url.is_empty() {
-            Some(AcmeClient::new(config.acme_config.clone()).await
-                .context("initializing ACME client")?)
+            Some(
+                AcmeClient::new(config.acme_config.clone())
+                    .await
+                    .context("initializing ACME client")?,
+            )
         } else {
             None
         };
@@ -164,10 +167,10 @@ impl CertificateManager {
     fn parse_cert_expiration(&self, cert: &CertificateDer<'_>) -> Result<SystemTime> {
         let (_, x509_cert) = X509Certificate::from_der(cert.as_ref())
             .map_err(|e| anyhow::anyhow!("failed to parse certificate: {}", e))?;
-        
+
         let validity = x509_cert.validity();
         let not_after = validity.not_after.timestamp();
-        
+
         SystemTime::UNIX_EPOCH
             .checked_add(Duration::from_secs(not_after as u64))
             .ok_or_else(|| anyhow::anyhow!("certificate expiration time out of range"))
@@ -178,7 +181,9 @@ impl CertificateManager {
         // Generate CSR first (before mutable borrow of acme_client)
         let csr = self.generate_csr(domain).await?;
 
-        let acme_client = self.acme_client.as_mut()
+        let acme_client = self
+            .acme_client
+            .as_mut()
             .ok_or_else(|| anyhow::anyhow!("ACME client not configured"))?;
 
         info!("Obtaining certificate for domain: {}", domain);
@@ -195,7 +200,8 @@ impl CertificateManager {
             let auth = acme_client.get_authorization(auth_url).await?;
 
             // Find DNS-01 challenge
-            let dns_challenge = auth.challenges
+            let dns_challenge = auth
+                .challenges
                 .iter()
                 .find(|c| c.type_ == "dns-01")
                 .ok_or_else(|| anyhow::anyhow!("no DNS-01 challenge found"))?;
@@ -209,13 +215,24 @@ impl CertificateManager {
 
             // Update DNS record via DNS updater if configured
             if let Some(ref updater) = self.dns_updater {
-                match updater.set_txt_record(&record_name, &record_value, 60).await {
+                match updater
+                    .set_txt_record(&record_name, &record_value, 60)
+                    .await
+                {
                     Ok(_) => {
-                        info!("DNS record set via DNS Updater: {} TXT {}", record_name, record_value);
+                        info!(
+                            "DNS record set via DNS Updater: {} TXT {}",
+                            record_name, record_value
+                        );
                         // Wait for DNS propagation
-                        tokio::time::sleep(self.config.dns_updater_config.as_ref()
-                            .map(|c| c.propagation_delay)
-                            .unwrap_or(Duration::from_secs(10))).await;
+                        tokio::time::sleep(
+                            self.config
+                                .dns_updater_config
+                                .as_ref()
+                                .map(|c| c.propagation_delay)
+                                .unwrap_or(Duration::from_secs(10)),
+                        )
+                        .await;
                     }
                     Err(e) => {
                         warn!("Failed to set DNS record via DNS Updater: {} - DNS record must be set manually: {} TXT {}", e, record_name, record_value);
@@ -223,7 +240,10 @@ impl CertificateManager {
                 }
             } else {
                 // DNS record must be set manually
-                warn!("DNS updater not configured - DNS record must be set manually: {} TXT {}", record_name, record_value);
+                warn!(
+                    "DNS updater not configured - DNS record must be set manually: {} TXT {}",
+                    record_name, record_value
+                );
                 // Wait for manual DNS propagation
                 tokio::time::sleep(Duration::from_secs(10)).await;
             }
@@ -278,7 +298,10 @@ impl CertificateManager {
     }
 
     /// Load certificate and key for rustls
-    pub async fn load_certificate(&self, domain: &str) -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)> {
+    pub async fn load_certificate(
+        &self,
+        domain: &str,
+    ) -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)> {
         let cert_path = self.cert_path(domain);
         let key_path = self.key_path(domain);
 
@@ -292,7 +315,6 @@ impl CertificateManager {
             .collect::<Result<Vec<_>, _>>()
             .context("parsing certificate")?
             .into_iter()
-            .map(|c| c.into())
             .collect();
 
         if certs.is_empty() {
@@ -324,26 +346,26 @@ impl CertificateManager {
         let key_path = self.key_path(domain);
         let key_pair = if key_path.exists() {
             // Load existing key pair from file
-            let key_pem = fs::read_to_string(&key_path).await
+            let key_pem = fs::read_to_string(&key_path)
+                .await
                 .context("reading existing key file")?;
-            KeyPair::from_pem(&key_pem)
-                .context("parsing existing key pair")?
+            KeyPair::from_pem(&key_pem).context("parsing existing key pair")?
         } else {
             // Generate new key pair
-            let key_pair = KeyPair::generate()
-                .context("generating key pair")?;
-            
+            let key_pair = KeyPair::generate().context("generating key pair")?;
+
             // Store key pair for later use (renewal)
             let key_der = key_pair.serialize_der();
             self.key_pairs.insert(domain.to_string(), key_der);
-            
+
             // Save private key to file
             let parent_dir = key_path.parent().unwrap_or_else(|| Path::new("."));
             fs::create_dir_all(parent_dir).await?;
             let key_pem = key_pair.serialize_pem();
-            fs::write(&key_path, key_pem).await
+            fs::write(&key_path, key_pem)
+                .await
                 .context("saving private key")?;
-            
+
             key_pair
         };
 
@@ -351,48 +373,52 @@ impl CertificateManager {
         // rcgen 0.13 supports creating CSR from CertificateParams
         // We'll create a temporary certificate to extract the CSR structure
         // then manually construct CSR DER with our key pair
-        
+
         // Create certificate parameters for CSR structure
         let mut params = CertificateParams::new(vec![domain.to_string()])
             .context("creating certificate params")?;
-        
+
         // Set distinguished name
         let mut distinguished_name = DistinguishedName::new();
         distinguished_name.push(DnType::CommonName, domain);
         distinguished_name.push(DnType::OrganizationName, "VPR");
         params.distinguished_name = distinguished_name;
-        
+
         // Generate CSR using rcgen's internal CSR generation
         // rcgen doesn't expose CSR generation directly, but we can use
         // Certificate::from_params and extract the TBS (To Be Signed) part
         // However, the proper way is to use rcgen's CSR support if available
-        
+
         // Since rcgen 0.13 doesn't directly support CSR with existing keys,
         // we'll use a workaround: create a certificate and use its structure
         // But we need to sign it with our key pair
-        
+
         // Actually, let's use rcgen's ability to create CSR by creating
         // a certificate request structure manually using ASN.1
-        
+
         // For now, use rcgen to generate CSR structure, then we'll replace
         // the signature with one from our key pair
         let csr_der = self.create_csr_with_key(&key_pair, domain, &params)?;
-        
-        info!("Generated CSR DER for domain: {} ({} bytes)", domain, csr_der.len());
+
+        info!(
+            "Generated CSR DER for domain: {} ({} bytes)",
+            domain,
+            csr_der.len()
+        );
         Ok(csr_der)
     }
 
     /// Create CSR DER using rcgen with existing key pair
-    /// 
+    ///
     /// **Implementation Note**: rcgen 0.13 doesn't directly support CSR generation
     /// with existing keys. We use rcgen::generate_simple_self_signed to create
     /// a certificate structure with correct subject (CN=domain, O=VPR) and use
     /// its DER as CSR. ACME accepts certificate DER as CSR in practice.
-    /// 
+    ///
     /// The actual key_pair is saved separately and will be used with the final
     /// certificate issued by ACME. While the CSR key doesn't match our saved
     /// key_pair, ACME doesn't strictly require CSR key == certificate key.
-    /// 
+    ///
     /// For full CSR generation with existing keys, we would need to implement
     /// ASN.1 CSR generation manually (RFC 2986) or upgrade to rcgen version
     /// that supports this feature.
@@ -406,10 +432,10 @@ impl CertificateManager {
         // This generates a new key, but provides correct certificate structure
         let cert = rcgen::generate_simple_self_signed(vec![domain.to_string()])
             .context("generating certificate structure for CSR")?;
-        
+
         // Extract certificate DER - ACME accepts this as CSR
         let cert_der = cert.cert.der().to_vec();
-        
+
         Ok(cert_der)
     }
 
@@ -455,12 +481,16 @@ impl CertificateManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rcgen::generate_simple_self_signed;
     use tempfile::TempDir;
 
     #[tokio::test]
     async fn test_certificate_manager_config_new() {
         let config = CertificateManagerConfig::new().expect("should create config");
-        assert_eq!(config.renewal_threshold, Duration::from_secs(30 * 24 * 60 * 60));
+        assert_eq!(
+            config.renewal_threshold,
+            Duration::from_secs(30 * 24 * 60 * 60)
+        );
     }
 
     #[tokio::test]
@@ -486,5 +516,32 @@ mod tests {
 
         let manager = CertificateManager::new(config).await;
         assert!(manager.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_parse_cert_expiration_self_signed() {
+        let tmp = TempDir::new().unwrap();
+        let mut acme_cfg = CertificateManagerConfig::new().unwrap().acme_config;
+        acme_cfg.directory_url = String::new();
+
+        let cfg = CertificateManagerConfig {
+            cert_dir: tmp.path().join("certs"),
+            acme_config: acme_cfg,
+            renewal_threshold: Duration::from_secs(30 * 24 * 3600),
+            dns_updater_config: None,
+        };
+
+        let manager = CertificateManager::new(cfg).await.unwrap();
+
+        let cert = generate_simple_self_signed(["localhost".into()]).unwrap();
+        let pem = cert.cert.pem();
+        let mut cursor = pem.as_bytes();
+        let mut ders = rustls_pemfile::certs(&mut cursor)
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        let cert_der = ders.remove(0);
+
+        let expires_at = manager.parse_cert_expiration(&cert_der).unwrap();
+        assert!(expires_at > SystemTime::now());
     }
 }

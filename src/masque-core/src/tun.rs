@@ -1557,12 +1557,12 @@ mod tests {
         ];
 
         let info = IpPacketInfo::parse(&packet).unwrap();
-        assert_eq!(info.version, 4);
+        assert_eq!(info.version, IpVersion::V4);
         assert_eq!(info.header_len, 20);
         assert_eq!(info.total_len, 40);
         assert_eq!(info.protocol, 6); // TCP
-        assert_eq!(info.src_addr, Ipv4Addr::new(10, 0, 0, 1));
-        assert_eq!(info.dst_addr, Ipv4Addr::new(8, 8, 8, 8));
+        assert_eq!(info.src_addr.as_ipv4(), Some(Ipv4Addr::new(10, 0, 0, 1)));
+        assert_eq!(info.dst_addr.as_ipv4(), Some(Ipv4Addr::new(8, 8, 8, 8)));
         assert_eq!(info.protocol_name(), "TCP");
     }
 

@@ -300,7 +300,10 @@ mod tests {
             let packet = gen.generate();
 
             // Packet should not be all zeros
-            assert!(!packet.iter().all(|&b| b == 0), "Cover packet should not be all zeros");
+            assert!(
+                !packet.iter().all(|&b| b == 0),
+                "Cover packet should not be all zeros"
+            );
 
             // Should have reasonable size
             assert!(packet.len() >= 32 && packet.len() <= 1500);

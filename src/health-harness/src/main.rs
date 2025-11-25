@@ -1,5 +1,4 @@
 use anyhow::{anyhow, bail, Context, Result};
-use bytes::Bytes;
 use clap::Parser;
 use odoh_rs::{
     compose, decrypt_response, encrypt_query, parse, ObliviousDoHConfigs, ObliviousDoHMessage,
@@ -15,7 +14,6 @@ use rustls::{
 };
 use rustls_native_certs::load_native_certs;
 use serde::Serialize;
-use serde_json;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -295,7 +293,7 @@ async fn check_odoh(
         .with_context(|| format!("fetching {config_url}"))?
         .bytes()
         .await?;
-    let mut cfg_buf = Bytes::from(configs_bytes);
+    let mut cfg_buf = configs_bytes;
     let configs: ObliviousDoHConfigs = parse(&mut cfg_buf).context("parsing ODoH configs")?;
     let config = configs
         .supported()

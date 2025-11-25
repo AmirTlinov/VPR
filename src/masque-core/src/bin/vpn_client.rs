@@ -19,7 +19,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, oneshot};
 use tracing::{error, info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
 
@@ -201,6 +201,10 @@ struct Args {
     /// Repair network configuration after crash (restore DNS, routes, cleanup TUN)
     #[arg(long)]
     repair: bool,
+
+    /// Skip automatic network repair on startup (enabled by default)
+    #[arg(long)]
+    no_auto_repair: bool,
 }
 
 #[tokio::main]
@@ -236,7 +240,27 @@ async fn main() -> Result<()> {
         }
     }
 
-    run_vpn_client(args).await
+    // Auto-repair: silently restore network from previous crash before starting
+    // This ensures clean slate even if user doesn't know about --repair
+    if !args.no_auto_repair {
+        match NetworkStateGuard::restore_from_crash() {
+            Ok(true) => {
+                info!("Auto-repaired network configuration from previous crash");
+            }
+            Ok(false) => {
+                // No orphaned state - nothing to do
+            }
+            Err(e) => {
+                warn!(%e, "Auto-repair failed - continuing anyway");
+            }
+        }
+    }
+
+    // Setup graceful shutdown handler for SIGTERM/SIGINT
+    // This ensures cleanup runs even when killed with Ctrl+C or systemctl stop
+    let shutdown_signal = setup_shutdown_signal();
+
+    run_vpn_client(args, shutdown_signal).await
 }
 
 fn parse_grease_mode(mode: &str, seed: u64) -> GreaseMode {
@@ -255,7 +279,41 @@ fn preferred_tls13_cipher(profile: &TlsProfile) -> u16 {
         .unwrap_or(0x1301)
 }
 
-async fn run_vpn_client(args: Args) -> Result<()> {
+/// Setup shutdown signal handler for graceful termination
+/// Returns a receiver that completes when SIGTERM or SIGINT is received
+fn setup_shutdown_signal() -> oneshot::Receiver<()> {
+    let (tx, rx) = oneshot::channel();
+    
+    tokio::spawn(async move {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{signal, SignalKind};
+            let mut sigterm = signal(SignalKind::terminate()).expect("SIGTERM handler");
+            let mut sigint = signal(SignalKind::interrupt()).expect("SIGINT handler");
+            
+            tokio::select! {
+                _ = sigterm.recv() => {
+                    info!("Received SIGTERM - initiating graceful shutdown");
+                }
+                _ = sigint.recv() => {
+                    info!("Received SIGINT (Ctrl+C) - initiating graceful shutdown");
+                }
+            }
+        }
+        
+        #[cfg(not(unix))]
+        {
+            tokio::signal::ctrl_c().await.expect("Ctrl+C handler");
+            info!("Received Ctrl+C - initiating graceful shutdown");
+        }
+        
+        let _ = tx.send(());
+    });
+    
+    rx
+}
+
+async fn run_vpn_client(args: Args, shutdown_signal: oneshot::Receiver<()>) -> Result<()> {
     // SECURITY WARNING: --insecure flag disables TLS certificate verification
     // This should NEVER be used in production as it makes the connection vulnerable to MITM attacks
     if args.insecure {
@@ -737,8 +795,17 @@ async fn run_vpn_client(args: Args) -> Result<()> {
     let routing_configured = args.set_default_route;
     let use_split_tunnel = policy == RoutingPolicy::Split;
 
-    // Start VPN tunnel (dns_protection will auto-restore on drop)
-    let result = run_vpn_tunnel(tun, connection, padder, cover_config, session_state.clone()).await;
+    // Start VPN tunnel with shutdown signal support
+    // If signal is received, tunnel exits gracefully allowing cleanup to run
+    let result = tokio::select! {
+        result = run_vpn_tunnel(tun, connection, padder, cover_config, session_state.clone()) => {
+            result
+        }
+        _ = shutdown_signal => {
+            info!("Shutdown signal received - stopping VPN tunnel");
+            Ok(())
+        }
+    };
 
     // Восстановить маршрутизацию при выходе
     if use_split_tunnel {

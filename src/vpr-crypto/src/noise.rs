@@ -202,9 +202,13 @@ impl NoiseInitiator {
     /// Create IK pattern initiator (knows server's static key)
     pub fn new_ik(local_static: &[u8; 32], remote_static: &[u8; 32]) -> Result<Self> {
         let keypair = HybridKeypair::generate();
-        let builder = Builder::new(PATTERN_IK.parse().unwrap())
-            .local_private_key(local_static)
-            .remote_public_key(remote_static);
+        let builder = Builder::new(
+            PATTERN_IK
+                .parse()
+                .map_err(|_| CryptoError::Noise("invalid IK pattern".into()))?,
+        )
+        .local_private_key(local_static)
+        .remote_public_key(remote_static);
         let state = builder.build_initiator()?;
         Ok(Self {
             state,
@@ -215,7 +219,12 @@ impl NoiseInitiator {
     /// Create NK pattern initiator (anonymous to server)
     pub fn new_nk(remote_static: &[u8; 32]) -> Result<Self> {
         let keypair = HybridKeypair::generate();
-        let builder = Builder::new(PATTERN_NK.parse().unwrap()).remote_public_key(remote_static);
+        let builder = Builder::new(
+            PATTERN_NK
+                .parse()
+                .map_err(|_| CryptoError::Noise("invalid NK pattern".into()))?,
+        )
+        .remote_public_key(remote_static);
         let state = builder.build_initiator()?;
         Ok(Self {
             state,
@@ -295,7 +304,12 @@ impl NoiseResponder {
     /// Create IK pattern responder
     pub fn new_ik(local_static: &[u8; 32]) -> Result<Self> {
         let keypair = HybridKeypair::generate();
-        let builder = Builder::new(PATTERN_IK.parse().unwrap()).local_private_key(local_static);
+        let builder = Builder::new(
+            PATTERN_IK
+                .parse()
+                .map_err(|_| CryptoError::Noise("invalid IK pattern".into()))?,
+        )
+        .local_private_key(local_static);
         let state = builder.build_responder()?;
         Ok(Self {
             state,
@@ -306,7 +320,12 @@ impl NoiseResponder {
     /// Create NK pattern responder
     pub fn new_nk(local_static: &[u8; 32]) -> Result<Self> {
         let keypair = HybridKeypair::generate();
-        let builder = Builder::new(PATTERN_NK.parse().unwrap()).local_private_key(local_static);
+        let builder = Builder::new(
+            PATTERN_NK
+                .parse()
+                .map_err(|_| CryptoError::Noise("invalid NK pattern".into()))?,
+        )
+        .local_private_key(local_static);
         let state = builder.build_responder()?;
         Ok(Self {
             state,
@@ -438,8 +457,12 @@ mod tests {
         rng::fill(&mut eph_secret);
         let eph_public = x25519_dalek::x25519(eph_secret, x25519_dalek::X25519_BASEPOINT_BYTES);
 
-        let (ct, secret1) = public.encapsulate(&eph_secret).unwrap();
-        let secret2 = kp.decapsulate(&eph_public, &ct).unwrap();
+        let (ct, secret1) = public
+            .encapsulate(&eph_secret)
+            .expect("test: failed to encapsulate");
+        let secret2 = kp
+            .decapsulate(&eph_public, &ct)
+            .expect("test: failed to decapsulate");
 
         assert_eq!(secret1.combined, secret2.combined);
     }
@@ -456,29 +479,47 @@ mod tests {
         rng::fill(&mut client_static);
 
         // Handshake
-        let mut initiator = NoiseInitiator::new_ik(&client_static, &server_public).unwrap();
-        let mut responder = NoiseResponder::new_ik(&server_static).unwrap();
+        let mut initiator = NoiseInitiator::new_ik(&client_static, &server_public)
+            .expect("test: failed to create initiator");
+        let mut responder =
+            NoiseResponder::new_ik(&server_static).expect("test: failed to create responder");
 
         // -> e, es, s, ss + HybridPublic
-        let msg1 = initiator.write_message(b"hello").unwrap();
-        let (payload1, peer_hybrid) = responder.read_message(&msg1).unwrap();
+        let msg1 = initiator
+            .write_message(b"hello")
+            .expect("test: failed to write message");
+        let (payload1, peer_hybrid) = responder
+            .read_message(&msg1)
+            .expect("test: failed to read message");
         assert_eq!(payload1, b"hello");
 
         // <- e, ee, se + ServerHybridPublic + ML-KEM CT
-        let (msg2, server_hybrid_secret) = responder.write_message(b"world", &peer_hybrid).unwrap();
-        let (payload2, client_hybrid_secret) = initiator.read_message(&msg2).unwrap();
+        let (msg2, server_hybrid_secret) = responder
+            .write_message(b"world", &peer_hybrid)
+            .expect("test: failed to write response");
+        let (payload2, client_hybrid_secret) = initiator
+            .read_message(&msg2)
+            .expect("test: failed to read response");
         assert_eq!(payload2, b"world");
 
         // Verify hybrid secrets match
         assert_eq!(server_hybrid_secret.combined, client_hybrid_secret.combined);
 
         // Transport mode
-        let mut client_transport = initiator.into_transport().unwrap();
-        let mut server_transport = responder.into_transport().unwrap();
+        let mut client_transport = initiator
+            .into_transport()
+            .expect("test: failed to enter transport mode");
+        let mut server_transport = responder
+            .into_transport()
+            .expect("test: failed to enter transport mode");
 
         // Encrypted communication
-        let ct = client_transport.encrypt(b"secret message").unwrap();
-        let pt = server_transport.decrypt(&ct).unwrap();
+        let ct = client_transport
+            .encrypt(b"secret message")
+            .expect("test: failed to encrypt");
+        let pt = server_transport
+            .decrypt(&ct)
+            .expect("test: failed to decrypt");
         assert_eq!(pt, b"secret message");
     }
 }

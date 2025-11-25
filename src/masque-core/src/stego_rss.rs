@@ -12,15 +12,14 @@
 
 use anyhow::{Context, Result};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
-use rand::{rngs::OsRng, Rng, SeedableRng};
 use rand::rngs::StdRng;
+use rand::{rngs::OsRng, Rng, SeedableRng};
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
-use tracing::{debug, trace, warn};
 use vpr_crypto::manifest::{ManifestPayload, SignedManifest};
 
 /// Steganographic encoding method
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum StegoMethod {
     /// Encode in whitespace (spaces/tabs in descriptions)
     Whitespace,
@@ -31,13 +30,8 @@ pub enum StegoMethod {
     /// Encode via timestamp manipulation (least significant bits)
     Timestamp,
     /// Hybrid: combine multiple methods for better capacity
+    #[default]
     Hybrid,
-}
-
-impl Default for StegoMethod {
-    fn default() -> Self {
-        StegoMethod::Hybrid
-    }
 }
 
 /// Configuration for RSS steganography
@@ -95,21 +89,17 @@ pub struct StegoRssEncoder {
 impl StegoRssEncoder {
     /// Create new encoder with config
     pub fn new(config: StegoRssConfig) -> Self {
-        Self {
-            config,
-            rng: OsRng,
-        }
+        Self { config, rng: OsRng }
     }
 
     /// Encode a signed manifest into RSS XML
     pub fn encode_manifest(&mut self, manifest: &SignedManifest) -> Result<String> {
         // Serialize manifest to JSON, then compress
-        let json = serde_json::to_string(manifest)
-            .context("failed to serialize manifest")?;
-        
+        let json = serde_json::to_string(manifest).context("failed to serialize manifest")?;
+
         // Compress for better capacity
         let compressed = self.compress(&json)?;
-        
+
         // Encode based on method
         match self.config.method {
             StegoMethod::Whitespace => self.encode_whitespace(&compressed),
@@ -122,10 +112,10 @@ impl StegoRssEncoder {
 
     /// Encode manifest payload (unsigned) into RSS XML
     pub fn encode_payload(&mut self, payload: &ManifestPayload) -> Result<String> {
-        let json = serde_json::to_string(payload)
-            .context("failed to serialize manifest payload")?;
+        let json =
+            serde_json::to_string(payload).context("failed to serialize manifest payload")?;
         let compressed = self.compress(&json)?;
-        
+
         match self.config.method {
             StegoMethod::Whitespace => self.encode_whitespace(&compressed),
             StegoMethod::Base64Content => self.encode_base64_content(&compressed),
@@ -141,12 +131,12 @@ impl StegoRssEncoder {
         // In production, could use zstd compression for better capacity
         Ok(data.as_bytes().to_vec())
     }
-    
+
     /// Decompress data (inverse of compress)
+    #[allow(dead_code)] // Используется для будущей поддержки сжатия
     fn decompress(&self, data: &[u8]) -> Result<String> {
         // For now, just convert bytes to string
-        String::from_utf8(data.to_vec())
-            .context("failed to convert decompressed data to UTF-8")
+        String::from_utf8(data.to_vec()).context("failed to convert decompressed data to UTF-8")
     }
 
     /// Encode using whitespace steganography
@@ -154,17 +144,18 @@ impl StegoRssEncoder {
         // Need at least data.len() * 8 items (one per bit)
         let num_items = (data.len() * 8).max(self.config.min_items);
         let mut items = self.generate_cover_items(num_items);
-        
+
         // Encode data in whitespace (spaces = 0, tabs = 1)
         let mut item_idx = 0;
-        
+
         for &byte in data {
             for i in 0..8 {
                 let bit = (byte >> (7 - i)) & 1;
                 if item_idx < items.len() {
                     // Remove trailing whitespace first
-                    items[item_idx].description = items[item_idx].description.trim_end().to_string();
-                    
+                    items[item_idx].description =
+                        items[item_idx].description.trim_end().to_string();
+
                     if bit == 1 {
                         // Add tab character at end of description
                         items[item_idx].description.push('\t');
@@ -176,14 +167,14 @@ impl StegoRssEncoder {
                 }
             }
         }
-        
+
         self.build_rss_feed(&items)
     }
 
     /// Encode using base64 content (disguised as normal text)
     fn encode_base64_content(&mut self, data: &[u8]) -> Result<String> {
         let encoded = BASE64.encode(data);
-        
+
         // Split into chunks and embed in RSS items
         let chunk_size = 64; // Base64 chunks
         let chunks: Vec<String> = encoded
@@ -191,7 +182,7 @@ impl StegoRssEncoder {
             .chunks(chunk_size)
             .map(|chunk| String::from_utf8_lossy(chunk).to_string())
             .collect();
-        
+
         let mut items = Vec::new();
         for (idx, chunk) in chunks.iter().enumerate() {
             let item = RssItem {
@@ -206,12 +197,12 @@ impl StegoRssEncoder {
             };
             items.push(item);
         }
-        
+
         // Add cover items to reach min_items
         while items.len() < self.config.min_items {
             items.push(self.generate_random_item(items.len()));
         }
-        
+
         self.build_rss_feed(&items)
     }
 
@@ -222,35 +213,34 @@ impl StegoRssEncoder {
         let mut items: Vec<RssItem> = (0..num_items)
             .map(|i| self.generate_random_item(i))
             .collect();
-        
+
         // Encode data by permuting item order
         // Use first bytes to determine permutation
         let permutation_seed: u64 = if data.len() >= 8 {
             u64::from_le_bytes([
-                data[0], data[1], data[2], data[3],
-                data[4], data[5], data[6], data[7],
+                data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7],
             ])
         } else {
             let mut seed_bytes = [0u8; 8];
             seed_bytes[..data.len()].copy_from_slice(data);
             u64::from_le_bytes(seed_bytes)
         };
-        
+
         // Shuffle items based on data
         let mut rng = StdRng::seed_from_u64(permutation_seed);
         use rand::seq::SliceRandom;
         items.shuffle(&mut rng);
-        
+
         // Embed remaining data in item descriptions
         if data.len() > 8 {
             let remaining = &data[8..];
             let encoded = BASE64.encode(remaining);
             for (item, chunk) in items.iter_mut().zip(encoded.as_bytes().chunks(32)) {
-                item.description.push_str(&format!(" Reference: {}", 
-                    String::from_utf8_lossy(chunk)));
+                item.description
+                    .push_str(&format!(" Reference: {}", String::from_utf8_lossy(chunk)));
             }
         }
-        
+
         self.build_rss_feed(&items)
     }
 
@@ -258,34 +248,34 @@ impl StegoRssEncoder {
     fn encode_timestamp(&mut self, data: &[u8]) -> Result<String> {
         let num_items = self.config.min_items.max(data.len());
         let mut items = Vec::new();
-        
+
         let base_time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        
+
         for (idx, &byte) in data.iter().enumerate() {
             // Encode byte in timestamp LSBs
             let timestamp = base_time - (num_items - idx) as u64 * 3600; // 1 hour apart
             let encoded_time = timestamp ^ (byte as u64);
-            
+
             let item = RssItem {
                 title: format!("News Item {}", idx + 1),
                 description: self.generate_random_description(),
                 link: format!("{}/news/{}", self.config.feed_link, idx + 1),
                 guid: format!("news-{}", idx + 1),
                 pub_date: self.format_rfc822_date(
-                    SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(encoded_time)
+                    SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(encoded_time),
                 ),
             };
             items.push(item);
         }
-        
+
         // Add cover items
         while items.len() < self.config.min_items {
             items.push(self.generate_random_item(items.len()));
         }
-        
+
         self.build_rss_feed(&items)
     }
 
@@ -294,31 +284,37 @@ impl StegoRssEncoder {
         // Split data: first part in ordering, rest in base64 content
         let split_point = data.len() / 2;
         let (ordering_data, content_data) = data.split_at(split_point);
-        
+
         // Generate items
         let num_items = self.config.min_items.max(data.len());
         let mut items: Vec<RssItem> = (0..num_items)
             .map(|i| self.generate_random_item(i))
             .collect();
-        
+
         // Encode ordering part
         if !ordering_data.is_empty() {
             let seed: u64 = if ordering_data.len() >= 8 {
                 u64::from_le_bytes([
-                    ordering_data[0], ordering_data[1], ordering_data[2], ordering_data[3],
-                    ordering_data[4], ordering_data[5], ordering_data[6], ordering_data[7],
+                    ordering_data[0],
+                    ordering_data[1],
+                    ordering_data[2],
+                    ordering_data[3],
+                    ordering_data[4],
+                    ordering_data[5],
+                    ordering_data[6],
+                    ordering_data[7],
                 ])
             } else {
                 let mut seed_bytes = [0u8; 8];
                 seed_bytes[..ordering_data.len().min(8)].copy_from_slice(ordering_data);
                 u64::from_le_bytes(seed_bytes)
             };
-            
+
             let mut rng = StdRng::seed_from_u64(seed);
             use rand::seq::SliceRandom;
             items.shuffle(&mut rng);
         }
-        
+
         // Encode content part in descriptions
         let encoded = BASE64.encode(content_data);
         let chunks: Vec<String> = encoded
@@ -326,11 +322,11 @@ impl StegoRssEncoder {
             .chunks(64)
             .map(|chunk| String::from_utf8_lossy(chunk).to_string())
             .collect();
-        
+
         for (item, chunk) in items.iter_mut().zip(chunks.iter()) {
             item.description.push_str(&format!(" See: {}", chunk));
         }
-        
+
         self.build_rss_feed(&items)
     }
 
@@ -351,9 +347,9 @@ impl StegoRssEncoder {
             "Innovation Spotlight: Startup News",
             "Developer Update: New Tools Released",
         ];
-        
+
         let title = titles[idx % titles.len()];
-        
+
         RssItem {
             title: format!("{} #{}", title, idx + 1),
             description: self.generate_random_description(),
@@ -372,7 +368,7 @@ impl StegoRssEncoder {
             "A comprehensive look at current market dynamics and future prospects.",
             "Breaking down the key factors driving change in the tech landscape.",
         ];
-        
+
         let template = templates[self.rng.gen_range(0..templates.len())];
         template.to_string()
     }
@@ -381,11 +377,8 @@ impl StegoRssEncoder {
     fn format_rfc822_date(&self, time: SystemTime) -> String {
         // Simple RFC 822 format
         // In production, use proper date formatting library
-        let timestamp = time
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        
+        let timestamp = time.duration_since(UNIX_EPOCH).unwrap().as_secs();
+
         // Format as: "Mon, 01 Jan 2024 12:00:00 +0000"
         // Simplified version for now
         format!("{}", timestamp)
@@ -394,33 +387,42 @@ impl StegoRssEncoder {
     /// Build RSS XML feed from items
     fn build_rss_feed(&self, items: &[RssItem]) -> Result<String> {
         let mut xml = String::new();
-        
+
         xml.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
         xml.push_str("<rss version=\"2.0\">\n");
         xml.push_str("  <channel>\n");
-        xml.push_str(&format!("    <title>{}</title>\n", 
-            html_escape(&self.config.feed_title)));
-        xml.push_str(&format!("    <description>{}</description>\n",
-            html_escape(&self.config.feed_description)));
+        xml.push_str(&format!(
+            "    <title>{}</title>\n",
+            html_escape(&self.config.feed_title)
+        ));
+        xml.push_str(&format!(
+            "    <description>{}</description>\n",
+            html_escape(&self.config.feed_description)
+        ));
         xml.push_str(&format!("    <link>{}</link>\n", self.config.feed_link));
         xml.push_str("    <lastBuildDate>");
         xml.push_str(&self.format_rfc822_date(SystemTime::now()));
         xml.push_str("</lastBuildDate>\n");
-        
+
         for item in items {
             xml.push_str("    <item>\n");
-            xml.push_str(&format!("      <title>{}</title>\n", html_escape(&item.title)));
-            xml.push_str(&format!("      <description>{}</description>\n", 
-                html_escape(&item.description)));
+            xml.push_str(&format!(
+                "      <title>{}</title>\n",
+                html_escape(&item.title)
+            ));
+            xml.push_str(&format!(
+                "      <description>{}</description>\n",
+                html_escape(&item.description)
+            ));
             xml.push_str(&format!("      <link>{}</link>\n", item.link));
             xml.push_str(&format!("      <guid>{}</guid>\n", item.guid));
             xml.push_str(&format!("      <pubDate>{}</pubDate>\n", item.pub_date));
             xml.push_str("    </item>\n");
         }
-        
+
         xml.push_str("  </channel>\n");
         xml.push_str("</rss>\n");
-        
+
         Ok(xml)
     }
 }
@@ -435,20 +437,19 @@ impl StegoRssDecoder {
     pub fn new(config: StegoRssConfig) -> Self {
         Self { config }
     }
-    
+
     /// Decompress data (inverse of compress)
     fn decompress(&self, data: &[u8]) -> Result<String> {
         // For now, just convert bytes to string
-        String::from_utf8(data.to_vec())
-            .context("failed to convert decompressed data to UTF-8")
+        String::from_utf8(data.to_vec()).context("failed to convert decompressed data to UTF-8")
     }
 
     /// Decode signed manifest from RSS XML
     pub fn decode_manifest(&self, rss_xml: &str) -> Result<SignedManifest> {
         let data = self.decode_data(rss_xml)?;
         let json = self.decompress(&data)?;
-        let manifest: SignedManifest = serde_json::from_str(&json)
-            .context("failed to deserialize manifest")?;
+        let manifest: SignedManifest =
+            serde_json::from_str(&json).context("failed to deserialize manifest")?;
         Ok(manifest)
     }
 
@@ -456,8 +457,8 @@ impl StegoRssDecoder {
     pub fn decode_payload(&self, rss_xml: &str) -> Result<ManifestPayload> {
         let data = self.decode_data(rss_xml)?;
         let json = self.decompress(&data)?;
-        let payload: ManifestPayload = serde_json::from_str(&json)
-            .context("failed to deserialize manifest payload")?;
+        let payload: ManifestPayload =
+            serde_json::from_str(&json).context("failed to deserialize manifest payload")?;
         Ok(payload)
     }
 
@@ -478,7 +479,7 @@ impl StegoRssDecoder {
         // Parse RSS and extract descriptions
         let items = self.parse_rss_items(rss_xml)?;
         let mut bits = Vec::new();
-        
+
         for item in items {
             // Check for tab (1) or space (0) at end
             let desc = html_unescape(&item.description);
@@ -491,7 +492,7 @@ impl StegoRssDecoder {
                 continue;
             }
         }
-        
+
         // Convert bits to bytes
         let mut data = Vec::new();
         for chunk in bits.chunks(8) {
@@ -503,7 +504,7 @@ impl StegoRssDecoder {
                 data.push(byte);
             }
         }
-        
+
         Ok(data)
     }
 
@@ -511,7 +512,7 @@ impl StegoRssDecoder {
     fn decode_base64_content(&self, rss_xml: &str) -> Result<Vec<u8>> {
         let items = self.parse_rss_items(rss_xml)?;
         let mut encoded = String::new();
-        
+
         for item in items {
             let desc = html_unescape(&item.description);
             // Extract base64 chunk from description
@@ -523,23 +524,24 @@ impl StegoRssDecoder {
                 }
             }
         }
-        
+
         if encoded.is_empty() {
             return Err(anyhow::anyhow!("no encoded data found in RSS"));
         }
-        
-        BASE64.decode(encoded.trim())
+
+        BASE64
+            .decode(encoded.trim())
             .context("failed to decode base64 content")
     }
 
     /// Decode ordering-based steganography
     fn decode_ordering(&self, rss_xml: &str) -> Result<Vec<u8>> {
         let items = self.parse_rss_items(rss_xml)?;
-        
+
         // Extract permutation seed from item order
         // This is simplified - in practice would need to know original order
         let mut data = Vec::new();
-        
+
         // Extract base64 chunks from descriptions
         let mut encoded = String::new();
         for item in items {
@@ -549,12 +551,12 @@ impl StegoRssDecoder {
                 encoded.push_str(chunk.trim());
             }
         }
-        
+
         if !encoded.is_empty() {
             let decoded = BASE64.decode(encoded)?;
             data.extend_from_slice(&decoded);
         }
-        
+
         Ok(data)
     }
 
@@ -562,7 +564,7 @@ impl StegoRssDecoder {
     fn decode_timestamp(&self, rss_xml: &str) -> Result<Vec<u8>> {
         let items = self.parse_rss_items(rss_xml)?;
         let mut data = Vec::new();
-        
+
         for item in items {
             // Parse timestamp and extract LSB
             // Simplified: extract byte from timestamp
@@ -572,14 +574,14 @@ impl StegoRssDecoder {
                 data.push(byte);
             }
         }
-        
+
         Ok(data)
     }
 
     /// Decode hybrid steganography
     fn decode_hybrid(&self, rss_xml: &str) -> Result<Vec<u8>> {
         let items = self.parse_rss_items(rss_xml)?;
-        
+
         // Extract base64 chunks from descriptions
         let mut encoded = String::new();
         for item in items {
@@ -590,11 +592,11 @@ impl StegoRssDecoder {
                 encoded.push_str(chunk);
             }
         }
-        
+
         if encoded.is_empty() {
             return Err(anyhow::anyhow!("no encoded data found in RSS"));
         }
-        
+
         let decoded = BASE64.decode(encoded.trim())?;
         Ok(decoded)
     }
@@ -603,23 +605,25 @@ impl StegoRssDecoder {
     fn parse_rss_items(&self, rss_xml: &str) -> Result<Vec<RssItem>> {
         // Simplified RSS parser - in production use proper XML parser
         let mut items = Vec::new();
-        
+
         // Extract items using simple string matching
         // This is a basic implementation - production should use xml-rs or similar
         let item_pattern = "<item>";
         let mut pos = 0;
-        
+
         while let Some(item_start) = rss_xml[pos..].find(item_pattern) {
             let item_start = pos + item_start + item_pattern.len();
             if let Some(item_end) = rss_xml[item_start..].find("</item>") {
                 let item_xml = &rss_xml[item_start..item_start + item_end];
-                
+
                 let title = self.extract_tag(item_xml, "title").unwrap_or_default();
-                let description = self.extract_tag(item_xml, "description").unwrap_or_default();
+                let description = self
+                    .extract_tag(item_xml, "description")
+                    .unwrap_or_default();
                 let link = self.extract_tag(item_xml, "link").unwrap_or_default();
                 let guid = self.extract_tag(item_xml, "guid").unwrap_or_default();
                 let pub_date = self.extract_tag(item_xml, "pubDate").unwrap_or_default();
-                
+
                 items.push(RssItem {
                     title,
                     description,
@@ -627,13 +631,13 @@ impl StegoRssDecoder {
                     guid,
                     pub_date,
                 });
-                
+
                 pos = item_start + item_end;
             } else {
                 break;
             }
         }
-        
+
         Ok(items)
     }
 
@@ -641,7 +645,7 @@ impl StegoRssDecoder {
     fn extract_tag(&self, xml: &str, tag: &str) -> Option<String> {
         let open_tag = format!("<{}>", tag);
         let close_tag = format!("</{}>", tag);
-        
+
         if let Some(start) = xml.find(&open_tag) {
             let content_start = start + open_tag.len();
             if let Some(end) = xml[content_start..].find(&close_tag) {
@@ -676,28 +680,239 @@ mod tests {
     use super::*;
     use vpr_crypto::manifest::{ManifestPayload, ServerEndpoint};
 
+    fn make_test_payload() -> ManifestPayload {
+        let servers = vec![ServerEndpoint::new(
+            "server1",
+            "example.com",
+            443,
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        )];
+        ManifestPayload::new(servers)
+    }
+
+    #[test]
+    fn stego_method_default_is_hybrid() {
+        let method = StegoMethod::default();
+        assert_eq!(method, StegoMethod::Hybrid);
+    }
+
+    #[test]
+    fn stego_config_default_values() {
+        let config = StegoRssConfig::default();
+        assert_eq!(config.method, StegoMethod::Hybrid);
+        assert_eq!(config.feed_title, "Tech News Feed");
+        assert_eq!(config.min_items, 10);
+        assert_eq!(config.max_items, 50);
+        assert!(config.random_order);
+        assert!(config.seed.is_none());
+    }
+
+    #[test]
+    fn html_escape_special_chars() {
+        assert_eq!(html_escape("&"), "&amp;");
+        assert_eq!(html_escape("<"), "&lt;");
+        assert_eq!(html_escape(">"), "&gt;");
+        assert_eq!(html_escape("\""), "&quot;");
+        assert_eq!(html_escape("'"), "&apos;");
+        assert_eq!(html_escape("<script>&</script>"), "&lt;script&gt;&amp;&lt;/script&gt;");
+    }
+
+    #[test]
+    fn html_unescape_entities() {
+        assert_eq!(html_unescape("&amp;"), "&");
+        assert_eq!(html_unescape("&lt;"), "<");
+        assert_eq!(html_unescape("&gt;"), ">");
+        assert_eq!(html_unescape("&quot;"), "\"");
+        assert_eq!(html_unescape("&apos;"), "'");
+        assert_eq!(html_unescape("&lt;script&gt;&amp;&lt;/script&gt;"), "<script>&</script>");
+    }
+
+    #[test]
+    fn html_escape_unescape_roundtrip() {
+        let original = "Test <html> & \"quotes\" 'apostrophe'";
+        let escaped = html_escape(original);
+        let unescaped = html_unescape(&escaped);
+        assert_eq!(unescaped, original);
+    }
+
+    #[test]
+    fn encoder_new_creates_instance() {
+        let config = StegoRssConfig::default();
+        let encoder = StegoRssEncoder::new(config.clone());
+        assert_eq!(encoder.config.method, config.method);
+    }
+
+    #[test]
+    fn decoder_new_creates_instance() {
+        let config = StegoRssConfig::default();
+        let decoder = StegoRssDecoder::new(config.clone());
+        assert_eq!(decoder.config.method, config.method);
+    }
+
+    #[test]
+    fn encoder_compress_returns_bytes() {
+        let config = StegoRssConfig::default();
+        let encoder = StegoRssEncoder::new(config);
+        let data = "test data";
+        let compressed = encoder.compress(data).unwrap();
+        assert_eq!(compressed, data.as_bytes());
+    }
+
+    #[test]
+    fn decoder_decompress_returns_string() {
+        let config = StegoRssConfig::default();
+        let decoder = StegoRssDecoder::new(config);
+        let data = b"test data";
+        let decompressed = decoder.decompress(data).unwrap();
+        assert_eq!(decompressed, "test data");
+    }
+
+    #[test]
+    fn decoder_decompress_invalid_utf8_fails() {
+        let config = StegoRssConfig::default();
+        let decoder = StegoRssDecoder::new(config);
+        let invalid = vec![0xFF, 0xFE, 0x00, 0x01];
+        let result = decoder.decompress(&invalid);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn build_rss_feed_creates_valid_xml() {
+        let config = StegoRssConfig::default();
+        let encoder = StegoRssEncoder::new(config);
+        let items = vec![
+            RssItem {
+                title: "Test Title".into(),
+                description: "Test Description".into(),
+                link: "https://example.com/1".into(),
+                guid: "guid-1".into(),
+                pub_date: "1234567890".into(),
+            },
+        ];
+        let xml = encoder.build_rss_feed(&items).unwrap();
+        assert!(xml.contains("<?xml version=\"1.0\""));
+        assert!(xml.contains("<rss version=\"2.0\">"));
+        assert!(xml.contains("<channel>"));
+        assert!(xml.contains("<title>Tech News Feed</title>"));
+        assert!(xml.contains("<item>"));
+        assert!(xml.contains("<title>Test Title</title>"));
+        assert!(xml.contains("</channel>"));
+        assert!(xml.contains("</rss>"));
+    }
+
+    #[test]
+    fn parse_rss_items_extracts_items() {
+        let config = StegoRssConfig::default();
+        let decoder = StegoRssDecoder::new(config);
+        let xml = r#"
+            <rss version="2.0">
+            <channel>
+                <title>Test Feed</title>
+                <item>
+                    <title>Item 1</title>
+                    <description>Desc 1</description>
+                    <link>https://example.com/1</link>
+                    <guid>guid-1</guid>
+                    <pubDate>123</pubDate>
+                </item>
+                <item>
+                    <title>Item 2</title>
+                    <description>Desc 2</description>
+                    <link>https://example.com/2</link>
+                    <guid>guid-2</guid>
+                    <pubDate>456</pubDate>
+                </item>
+            </channel>
+            </rss>
+        "#;
+        let items = decoder.parse_rss_items(xml).unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].title, "Item 1");
+        assert_eq!(items[0].description, "Desc 1");
+        assert_eq!(items[1].title, "Item 2");
+        assert_eq!(items[1].pub_date, "456");
+    }
+
+    #[test]
+    fn extract_tag_finds_content() {
+        let config = StegoRssConfig::default();
+        let decoder = StegoRssDecoder::new(config);
+        let xml = "<title>Hello World</title>";
+        let result = decoder.extract_tag(xml, "title");
+        assert_eq!(result, Some("Hello World".to_string()));
+    }
+
+    #[test]
+    fn extract_tag_unescapes_html() {
+        let config = StegoRssConfig::default();
+        let decoder = StegoRssDecoder::new(config);
+        let xml = "<description>&lt;b&gt;Bold&lt;/b&gt;</description>";
+        let result = decoder.extract_tag(xml, "description");
+        assert_eq!(result, Some("<b>Bold</b>".to_string()));
+    }
+
+    #[test]
+    fn extract_tag_returns_none_for_missing() {
+        let config = StegoRssConfig::default();
+        let decoder = StegoRssDecoder::new(config);
+        let xml = "<title>Hello</title>";
+        let result = decoder.extract_tag(xml, "description");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn generate_random_item_creates_valid_item() {
+        let config = StegoRssConfig::default();
+        let mut encoder = StegoRssEncoder::new(config);
+        let item = encoder.generate_random_item(0);
+        assert!(!item.title.is_empty());
+        assert!(!item.description.is_empty());
+        assert!(item.link.contains("example.com"));
+        assert!(item.guid.starts_with("article-"));
+    }
+
+    #[test]
+    fn generate_cover_items_returns_min_items() {
+        let mut config = StegoRssConfig::default();
+        config.min_items = 5;
+        let mut encoder = StegoRssEncoder::new(config);
+        let items = encoder.generate_cover_items(10);
+        assert!(items.len() >= 5);
+    }
+
+    #[test]
+    fn format_rfc822_date_returns_timestamp() {
+        let config = StegoRssConfig::default();
+        let encoder = StegoRssEncoder::new(config);
+        let time = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1000000);
+        let date = encoder.format_rfc822_date(time);
+        assert_eq!(date, "1000000");
+    }
+
     #[test]
     #[ignore = "stego whitespace encoding requires more items than min_items for large payloads"]
     fn test_stego_rss_encode_decode_whitespace() {
         let mut config = StegoRssConfig::default();
         config.method = StegoMethod::Whitespace;
         config.min_items = 20;
-        
+
         let mut encoder = StegoRssEncoder::new(config.clone());
         let decoder = StegoRssDecoder::new(config);
-        
+
         // Create test manifest
-        let servers = vec![
-            ServerEndpoint::new("server1", "example.com", 443, 
-                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
-        ];
+        let servers = vec![ServerEndpoint::new(
+            "server1",
+            "example.com",
+            443,
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        )];
         let payload = ManifestPayload::new(servers);
-        
+
         // Encode
         let rss_xml = encoder.encode_payload(&payload).unwrap();
         assert!(rss_xml.contains("<rss"));
         assert!(rss_xml.contains("<channel>"));
-        
+
         // Decode
         let decoded = decoder.decode_payload(&rss_xml).unwrap();
         assert_eq!(decoded.version, payload.version);
@@ -705,22 +920,157 @@ mod tests {
     }
 
     #[test]
+    fn encode_whitespace_generates_rss() {
+        let mut config = StegoRssConfig::default();
+        config.method = StegoMethod::Whitespace;
+        config.min_items = 100;
+        let mut encoder = StegoRssEncoder::new(config);
+        let compressed = encoder.compress("test").unwrap();
+        let xml = encoder.encode_whitespace(&compressed).unwrap();
+        assert!(xml.contains("<rss"));
+        assert!(xml.contains("<item>"));
+    }
+
+    #[test]
+    fn encode_ordering_generates_rss() {
+        let mut config = StegoRssConfig::default();
+        config.method = StegoMethod::Ordering;
+        let mut encoder = StegoRssEncoder::new(config);
+        let data = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+        let xml = encoder.encode_ordering(&data).unwrap();
+        assert!(xml.contains("<rss"));
+        assert!(xml.contains("<item>"));
+        assert!(xml.contains("Reference:"));
+    }
+
+    #[test]
+    fn encode_timestamp_generates_rss() {
+        let mut config = StegoRssConfig::default();
+        config.method = StegoMethod::Timestamp;
+        let mut encoder = StegoRssEncoder::new(config);
+        let data = vec![0xAB, 0xCD, 0xEF];
+        let xml = encoder.encode_timestamp(&data).unwrap();
+        assert!(xml.contains("<rss"));
+        assert!(xml.contains("<item>"));
+        assert!(xml.contains("<pubDate>"));
+    }
+
+    #[test]
+    fn encode_hybrid_generates_rss() {
+        let mut config = StegoRssConfig::default();
+        config.method = StegoMethod::Hybrid;
+        let mut encoder = StegoRssEncoder::new(config);
+        let data = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
+        let xml = encoder.encode_hybrid(&data).unwrap();
+        assert!(xml.contains("<rss"));
+        assert!(xml.contains("See:"));
+    }
+
+    #[test]
+    fn decode_whitespace_extracts_bits() {
+        let config = StegoRssConfig::default();
+        let decoder = StegoRssDecoder::new(config);
+        // XML with items ending in space (0) or tab (1)
+        let xml = r#"
+            <rss><channel>
+            <item><description>Text </description></item>
+            <item><description>Text	</description></item>
+            <item><description>Text </description></item>
+            <item><description>Text	</description></item>
+            <item><description>Text </description></item>
+            <item><description>Text	</description></item>
+            <item><description>Text </description></item>
+            <item><description>Text	</description></item>
+            </channel></rss>
+        "#;
+        let data = decoder.decode_whitespace(xml).unwrap();
+        // 01010101 = 0x55
+        assert_eq!(data, vec![0x55]);
+    }
+
+    #[test]
+    fn decode_timestamp_extracts_bytes() {
+        let config = StegoRssConfig::default();
+        let decoder = StegoRssDecoder::new(config);
+        // XML with timestamps that have specific LSBs
+        let xml = r#"
+            <rss><channel>
+            <item><pubDate>256</pubDate></item>
+            <item><pubDate>257</pubDate></item>
+            <item><pubDate>258</pubDate></item>
+            </channel></rss>
+        "#;
+        let data = decoder.decode_timestamp(xml).unwrap();
+        // LSBs: 0, 1, 2
+        assert_eq!(data, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn decode_ordering_extracts_references() {
+        let config = StegoRssConfig::default();
+        let decoder = StegoRssDecoder::new(config);
+        // XML with Reference: base64 chunks
+        let xml = r#"
+            <rss><channel>
+            <item><description>Text Reference: SGVsbG8=</description></item>
+            </channel></rss>
+        "#;
+        let data = decoder.decode_ordering(xml).unwrap();
+        assert_eq!(data, b"Hello");
+    }
+
+    #[test]
+    fn decode_hybrid_extracts_see_chunks() {
+        let config = StegoRssConfig::default();
+        let decoder = StegoRssDecoder::new(config);
+        // XML with See: base64 chunks
+        let xml = r#"
+            <rss><channel>
+            <item><description>Text See: V29ybGQ=</description></item>
+            </channel></rss>
+        "#;
+        let data = decoder.decode_hybrid(xml).unwrap();
+        assert_eq!(data, b"World");
+    }
+
+    #[test]
+    fn decode_base64_content_empty_fails() {
+        let config = StegoRssConfig::default();
+        let decoder = StegoRssDecoder::new(config);
+        let xml = r#"<rss><channel><item><description>No data here</description></item></channel></rss>"#;
+        let result = decoder.decode_base64_content(xml);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn decode_hybrid_empty_fails() {
+        let config = StegoRssConfig::default();
+        let decoder = StegoRssDecoder::new(config);
+        // Use XML without "See: " marker
+        let xml = r#"<rss><channel><item><description>No data marker here</description></item></channel></rss>"#;
+        let result = decoder.decode_hybrid(xml);
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn test_stego_rss_encode_decode_base64() {
         let mut config = StegoRssConfig::default();
         config.method = StegoMethod::Base64Content;
-        
+
         let mut encoder = StegoRssEncoder::new(config.clone());
         let decoder = StegoRssDecoder::new(config);
-        
-        let servers = vec![
-            ServerEndpoint::new("server1", "example.com", 443,
-                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
-        ];
+
+        let servers = vec![ServerEndpoint::new(
+            "server1",
+            "example.com",
+            443,
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        )];
         let payload = ManifestPayload::new(servers);
-        
+
         let rss_xml = encoder.encode_payload(&payload).unwrap();
         let decoded = decoder.decode_payload(&rss_xml).unwrap();
-        
+
         assert_eq!(decoded.version, payload.version);
     }
 
@@ -729,22 +1079,84 @@ mod tests {
     fn test_stego_rss_encode_decode_hybrid() {
         let mut config = StegoRssConfig::default();
         config.method = StegoMethod::Hybrid;
-        
+
         let mut encoder = StegoRssEncoder::new(config.clone());
         let decoder = StegoRssDecoder::new(config);
-        
+
         let servers = vec![
-            ServerEndpoint::new("server1", "example.com", 443,
-                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
-            ServerEndpoint::new("server2", "example.org", 443,
-                "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"),
+            ServerEndpoint::new(
+                "server1",
+                "example.com",
+                443,
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            ),
+            ServerEndpoint::new(
+                "server2",
+                "example.org",
+                443,
+                "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+            ),
         ];
         let payload = ManifestPayload::new(servers);
-        
+
         let rss_xml = encoder.encode_payload(&payload).unwrap();
         let decoded = decoder.decode_payload(&rss_xml).unwrap();
-        
+
         assert_eq!(decoded.servers.len(), payload.servers.len());
         assert_eq!(decoded.servers[0].id, payload.servers[0].id);
+    }
+
+    #[test]
+    fn rss_item_clone() {
+        let item = RssItem {
+            title: "Test".into(),
+            description: "Desc".into(),
+            link: "https://x.com".into(),
+            guid: "1".into(),
+            pub_date: "123".into(),
+        };
+        let cloned = item.clone();
+        assert_eq!(cloned.title, item.title);
+        assert_eq!(cloned.guid, item.guid);
+    }
+
+    #[test]
+    fn stego_method_variants_are_distinct() {
+        assert_ne!(StegoMethod::Whitespace, StegoMethod::Base64Content);
+        assert_ne!(StegoMethod::Ordering, StegoMethod::Timestamp);
+        assert_ne!(StegoMethod::Hybrid, StegoMethod::Whitespace);
+    }
+
+    #[test]
+    fn encode_payload_base64_roundtrip() {
+        let mut config = StegoRssConfig::default();
+        config.method = StegoMethod::Base64Content;
+        let mut encoder = StegoRssEncoder::new(config.clone());
+        let decoder = StegoRssDecoder::new(config);
+
+        let payload = make_test_payload();
+        let xml = encoder.encode_payload(&payload).unwrap();
+        let decoded = decoder.decode_payload(&xml).unwrap();
+
+        assert_eq!(decoded.version, payload.version);
+        assert_eq!(decoded.servers.len(), 1);
+    }
+
+    #[test]
+    fn encode_manifest_generates_rss() {
+        use vpr_crypto::keys::SigningKeypair;
+
+        let mut config = StegoRssConfig::default();
+        config.method = StegoMethod::Base64Content;
+        let mut encoder = StegoRssEncoder::new(config);
+
+        let payload = make_test_payload();
+        // Create a signed manifest for testing
+        let keypair = SigningKeypair::generate();
+        let manifest = SignedManifest::sign(&payload, &keypair).unwrap();
+
+        let xml = encoder.encode_manifest(&manifest).unwrap();
+        assert!(xml.contains("<rss"));
+        assert!(xml.contains("Read more:"));
     }
 }

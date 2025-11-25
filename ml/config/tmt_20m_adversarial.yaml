@@ -1,0 +1,50 @@
+# TMT-20M Adversarial Training Config
+# Uses DPI simulator as adversary for real evasion learning
+
+seed: 42
+deterministic: true
+
+model:
+  input_dim: 4
+  context_size: 16
+  embed_dim: 512
+  num_layers: 6
+  num_heads: 8
+  ffn_dim: 2048
+  dropout: 0.1
+  num_profiles: 5
+
+data:
+  train_path: data/ultimate/train.parquet
+  val_path: data/ultimate/val.parquet
+  test_path: data/ultimate/test.parquet
+  context_size: 16
+  num_workers: 4
+  pin_memory: true
+
+training:
+  batch_size: 128  # Smaller batch for DPI simulation overhead
+  epochs: 30       # More epochs for adversarial convergence
+  lr: 0.0001       # Lower LR for stable adversarial training
+  weight_decay: 0.01
+  warmup_steps: 500
+  max_grad_norm: 1.0
+  val_every: 1
+  save_every: 5
+  patience: 8      # More patience for adversarial learning
+
+optimizer:
+  betas: [0.9, 0.999]
+  eps: 0.00000001
+
+# NEW: Adversarial loss weights
+loss:
+  dpi_weight: 2.0        # Main objective: evade DPI
+  similarity_weight: 0.5  # Match target profile
+  efficiency_weight: 0.3  # Soft bounds on overhead
+  confidence_weight: 0.2  # Calibrate confidence
+
+output:
+  dir: models/tmt-20m-adversarial
+  save_every: 5
+  log_every: 100

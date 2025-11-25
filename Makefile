@@ -1,14 +1,19 @@
 .PHONY: vpn app dev build clean
+.PHONY: diag
 
 .PHONY: tui tui-frame
 
 # Run ASCII TUI globe
 tui:
-	@cargo run -p vpr-tui --release
+	@cd src/vpr-app && \
+	python3 -m http.server 1421 --directory frontend >/tmp/vpr-frontend.log 2>&1 & \
+	SERVER_PID=$$!; \
+	trap "kill $$SERVER_PID" EXIT; \
+	cargo tauri dev
 
-# Dump single frame to stdout (usage: make tui-frame WIDTH=64 HEIGHT=32 ANGLE=0.6)
-tui-frame:
-	@cargo run -p vpr-tui --bin frame_dump -- $${WIDTH:-64} $${HEIGHT:-32} $${ANGLE:-0.6}
+# Diagnostics: run after "Online" to verify tunnel and routing
+diag:
+	@sudo ./scripts/diag_vpn.sh
 
 # Build and run VPN client
 vpn:

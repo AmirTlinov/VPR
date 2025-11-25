@@ -9,8 +9,31 @@ use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+/// Version compatibility information
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VersionInfo {
+    /// Manifest version
+    pub version: u32,
+    /// Current supported version
+    pub current_version: u32,
+    /// Minimum supported version
+    pub min_supported: u32,
+    /// Maximum supported version
+    pub max_supported: u32,
+    /// Whether version is in supported range
+    pub is_supported: bool,
+    /// Whether version is compatible with current version
+    pub is_compatible: bool,
+}
+
 /// Current manifest format version
 pub const MANIFEST_VERSION: u32 = 1;
+
+/// Minimum supported manifest version (for backward compatibility)
+pub const MIN_MANIFEST_VERSION: u32 = 1;
+
+/// Maximum supported manifest version (for forward compatibility checks)
+pub const MAX_MANIFEST_VERSION: u32 = 1;
 
 /// Maximum manifest age before considered stale (7 days)
 pub const MAX_MANIFEST_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
@@ -79,14 +102,10 @@ impl ServerEndpoint {
     /// Returns Ok if the pubkey is valid hex-encoded 32-byte X25519 public key,
     /// Err with description otherwise.
     pub fn validate_pubkey(&self) -> Result<[u8; 32]> {
-        let bytes = hex::decode(&self.noise_pubkey)
-            .context("noise_pubkey is not valid hex")?;
+        let bytes = hex::decode(&self.noise_pubkey).context("noise_pubkey is not valid hex")?;
 
         if bytes.len() != 32 {
-            bail!(
-                "noise_pubkey must be 32 bytes, got {} bytes",
-                bytes.len()
-            );
+            bail!("noise_pubkey must be 32 bytes, got {} bytes", bytes.len());
         }
 
         let mut arr = [0u8; 32];
@@ -127,7 +146,7 @@ impl ManifestPayload {
     pub fn new(servers: Vec<ServerEndpoint>) -> Self {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .expect("system time should be after UNIX epoch")
             .as_secs();
 
         Self {
@@ -145,7 +164,7 @@ impl ManifestPayload {
     pub fn with_validity(servers: Vec<ServerEndpoint>, validity: Duration) -> Self {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .expect("system time should be after UNIX epoch")
             .as_secs();
 
         Self {
@@ -163,7 +182,7 @@ impl ManifestPayload {
     pub fn is_expired(&self) -> bool {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .expect("system time should be after UNIX epoch")
             .as_secs();
 
         now > self.expires_at
@@ -173,7 +192,7 @@ impl ManifestPayload {
     pub fn is_stale(&self) -> bool {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .expect("system time should be after UNIX epoch")
             .as_secs();
         now > self.expires_at && now <= self.expires_at + STALE_FALLBACK_AGE.as_secs()
     }
@@ -196,6 +215,50 @@ impl ManifestPayload {
     /// Serialize to JSON bytes for signing
     pub fn to_bytes(&self) -> Result<Vec<u8>> {
         serde_json::to_vec(self).context("serializing payload")
+    }
+
+    /// Check if manifest version is supported
+    pub fn is_version_supported(&self) -> bool {
+        self.version >= MIN_MANIFEST_VERSION && self.version <= MAX_MANIFEST_VERSION
+    }
+
+    /// Check if manifest version is compatible with current version
+    pub fn is_version_compatible(&self) -> bool {
+        // For now, only exact version match is supported
+        // In future, we can add backward/forward compatibility rules
+        self.version == MANIFEST_VERSION
+    }
+
+    /// Get version compatibility info
+    pub fn version_info(&self) -> VersionInfo {
+        VersionInfo {
+            version: self.version,
+            current_version: MANIFEST_VERSION,
+            min_supported: MIN_MANIFEST_VERSION,
+            max_supported: MAX_MANIFEST_VERSION,
+            is_supported: self.is_version_supported(),
+            is_compatible: self.is_version_compatible(),
+        }
+    }
+
+    /// Migrate manifest to current version (if possible)
+    pub fn migrate_to_current(&self) -> Result<Self> {
+        if self.version == MANIFEST_VERSION {
+            return Ok(self.clone());
+        }
+
+        if !self.is_version_supported() {
+            bail!(
+                "cannot migrate manifest version {} (supported range: {}-{})",
+                self.version,
+                MIN_MANIFEST_VERSION,
+                MAX_MANIFEST_VERSION
+            );
+        }
+
+        // For now, only version 1 is supported, so migration is identity
+        // In future, add migration logic here
+        Ok(self.clone())
     }
 
     /// Deserialize from JSON bytes
@@ -267,14 +330,24 @@ impl SignedManifest {
         let payload: ManifestPayload =
             serde_json::from_str(&self.payload).context("parsing payload")?;
 
-        // Check version
-        if payload.version != MANIFEST_VERSION {
+        // Check version compatibility
+        if !payload.is_version_supported() {
             bail!(
-                "unsupported manifest version: {} (expected {})",
+                "unsupported manifest version: {} (supported range: {}-{})",
                 payload.version,
-                MANIFEST_VERSION
+                MIN_MANIFEST_VERSION,
+                MAX_MANIFEST_VERSION
             );
         }
+
+        // Try to migrate if needed
+        let payload = if !payload.is_version_compatible() {
+            payload
+                .migrate_to_current()
+                .context("failed to migrate manifest to current version")?
+        } else {
+            payload
+        };
 
         // Check expiration
         if payload.is_expired() {
@@ -364,8 +437,11 @@ mod tests {
         let servers = vec![ServerEndpoint::new("srv1", "1.2.3.4", 443, "key1")];
         let payload = ManifestPayload::new(servers);
 
-        let signed = SignedManifest::sign(&payload, &keypair).unwrap();
-        let verified = signed.verify(&keypair.public_bytes()).unwrap();
+        let signed =
+            SignedManifest::sign(&payload, &keypair).expect("test: failed to sign manifest");
+        let verified = signed
+            .verify(&keypair.public_bytes())
+            .expect("test: failed to verify manifest");
 
         assert_eq!(verified.servers.len(), 1);
         assert_eq!(verified.servers[0].id, "srv1");
@@ -376,7 +452,7 @@ mod tests {
         let kp = test_keypair();
         let payload =
             ManifestPayload::new(vec![ServerEndpoint::new("srv1", "1.2.3.4", 443, "key1")]);
-        let signed = SignedManifest::sign(&payload, &kp).unwrap();
+        let signed = SignedManifest::sign(&payload, &kp).expect("test: failed to sign manifest");
         assert!(signed.nonce != 0, "nonce must be non-zero");
     }
 
@@ -388,7 +464,8 @@ mod tests {
         let servers = vec![ServerEndpoint::new("srv1", "1.2.3.4", 443, "key1")];
         let payload = ManifestPayload::new(servers);
 
-        let signed = SignedManifest::sign(&payload, &keypair1).unwrap();
+        let signed =
+            SignedManifest::sign(&payload, &keypair1).expect("test: failed to sign manifest");
         let result = signed.verify(&keypair2.public_bytes());
 
         assert!(result.is_err());
@@ -400,7 +477,8 @@ mod tests {
         let servers = vec![ServerEndpoint::new("srv1", "1.2.3.4", 443, "key1")];
         let payload = ManifestPayload::new(servers);
 
-        let mut signed = SignedManifest::sign(&payload, &keypair).unwrap();
+        let mut signed =
+            SignedManifest::sign(&payload, &keypair).expect("test: failed to sign manifest");
 
         // Tamper with payload
         signed.payload = signed.payload.replace("srv1", "evil");
@@ -415,11 +493,17 @@ mod tests {
         let servers = vec![ServerEndpoint::new("srv1", "1.2.3.4", 443, "key1")];
         let payload = ManifestPayload::new(servers);
 
-        let signed = SignedManifest::sign(&payload, &keypair).unwrap();
-        let json = signed.to_json().unwrap();
+        let signed =
+            SignedManifest::sign(&payload, &keypair).expect("test: failed to sign manifest");
+        let json = signed
+            .to_json()
+            .expect("test: failed to serialize manifest");
 
-        let restored = SignedManifest::from_json(&json).unwrap();
-        let verified = restored.verify(&keypair.public_bytes()).unwrap();
+        let restored =
+            SignedManifest::from_json(&json).expect("test: failed to deserialize manifest");
+        let verified = restored
+            .verify(&keypair.public_bytes())
+            .expect("test: failed to verify manifest");
 
         assert_eq!(verified.servers[0].id, "srv1");
     }
@@ -433,7 +517,8 @@ mod tests {
         let mut payload = ManifestPayload::new(servers);
         payload.expires_at = 0; // In the past
 
-        let signed = SignedManifest::sign(&payload, &keypair).unwrap();
+        let signed =
+            SignedManifest::sign(&payload, &keypair).expect("test: failed to sign manifest");
         let result = signed.verify(&keypair.public_bytes());
 
         assert!(result.is_err());
@@ -445,9 +530,55 @@ mod tests {
         let servers = vec![ServerEndpoint::new("srv1", "1.2.3.4", 443, "key1")];
         let payload = ManifestPayload::new(servers);
 
-        let bytes = payload.to_bytes().unwrap();
-        let restored = ManifestPayload::from_bytes(&bytes).unwrap();
+        let bytes = payload
+            .to_bytes()
+            .expect("test: failed to serialize payload");
+        let restored =
+            ManifestPayload::from_bytes(&bytes).expect("test: failed to deserialize payload");
 
         assert_eq!(restored.servers[0].id, "srv1");
+    }
+
+    #[test]
+    fn test_version_supported() {
+        let servers = vec![ServerEndpoint::new("srv1", "1.2.3.4", 443, "key1")];
+        let payload = ManifestPayload::new(servers);
+
+        // Current version should be supported
+        assert!(payload.is_version_supported());
+        assert!(payload.is_version_compatible());
+
+        // Version info should be correct
+        let info = payload.version_info();
+        assert_eq!(info.version, MANIFEST_VERSION);
+        assert_eq!(info.current_version, MANIFEST_VERSION);
+        assert!(info.is_supported);
+        assert!(info.is_compatible);
+    }
+
+    #[test]
+    fn test_version_migration() {
+        let servers = vec![ServerEndpoint::new("srv1", "1.2.3.4", 443, "key1")];
+        let payload = ManifestPayload::new(servers);
+
+        // Migration of current version should be identity
+        let migrated = payload
+            .migrate_to_current()
+            .expect("migration should succeed");
+        assert_eq!(payload.version, migrated.version);
+        assert_eq!(payload.servers.len(), migrated.servers.len());
+    }
+
+    #[test]
+    fn test_version_info() {
+        let servers = vec![ServerEndpoint::new("srv1", "1.2.3.4", 443, "key1")];
+        let payload = ManifestPayload::new(servers);
+
+        let info = payload.version_info();
+        assert_eq!(info.version, MANIFEST_VERSION);
+        assert_eq!(info.min_supported, MIN_MANIFEST_VERSION);
+        assert_eq!(info.max_supported, MAX_MANIFEST_VERSION);
+        assert!(info.is_supported);
+        assert!(info.is_compatible);
     }
 }

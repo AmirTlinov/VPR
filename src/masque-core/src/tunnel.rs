@@ -119,9 +119,13 @@ mod tests {
         let payload = b"hello world".to_vec();
         let send_buf = payload.clone();
         tokio::spawn(async move {
-            write_frame(&mut client, &send_buf).await.unwrap();
+            write_frame(&mut client, &send_buf)
+                .await
+                .expect("test: failed to write frame");
         });
-        let got = read_frame(&mut server).await.unwrap();
+        let got = read_frame(&mut server)
+            .await
+            .expect("test: failed to read frame");
         assert_eq!(got, payload);
     }
 
@@ -132,8 +136,8 @@ mod tests {
             host: "example.com".into(),
             port: 443,
         };
-        let frame = build_connect_frame(&req).unwrap();
-        let parsed = parse_connect_frame(&frame).unwrap();
+        let frame = build_connect_frame(&req).expect("test: failed to build frame");
+        let parsed = parse_connect_frame(&frame).expect("test: failed to parse frame");
         assert_eq!(req, parsed);
     }
 }

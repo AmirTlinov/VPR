@@ -8,6 +8,7 @@
 //!
 //! Wire format: length-prefixed JSON for simplicity and extensibility.
 
+use crate::tun::RoutingConfig;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::net::{IpAddr, Ipv4Addr};
@@ -57,6 +58,9 @@ pub struct VpnConfig {
     /// Suspicion score snapshot provided by server
     #[serde(default)]
     pub suspicion_score: Option<f64>,
+    /// Routing configuration (optional)
+    #[serde(default)]
+    pub routing_config: Option<RoutingConfig>,
 }
 
 impl VpnConfig {
@@ -77,6 +81,7 @@ impl VpnConfig {
             session_rekey_secs: None,
             session_rekey_bytes: None,
             suspicion_score: None,
+            routing_config: None,
         }
     }
 
@@ -129,6 +134,12 @@ impl VpnConfig {
         self.padding_max_jitter_us = Some(max_jitter_us);
         self.padding_min_size = Some(min_size);
         self.padding_mtu = Some(mtu);
+        self
+    }
+
+    /// Set routing configuration
+    pub fn with_routing_config(mut self, routing_config: RoutingConfig) -> Self {
+        self.routing_config = Some(routing_config);
         self
     }
 
@@ -261,8 +272,10 @@ mod tests {
             .with_route("0.0.0.0/0")
             .with_mtu(1400);
 
-        let bytes = config.to_bytes().unwrap();
-        let parsed = VpnConfig::from_bytes(&bytes).unwrap();
+        let bytes = config
+            .to_bytes()
+            .expect("config serialization should succeed");
+        let parsed = VpnConfig::from_bytes(&bytes).expect("config deserialization should succeed");
 
         assert_eq!(parsed.client_ip, config.client_ip);
         assert_eq!(parsed.gateway, config.gateway);
@@ -275,14 +288,16 @@ mod tests {
     #[test]
     fn test_config_ack_roundtrip() {
         let ack = ConfigAck::ok();
-        let json = serde_json::to_vec(&ack).unwrap();
-        let parsed: ConfigAck = serde_json::from_slice(&json).unwrap();
+        let json = serde_json::to_vec(&ack).expect("ConfigAck serialization should succeed");
+        let parsed: ConfigAck =
+            serde_json::from_slice(&json).expect("ConfigAck deserialization should succeed");
         assert!(parsed.accepted);
         assert!(parsed.error.is_none());
 
         let ack = ConfigAck::error("test error");
-        let json = serde_json::to_vec(&ack).unwrap();
-        let parsed: ConfigAck = serde_json::from_slice(&json).unwrap();
+        let json = serde_json::to_vec(&ack).expect("ConfigAck serialization should succeed");
+        let parsed: ConfigAck =
+            serde_json::from_slice(&json).expect("ConfigAck deserialization should succeed");
         assert!(!parsed.accepted);
         assert_eq!(parsed.error.as_deref(), Some("test error"));
     }
@@ -300,8 +315,10 @@ mod tests {
         let config = VpnConfig::new(Ipv4Addr::new(10, 8, 0, 2), Ipv4Addr::new(10, 8, 0, 1))
             .with_rotation(42, 2048);
 
-        let bytes = config.to_bytes().unwrap();
-        let parsed = VpnConfig::from_bytes(&bytes).unwrap();
+        let bytes = config
+            .to_bytes()
+            .expect("config serialization should succeed");
+        let parsed = VpnConfig::from_bytes(&bytes).expect("config deserialization should succeed");
 
         assert_eq!(parsed.session_rekey_secs, Some(42));
         assert_eq!(parsed.session_rekey_bytes, Some(2048));
@@ -311,16 +328,26 @@ mod tests {
     fn test_vpn_config_dns_ipv6_roundtrip() {
         let config = VpnConfig::new(Ipv4Addr::new(10, 8, 0, 2), Ipv4Addr::new(10, 8, 0, 1))
             .with_dns(IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9)))
-            .with_dns(IpAddr::V6("2001:4860:4860::8888".parse().unwrap()));
+            .with_dns(IpAddr::V6(
+                "2001:4860:4860::8888"
+                    .parse()
+                    .expect("valid IPv6 address should parse"),
+            ));
 
-        let bytes = config.to_bytes().unwrap();
-        let parsed = VpnConfig::from_bytes(&bytes).unwrap();
+        let bytes = config
+            .to_bytes()
+            .expect("config serialization should succeed");
+        let parsed = VpnConfig::from_bytes(&bytes).expect("config deserialization should succeed");
 
         assert_eq!(parsed.dns_servers.len(), 2);
         assert_eq!(parsed.dns_servers[0], IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9)));
         assert_eq!(
             parsed.dns_servers[1],
-            IpAddr::V6("2001:4860:4860::8888".parse().unwrap())
+            IpAddr::V6(
+                "2001:4860:4860::8888"
+                    .parse()
+                    .expect("valid IPv6 address should parse")
+            )
         );
     }
 
@@ -331,13 +358,24 @@ mod tests {
         let (mut client, mut server) = tokio::io::duplex(1024);
 
         let send_task = tokio::spawn(async move {
-            config.send(&mut client).await.unwrap();
+            config
+                .send(&mut client)
+                .await
+                .expect("config send should succeed");
         });
 
-        let recv_task = tokio::spawn(async move { VpnConfig::recv(&mut server).await.unwrap() });
+        let recv_task = tokio::spawn(async move {
+            VpnConfig::recv(&mut server)
+                .await
+                .expect("config recv should succeed")
+        });
 
-        send_task.await.unwrap();
-        let received = recv_task.await.unwrap();
+        send_task
+            .await
+            .expect("send task should complete successfully");
+        let received = recv_task
+            .await
+            .expect("recv task should complete successfully");
 
         assert_eq!(received.client_ip, Ipv4Addr::new(10, 8, 0, 10));
     }

@@ -184,7 +184,7 @@ impl FallbackTransport {
     async fn try_connect(&self, transport_type: TransportType, addr: SocketAddr) -> Result<()> {
         debug!(transport = %transport_type, %addr, "Attempting connection");
 
-        let timeout = self.config.connect_timeout;
+        let _timeout = self.config.connect_timeout;
 
         match transport_type {
             TransportType::Quic => {

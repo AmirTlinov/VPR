@@ -145,3 +145,273 @@ pub fn tail_reports(mut reports: Vec<serde_json::Value>, tail: usize) -> Vec<ser
     }
     reports.split_off(len - tail)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::tempdir;
+
+    #[test]
+    fn classify_suspicion_buckets() {
+        assert_eq!(classify_suspicion(0.1), Severity::Ok);
+        assert_eq!(classify_suspicion(0.5), Severity::Warn);
+        assert_eq!(classify_suspicion(0.9), Severity::Critical);
+    }
+
+    #[test]
+    fn classify_suspicion_boundaries() {
+        // Boundary at 0.35
+        assert_eq!(classify_suspicion(0.34), Severity::Ok);
+        assert_eq!(classify_suspicion(0.35), Severity::Warn);
+        // Boundary at 0.75
+        assert_eq!(classify_suspicion(0.74), Severity::Warn);
+        assert_eq!(classify_suspicion(0.75), Severity::Critical);
+    }
+
+    #[test]
+    fn severity_as_str() {
+        assert_eq!(Severity::Ok.as_str(), "OK");
+        assert_eq!(Severity::Warn.as_str(), "WARN");
+        assert_eq!(Severity::Critical.as_str(), "CRITICAL");
+    }
+
+    #[test]
+    fn tail_reports_limits() {
+        let data = vec![serde_json::json!({"a":1}), serde_json::json!({"a":2})];
+        let out = tail_reports(data.clone(), 1);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0]["a"], 2);
+
+        let out_full = tail_reports(data.clone(), 5);
+        assert_eq!(out_full.len(), 2);
+    }
+
+    #[test]
+    fn tail_reports_zero() {
+        let data = vec![serde_json::json!({"a":1})];
+        let out = tail_reports(data.clone(), 0);
+        assert_eq!(out.len(), 1);
+    }
+
+    #[test]
+    fn tail_reports_empty() {
+        let data: Vec<serde_json::Value> = vec![];
+        let out = tail_reports(data, 5);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn tail_reports_exact() {
+        let data = vec![serde_json::json!({"a":1}), serde_json::json!({"a":2})];
+        let out = tail_reports(data.clone(), 2);
+        assert_eq!(out.len(), 2);
+    }
+
+    #[test]
+    fn parse_report_fills_defaults() {
+        let raw = r#"{"suspicion":0.2,"results":[{"transport":"masque","ok":true}]}"#;
+        let report = parse_report(raw).unwrap();
+        assert_eq!(report.severity, Severity::Ok);
+        assert_eq!(report.target, "node");
+        assert_eq!(report.results.len(), 1);
+        assert_eq!(report.results[0].transport, "masque");
+        assert!(report.results[0].ok);
+    }
+
+    #[test]
+    fn parse_report_with_target() {
+        let raw = r#"{"suspicion":0.5,"target":"server1","results":[]}"#;
+        let report = parse_report(raw).unwrap();
+        assert_eq!(report.target, "server1");
+        assert_eq!(report.severity, Severity::Warn);
+    }
+
+    #[test]
+    fn parse_report_with_query_fallback() {
+        let raw = r#"{"suspicion":0.8,"query":"custom_query","results":[]}"#;
+        let report = parse_report(raw).unwrap();
+        assert_eq!(report.target, "custom_query");
+        assert_eq!(report.severity, Severity::Critical);
+    }
+
+    #[test]
+    fn parse_report_with_generated_at() {
+        let raw = r#"{"suspicion":0.1,"generated_at":1234567890.5,"results":[]}"#;
+        let report = parse_report(raw).unwrap();
+        assert_eq!(report.generated_at, Some(1234567890.5));
+    }
+
+    #[test]
+    fn parse_report_all_transport_fields() {
+        let raw = r#"{
+            "suspicion": 0.2,
+            "results": [{
+                "transport": "quic",
+                "ok": true,
+                "latency_ms": 15.5,
+                "jitter_ms": 2.3,
+                "samples": 100,
+                "bytes_in": 1024,
+                "bytes_out": 2048,
+                "detail": "success"
+            }]
+        }"#;
+        let report = parse_report(raw).unwrap();
+        let result = &report.results[0];
+        assert_eq!(result.transport, "quic");
+        assert!(result.ok);
+        assert_eq!(result.latency_ms, Some(15.5));
+        assert_eq!(result.jitter_ms, Some(2.3));
+        assert_eq!(result.samples, Some(100));
+        assert_eq!(result.bytes_in, Some(1024));
+        assert_eq!(result.bytes_out, Some(2048));
+        assert_eq!(result.detail, Some("success".to_string()));
+    }
+
+    #[test]
+    fn parse_report_transport_missing_fields() {
+        let raw = r#"{"suspicion":0.1,"results":[{"ok":false}]}"#;
+        let report = parse_report(raw).unwrap();
+        let result = &report.results[0];
+        assert_eq!(result.transport, "?");
+        assert!(!result.ok);
+        assert!(result.latency_ms.is_none());
+        assert!(result.jitter_ms.is_none());
+        assert!(result.samples.is_none());
+        assert!(result.bytes_in.is_none());
+        assert!(result.bytes_out.is_none());
+        assert!(result.detail.is_none());
+    }
+
+    #[test]
+    fn parse_report_invalid_json() {
+        let raw = "not valid json";
+        let result = parse_report(raw);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_report_no_results() {
+        let raw = r#"{"suspicion":0.0}"#;
+        let report = parse_report(raw).unwrap();
+        assert!(report.results.is_empty());
+    }
+
+    #[test]
+    fn default_path_contains_vpr() {
+        let path = default_path();
+        let path_str = path.to_string_lossy();
+        assert!(path_str.contains(".vpr"));
+        assert!(path_str.contains(DEFAULT_FILENAME));
+    }
+
+    #[test]
+    fn load_reports_nonexistent_file() {
+        let path = PathBuf::from("/nonexistent/path/file.jsonl");
+        let reports = load_reports(&path).unwrap();
+        assert!(reports.is_empty());
+    }
+
+    #[test]
+    fn load_reports_empty_file() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("empty.jsonl");
+        File::create(&path).unwrap();
+
+        let reports = load_reports(&path).unwrap();
+        assert!(reports.is_empty());
+    }
+
+    #[test]
+    fn load_reports_valid_jsonl() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("reports.jsonl");
+        let mut file = File::create(&path).unwrap();
+        writeln!(file, r#"{{"a": 1}}"#).unwrap();
+        writeln!(file, r#"{{"b": 2}}"#).unwrap();
+
+        let reports = load_reports(&path).unwrap();
+        assert_eq!(reports.len(), 2);
+        assert_eq!(reports[0]["a"], 1);
+        assert_eq!(reports[1]["b"], 2);
+    }
+
+    #[test]
+    fn load_reports_skips_empty_lines() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("reports.jsonl");
+        let mut file = File::create(&path).unwrap();
+        writeln!(file, r#"{{"a": 1}}"#).unwrap();
+        writeln!(file).unwrap(); // empty line
+        writeln!(file, "   ").unwrap(); // whitespace only
+        writeln!(file, r#"{{"b": 2}}"#).unwrap();
+
+        let reports = load_reports(&path).unwrap();
+        assert_eq!(reports.len(), 2);
+    }
+
+    #[test]
+    fn load_reports_skips_malformed_lines() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("reports.jsonl");
+        let mut file = File::create(&path).unwrap();
+        writeln!(file, r#"{{"valid": 1}}"#).unwrap();
+        writeln!(file, "invalid json").unwrap();
+        writeln!(file, r#"{{"also_valid": 2}}"#).unwrap();
+
+        let reports = load_reports(&path).unwrap();
+        assert_eq!(reports.len(), 2);
+    }
+
+    #[test]
+    fn transport_result_clone() {
+        let result = TransportResult {
+            transport: "test".to_string(),
+            ok: true,
+            latency_ms: Some(10.0),
+            jitter_ms: Some(1.0),
+            samples: Some(5),
+            bytes_in: Some(100),
+            bytes_out: Some(200),
+            detail: Some("ok".to_string()),
+        };
+        let cloned = result.clone();
+        assert_eq!(cloned.transport, result.transport);
+        assert_eq!(cloned.latency_ms, result.latency_ms);
+    }
+
+    #[test]
+    fn health_report_clone() {
+        let report = HealthReport {
+            target: "test".to_string(),
+            suspicion: 0.5,
+            severity: Severity::Warn,
+            generated_at: Some(123.0),
+            results: vec![],
+        };
+        let cloned = report.clone();
+        assert_eq!(cloned.target, report.target);
+        assert_eq!(cloned.severity, report.severity);
+    }
+
+    #[test]
+    fn severity_equality() {
+        assert_eq!(Severity::Ok, Severity::Ok);
+        assert_ne!(Severity::Ok, Severity::Warn);
+        assert_ne!(Severity::Warn, Severity::Critical);
+    }
+
+    #[test]
+    fn health_report_equality() {
+        let r1 = HealthReport {
+            target: "a".to_string(),
+            suspicion: 0.0,
+            severity: Severity::Ok,
+            generated_at: None,
+            results: vec![],
+        };
+        let r2 = r1.clone();
+        assert_eq!(r1, r2);
+    }
+}

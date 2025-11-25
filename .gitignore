@@ -6,16 +6,104 @@ Cargo.lock
 /build/
 /__pycache__/
 *.pyc
+*.pyo
+*.pyd
+.Python
 
 # Secrets & configs
 secrets/**
 !secrets/README.md
 config/*.yaml
-!config/vpr.yaml.sample
+!config/*.sample
+!config/*.json
+*.key
+*.pem
+*.crt
+*.p12
+*.pfx
 
 # State & logs
 logs/
 *.log
+*.log.*
 .vscode/
 .idea/
 .vpr/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# IDE
+*.sublime-project
+*.sublime-workspace
+.vscode/
+.idea/
+*.iml
+
+# Test artifacts
+coverage/
+*.profdata
+*.gcda
+*.gcno
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.bak
+*.backup
+
+# ML artifacts (large files)
+ml/models/*.onnx
+ml/models/*.pt
+ml/models/*.pth
+ml/runs/
+ml/data/raw/
+ml/data/processed/
+
+# Terraform
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+
+# Ansible
+*.retry
+
+# Nix
+result
+result-*
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+.pytest_cache/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Jupyter
+.ipynb_checkpoints
+*.ipynb
+
+# Data directories (may contain large files)
+data/outbox/*
+!data/outbox/.gitkeep

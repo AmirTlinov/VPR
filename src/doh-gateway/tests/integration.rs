@@ -1,10 +1,10 @@
 #![allow(deprecated)]
 use assert_cmd::cargo::cargo_bin;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use quinn::rustls::pki_types::CertificateDer;
 use quinn::{ClientConfig, Endpoint};
-use reqwest::Client;
-use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
-use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+use rcgen::generate_simple_self_signed;
+use reqwest::ClientBuilder;
 use std::net::{SocketAddr, TcpListener, UdpSocket};
 use std::process::{Child, Stdio};
 use std::sync::Arc;
@@ -79,8 +79,11 @@ fn spawn_upstream_udp(addr: &str) {
 }
 
 async fn wait_http(port: u16) {
-    let client = Client::new();
-    let url = format!("http://127.0.0.1:{port}/healthz");
+    let client = ClientBuilder::new()
+        .danger_accept_invalid_certs(true)
+        .build()
+        .unwrap();
+    let url = format!("https://127.0.0.1:{port}/dns-query");
     for _ in 0..40 {
         if client.get(&url).send().await.is_ok() {
             return;
@@ -90,17 +93,22 @@ async fn wait_http(port: u16) {
     panic!("doh-gateway not responding on {port}");
 }
 
-fn spawn_gateway(bind: u16, doq: u16, upstream: &str) -> Child {
-    std::process::Command::new(cargo_bin!("doh-gateway"))
-        .args([
-            "--bind",
-            &format!("127.0.0.1:{bind}"),
-            "--doq-bind",
-            &format!("127.0.0.1:{doq}"),
-            "--upstream",
-            upstream,
-        ])
-        .stdout(Stdio::null())
+fn spawn_gateway(bind: u16, doq: u16, upstream: &str, config: Option<&std::path::Path>) -> Child {
+    let mut cmd = std::process::Command::new(cargo_bin!("doh-gateway"));
+    cmd.args([
+        "--bind",
+        &format!("127.0.0.1:{bind}"),
+        "--doq-bind",
+        &format!("127.0.0.1:{doq}"),
+        "--upstream",
+        upstream,
+    ]);
+
+    if let Some(cfg) = config {
+        cmd.arg("--config").arg(cfg);
+    }
+
+    cmd.stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
         .expect("start doh-gateway")
@@ -115,14 +123,17 @@ async fn doh_roundtrip_basic() {
 
     let bind_port = next_port();
     let doq_port = next_port();
-    let mut gateway = spawn_gateway(bind_port, doq_port, &upstream_addr);
+    let mut gateway = spawn_gateway(bind_port, doq_port, &upstream_addr, None);
 
     wait_http(bind_port).await;
 
     let query = build_dns_query();
     let encoded = URL_SAFE_NO_PAD.encode(&query);
-    let url = format!("http://127.0.0.1:{bind_port}/dns-query?dns={encoded}");
-    let client = Client::new();
+    let url = format!("https://127.0.0.1:{bind_port}/dns-query?dns={encoded}");
+    let client = ClientBuilder::new()
+        .danger_accept_invalid_certs(true)
+        .build()
+        .unwrap();
     let resp = client.get(url).send().await.unwrap();
     assert!(resp.status().is_success());
     let body = resp.bytes().await.unwrap();
@@ -135,29 +146,53 @@ async fn doh_roundtrip_basic() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn doq_roundtrip_basic() {
-    let _ = rustls::crypto::ring::default_provider().install_default();
+    let _ = quinn::rustls::crypto::ring::default_provider().install_default();
 
-    let _tmp = TempDir::new().unwrap();
+    let tmp = TempDir::new().unwrap();
     let upstream_port = next_port();
     let upstream_addr = format!("127.0.0.1:{upstream_port}");
     spawn_upstream_udp(&upstream_addr);
 
+    // Generate self-signed cert for localhost and write to temp files
+    let cert = generate_simple_self_signed(["localhost".into()]).unwrap();
+    let cert_path = tmp.path().join("doq_cert.pem");
+    let key_path = tmp.path().join("doq_key.pem");
+    std::fs::write(&cert_path, cert.cert.pem()).unwrap();
+    std::fs::write(&key_path, cert.key_pair.serialize_pem()).unwrap();
+
+    // Build config file for gateway
     let bind_port = next_port();
     let doq_port = next_port();
-    let mut gateway = spawn_gateway(bind_port, doq_port, &upstream_addr);
+    let cfg_path = tmp.path().join("config.toml");
+    std::fs::write(
+        &cfg_path,
+        format!(
+            "bind = \"127.0.0.1:{bind}\"\ndoq_bind = \"127.0.0.1:{doq}\"\ndoq_cert = \"{}\"\ndoq_key = \"{}\"\nupstream = \"{upstream}\"\n",
+            cert_path.display(),
+            key_path.display(),
+            upstream = upstream_addr,
+            bind = bind_port,
+            doq = doq_port,
+        ),
+    )
+    .unwrap();
+
+    let mut gateway = spawn_gateway(bind_port, doq_port, &upstream_addr, Some(&cfg_path));
 
     sleep(Duration::from_millis(300)).await;
     if let Some(status) = gateway.try_wait().unwrap() {
         panic!("doh-gateway exited early with status {status}");
     }
 
-    // Build QUIC client that skips cert verification (test-only)
-    let client_crypto = rustls::ClientConfig::builder()
-        .dangerous()
-        .with_custom_certificate_verifier(Arc::new(InsecureVerifier))
+    // Build QUIC client trusting the generated self-signed cert
+    let mut roots = quinn::rustls::RootCertStore::empty();
+    roots.add_parsable_certificates(vec![CertificateDer::from(cert.cert.der().to_vec())]);
+
+    let client_crypto = quinn::rustls::ClientConfig::builder()
+        .with_root_certificates(roots)
         .with_no_client_auth();
     let client_config = ClientConfig::new(Arc::new(
-        quinn::crypto::rustls::QuicClientConfig::try_from(client_crypto).unwrap(),
+        quinn::crypto::rustls::QuicClientConfig::try_from(Arc::new(client_crypto)).unwrap(),
     ));
 
     let mut endpoint = Endpoint::client("0.0.0.0:0".parse().unwrap()).unwrap();
@@ -203,46 +238,4 @@ async fn doq_roundtrip_basic() {
 
     let _ = gateway.kill();
     let _ = gateway.wait();
-}
-
-/// Insecure verifier for test purposes (DoQ self-signed)
-#[derive(Debug)]
-struct InsecureVerifier;
-
-impl ServerCertVerifier for InsecureVerifier {
-    fn verify_server_cert(
-        &self,
-        _end_entity: &CertificateDer<'_>,
-        _intermediates: &[CertificateDer<'_>],
-        _server_name: &ServerName<'_>,
-        _ocsp_response: &[u8],
-        _now: UnixTime,
-    ) -> Result<ServerCertVerified, rustls::Error> {
-        Ok(ServerCertVerified::assertion())
-    }
-
-    fn verify_tls12_signature(
-        &self,
-        _message: &[u8],
-        _cert: &CertificateDer<'_>,
-        _dss: &rustls::DigitallySignedStruct,
-    ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        Ok(HandshakeSignatureValid::assertion())
-    }
-
-    fn verify_tls13_signature(
-        &self,
-        _message: &[u8],
-        _cert: &CertificateDer<'_>,
-        _dss: &rustls::DigitallySignedStruct,
-    ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        Ok(HandshakeSignatureValid::assertion())
-    }
-
-    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-        vec![
-            rustls::SignatureScheme::ECDSA_NISTP256_SHA256,
-            rustls::SignatureScheme::RSA_PSS_SHA256,
-        ]
-    }
 }
