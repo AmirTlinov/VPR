@@ -23,7 +23,7 @@ fn write_cert_pair(dir: &TempDir) -> (std::path::PathBuf, std::path::PathBuf) {
     let key_path = dir.path().join("key.pem");
     // rcgen 0.13: CertifiedKey has .cert and .key_pair - use PEM format for rustls_pemfile
     std::fs::write(&cert_path, certified_key.cert.pem()).unwrap();
-    std::fs::write(&key_path, certified_key.key_pair.serialize_pem()).unwrap();
+    std::fs::write(&key_path, certified_key.signing_key.serialize_pem()).unwrap();
     (cert_path, key_path)
 }
 

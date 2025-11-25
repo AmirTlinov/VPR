@@ -578,7 +578,9 @@ fn load_or_generate_cert(
         Ok((load_certs(cert)?, load_key(key)?))
     } else {
         let generated = generate_simple_self_signed(["localhost".into()])?;
-        let key = PrivateKeyDer::from(PrivatePkcs8KeyDer::from(generated.key_pair.serialize_der()));
+        let key = PrivateKeyDer::from(PrivatePkcs8KeyDer::from(
+            generated.signing_key.serialize_der(),
+        ));
         let cert = generated.cert.der().clone();
         Ok((vec![cert], key))
     }

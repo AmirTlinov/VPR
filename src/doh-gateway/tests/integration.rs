@@ -158,7 +158,7 @@ async fn doq_roundtrip_basic() {
     let cert_path = tmp.path().join("doq_cert.pem");
     let key_path = tmp.path().join("doq_key.pem");
     std::fs::write(&cert_path, cert.cert.pem()).unwrap();
-    std::fs::write(&key_path, cert.key_pair.serialize_pem()).unwrap();
+    std::fs::write(&key_path, cert.signing_key.serialize_pem()).unwrap();
 
     // Build config file for gateway
     let bind_port = next_port();

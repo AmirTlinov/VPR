@@ -1,7 +1,7 @@
 use crate::{CryptoError, Result};
 use rcgen::{
-    BasicConstraints, Certificate, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa,
-    KeyPair, KeyUsagePurpose, SanType,
+    BasicConstraints, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair,
+    KeyUsagePurpose, SanType,
 };
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -33,8 +33,6 @@ impl Default for PkiConfig {
 pub struct CaBundle {
     pub cert_pem: String,
     pub key_pem: String,
-    pub cert: Certificate,
-    pub key: KeyPair,
 }
 
 /// Generated service certificate
@@ -68,20 +66,15 @@ pub fn generate_root_ca(config: &PkiConfig) -> Result<CaBundle> {
     let cert_pem = cert.pem();
     let key_pem = key.serialize_pem();
 
-    Ok(CaBundle {
-        cert_pem,
-        key_pem,
-        cert,
-        key,
-    })
+    Ok(CaBundle { cert_pem, key_pem })
 }
 
 /// Generate intermediate CA signed by root
 pub fn generate_intermediate_ca(
     config: &PkiConfig,
     node_name: &str,
-    root_cert: &Certificate,
-    root_key: &KeyPair,
+    root_cert_pem: &str,
+    root_key_pem: &str,
 ) -> Result<CaBundle> {
     let key = KeyPair::generate_for(&rcgen::PKCS_ECDSA_P384_SHA384)
         .map_err(|e| CryptoError::KeyGen(e.to_string()))?;
@@ -100,16 +93,17 @@ pub fn generate_intermediate_ca(
     params.is_ca = IsCa::Ca(BasicConstraints::Constrained(0)); // can only sign end-entity
     params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
 
-    let cert = params.signed_by(&key, root_cert, root_key)?;
+    // Create issuer from root CA PEM
+    let root_key =
+        KeyPair::from_pem(root_key_pem).map_err(|e| CryptoError::InvalidKey(e.to_string()))?;
+    let issuer = Issuer::from_ca_cert_pem(root_cert_pem, &root_key)
+        .map_err(|e| CryptoError::Certificate(e.to_string()))?;
+
+    let cert = params.signed_by(&key, &issuer)?;
     let cert_pem = cert.pem();
     let key_pem = key.serialize_pem();
 
-    Ok(CaBundle {
-        cert_pem,
-        key_pem,
-        cert,
-        key,
-    })
+    Ok(CaBundle { cert_pem, key_pem })
 }
 
 /// Generate service certificate (for MASQUE, DoH, etc.)
@@ -117,8 +111,8 @@ pub fn generate_service_cert(
     config: &PkiConfig,
     service_name: &str,
     dns_names: &[String],
-    intermediate_cert: &Certificate,
-    intermediate_key: &KeyPair,
+    intermediate_cert_pem: &str,
+    intermediate_key_pem: &str,
 ) -> Result<ServiceCert> {
     let key = KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256)
         .map_err(|e| CryptoError::KeyGen(e.to_string()))?;
@@ -152,12 +146,18 @@ pub fn generate_service_cert(
         ExtendedKeyUsagePurpose::ClientAuth,
     ];
 
-    let cert = params.signed_by(&key, intermediate_cert, intermediate_key)?;
+    // Create issuer from intermediate CA PEM
+    let inter_key = KeyPair::from_pem(intermediate_key_pem)
+        .map_err(|e| CryptoError::InvalidKey(e.to_string()))?;
+    let issuer = Issuer::from_ca_cert_pem(intermediate_cert_pem, &inter_key)
+        .map_err(|e| CryptoError::Certificate(e.to_string()))?;
+
+    let cert = params.signed_by(&key, &issuer)?;
     let cert_pem = cert.pem();
     let key_pem = key.serialize_pem();
 
     // Build full chain: service + intermediate
-    let chain_pem = format!("{}\n{}", cert_pem, intermediate_cert.pem());
+    let chain_pem = format!("{}\n{}", cert_pem, intermediate_cert_pem);
 
     Ok(ServiceCert {
         cert_pem,
@@ -190,13 +190,16 @@ pub fn load_ca_bundle(dir: &Path, name: &str) -> Result<(String, String)> {
     Ok((cert_pem, key_pem))
 }
 
-/// Parse PEM certificate and key for signing operations
-pub fn parse_ca_for_signing(cert_pem: &str, key_pem: &str) -> Result<(Certificate, KeyPair)> {
+/// Validate PEM certificate and key, returning them for signing operations.
+/// This validates the PEM formats are correct before use.
+pub fn parse_ca_for_signing(cert_pem: &str, key_pem: &str) -> Result<(String, String)> {
+    // Validate key PEM can be parsed
+    KeyPair::from_pem(key_pem).map_err(|e| CryptoError::InvalidKey(e.to_string()))?;
+    // Validate cert PEM can be used for signing (by attempting to create Issuer)
     let key = KeyPair::from_pem(key_pem).map_err(|e| CryptoError::InvalidKey(e.to_string()))?;
-    let params = CertificateParams::from_ca_cert_pem(cert_pem)
+    Issuer::from_ca_cert_pem(cert_pem, &key)
         .map_err(|e| CryptoError::Certificate(e.to_string()))?;
-    let cert = params.self_signed(&key)?;
-    Ok((cert, key))
+    Ok((cert_pem.to_string(), key_pem.to_string()))
 }
 
 /// Save service certificate bundle
@@ -241,7 +244,7 @@ mod tests {
 
         // Generate intermediate CA
         let intermediate =
-            generate_intermediate_ca(&config, "node1", &root.cert, &root.key).unwrap();
+            generate_intermediate_ca(&config, "node1", &root.cert_pem, &root.key_pem).unwrap();
         save_ca_bundle(&intermediate, dir.path(), "intermediate").unwrap();
 
         // Generate service cert
@@ -249,8 +252,8 @@ mod tests {
             &config,
             "masque",
             &["vpn.example.com".to_string()],
-            &intermediate.cert,
-            &intermediate.key,
+            &intermediate.cert_pem,
+            &intermediate.key_pem,
         )
         .unwrap();
         save_service_cert(&service, dir.path(), "masque").unwrap();
@@ -337,7 +340,7 @@ mod tests {
         let config = PkiConfig::default();
         let root = generate_root_ca(&config).unwrap();
         let intermediate =
-            generate_intermediate_ca(&config, "test-node", &root.cert, &root.key).unwrap();
+            generate_intermediate_ca(&config, "test-node", &root.cert_pem, &root.key_pem).unwrap();
 
         assert!(intermediate
             .cert_pem
@@ -352,7 +355,7 @@ mod tests {
         let config = PkiConfig::default();
         let root = generate_root_ca(&config).unwrap();
         let intermediate =
-            generate_intermediate_ca(&config, "node", &root.cert, &root.key).unwrap();
+            generate_intermediate_ca(&config, "node", &root.cert_pem, &root.key_pem).unwrap();
 
         let dns_names = vec![
             "vpn.example.com".to_string(),
@@ -363,8 +366,8 @@ mod tests {
             &config,
             "multi-dns",
             &dns_names,
-            &intermediate.cert,
-            &intermediate.key,
+            &intermediate.cert_pem,
+            &intermediate.key_pem,
         )
         .unwrap();
 
@@ -387,14 +390,14 @@ mod tests {
         let config = PkiConfig::default();
         let root = generate_root_ca(&config).unwrap();
         let intermediate =
-            generate_intermediate_ca(&config, "node", &root.cert, &root.key).unwrap();
+            generate_intermediate_ca(&config, "node", &root.cert_pem, &root.key_pem).unwrap();
 
         let service = generate_service_cert(
             &config,
             "test-svc",
             &["test.example.com".to_string()],
-            &intermediate.cert,
-            &intermediate.key,
+            &intermediate.cert_pem,
+            &intermediate.key_pem,
         )
         .unwrap();
 
@@ -489,13 +492,13 @@ mod tests {
 
         let root = generate_root_ca(&config).unwrap();
         let intermediate =
-            generate_intermediate_ca(&config, "node", &root.cert, &root.key).unwrap();
+            generate_intermediate_ca(&config, "node", &root.cert_pem, &root.key_pem).unwrap();
         let service = generate_service_cert(
             &config,
             "test",
             &["test.local".to_string()],
-            &intermediate.cert,
-            &intermediate.key,
+            &intermediate.cert_pem,
+            &intermediate.key_pem,
         )
         .unwrap();
 
@@ -541,15 +544,15 @@ mod tests {
         let config = PkiConfig::default();
         let root = generate_root_ca(&config).unwrap();
         let intermediate =
-            generate_intermediate_ca(&config, "node", &root.cert, &root.key).unwrap();
+            generate_intermediate_ca(&config, "node", &root.cert_pem, &root.key_pem).unwrap();
 
         // Empty DNS names should still work (no SANs)
         let service = generate_service_cert(
             &config,
             "no-san",
             &[],
-            &intermediate.cert,
-            &intermediate.key,
+            &intermediate.cert_pem,
+            &intermediate.key_pem,
         )
         .unwrap();
         assert!(!service.cert_pem.is_empty());

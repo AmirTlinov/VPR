@@ -174,14 +174,17 @@ fn main() -> Result<()> {
         } => {
             println!("Loading root CA...");
             let (root_cert_pem, root_key_pem) = pki::load_ca_bundle(&root, "root")?;
-            let (root_cert, root_key) = pki::parse_ca_for_signing(&root_cert_pem, &root_key_pem)?;
+            // Validate PEM formats
+            let (root_cert_pem, root_key_pem) =
+                pki::parse_ca_for_signing(&root_cert_pem, &root_key_pem)?;
 
             println!("Generating intermediate CA for node '{name}'...");
             let config = pki::PkiConfig {
                 intermediate_validity_days: validity_days,
                 ..Default::default()
             };
-            let bundle = pki::generate_intermediate_ca(&config, &name, &root_cert, &root_key)?;
+            let bundle =
+                pki::generate_intermediate_ca(&config, &name, &root_cert_pem, &root_key_pem)?;
             pki::save_ca_bundle(&bundle, &output, "intermediate")?;
             let fp = pki::cert_fingerprint(&bundle.cert_pem)?;
             println!("Intermediate CA generated at: {}", output.display());
@@ -197,7 +200,9 @@ fn main() -> Result<()> {
         } => {
             println!("Loading intermediate CA...");
             let (int_cert_pem, int_key_pem) = pki::load_ca_bundle(&intermediate, "intermediate")?;
-            let (int_cert, int_key) = pki::parse_ca_for_signing(&int_cert_pem, &int_key_pem)?;
+            // Validate PEM formats
+            let (int_cert_pem, int_key_pem) =
+                pki::parse_ca_for_signing(&int_cert_pem, &int_key_pem)?;
 
             let dns_names: Vec<String> = dns.split(',').map(|s| s.trim().to_string()).collect();
             println!("Generating service certificate for '{service}'...");
@@ -207,8 +212,13 @@ fn main() -> Result<()> {
                 service_validity_days: validity_days,
                 ..Default::default()
             };
-            let cert =
-                pki::generate_service_cert(&config, &service, &dns_names, &int_cert, &int_key)?;
+            let cert = pki::generate_service_cert(
+                &config,
+                &service,
+                &dns_names,
+                &int_cert_pem,
+                &int_key_pem,
+            )?;
             pki::save_service_cert(&cert, &output, &service)?;
             let fp = pki::cert_fingerprint(&cert.cert_pem)?;
             println!("Service certificate generated at: {}", output.display());
@@ -302,13 +312,16 @@ fn main() -> Result<()> {
             // 2. Generate intermediate CA
             println!("2. Generating intermediate CA for node...");
             let (root_cert_pem, root_key_pem) = pki::load_ca_bundle(&root_dir, "root")?;
-            let (root_cert, root_key) = pki::parse_ca_for_signing(&root_cert_pem, &root_key_pem)?;
+            // Validate PEM formats
+            let (root_cert_pem, root_key_pem) =
+                pki::parse_ca_for_signing(&root_cert_pem, &root_key_pem)?;
 
             let config = pki::PkiConfig {
                 org_name: org,
                 ..Default::default()
             };
-            let int_bundle = pki::generate_intermediate_ca(&config, &node, &root_cert, &root_key)?;
+            let int_bundle =
+                pki::generate_intermediate_ca(&config, &node, &root_cert_pem, &root_key_pem)?;
             pki::save_ca_bundle(&int_bundle, &node_dir, "intermediate")?;
             println!("   Intermediate CA created");
 
@@ -324,8 +337,8 @@ fn main() -> Result<()> {
                     &config,
                     service,
                     &dns_names,
-                    &int_bundle.cert,
-                    &int_bundle.key,
+                    &int_bundle.cert_pem,
+                    &int_bundle.key_pem,
                 )?;
                 pki::save_service_cert(&cert, &node_dir, service)?;
                 println!("   {} certificate created", service);

@@ -17,11 +17,14 @@ use odoh_rs::{
     ObliviousDoHKeyPair, ObliviousDoHMessage, ObliviousDoHMessagePlaintext, ResponseNonce,
     ODOH_HTTP_HEADER,
 };
-use quinn::rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+
 use quinn::{Connecting, Endpoint, TransportConfig};
 use rand::{rngs::OsRng, RngCore};
 use rcgen::generate_simple_self_signed;
-use rustls::{Certificate, PrivateKey, ServerConfig};
+use rustls::{
+    pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer},
+    ServerConfig,
+};
 use serde::Deserialize;
 use serde_json::json;
 use std::{
@@ -124,6 +127,11 @@ impl OdohRuntime {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Install rustls crypto provider (required in rustls 0.23+)
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("Failed to install rustls crypto provider");
+
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env())
         .init();
@@ -510,7 +518,7 @@ async fn load_cert_material(
                 warn!("Failed to load certificate from Certificate Manager: {} - using self-signed fallback", e);
                 let generated = generate_simple_self_signed([domain.clone()])?;
                 let key = PrivateKeyDer::from(PrivatePkcs8KeyDer::from(
-                    generated.key_pair.serialize_der(),
+                    generated.signing_key.serialize_der(),
                 ));
                 let cert = CertificateDer::from(generated.cert.der().to_vec());
                 return Ok(CertMaterial {
@@ -523,7 +531,9 @@ async fn load_cert_material(
 
     // Fallback to self-signed certificate
     let generated = generate_simple_self_signed(["localhost".into()])?;
-    let key = PrivateKeyDer::from(PrivatePkcs8KeyDer::from(generated.key_pair.serialize_der()));
+    let key = PrivateKeyDer::from(PrivatePkcs8KeyDer::from(
+        generated.signing_key.serialize_der(),
+    ));
     let cert = CertificateDer::from(generated.cert.der().to_vec());
     Ok(CertMaterial {
         certs: vec![cert],
@@ -539,15 +549,10 @@ fn build_quic_config(material: &CertMaterial) -> Result<quinn::ServerConfig> {
 }
 
 fn build_rustls_config(material: &CertMaterial) -> Result<RustlsConfig> {
-    let certs: Vec<Certificate> = material
-        .certs
-        .iter()
-        .map(|c| Certificate(c.as_ref().to_vec()))
-        .collect();
-    let key = PrivateKey(material.key.secret_der().to_vec());
+    let certs = material.certs.clone();
+    let key = material.key.clone_key();
 
     let mut config = ServerConfig::builder()
-        .with_safe_defaults()
         .with_no_client_auth()
         .with_single_cert(certs, key)?;
     config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
