@@ -128,6 +128,40 @@
             <label for="cfg-autoconnect">auto_init</label>
           </div>
         </div>
+
+        <div class="config-section">
+          <div class="section-label"># vps_deploy</div>
+          <div class="field">
+            <label>&gt; host</label>
+            <input type="text" id="vps-host" placeholder="1.2.3.4" spellcheck="false">
+          </div>
+          <div class="field">
+            <label>&gt; ssh_port</label>
+            <input type="text" id="vps-ssh-port" placeholder="22" spellcheck="false">
+          </div>
+          <div class="field">
+            <label>&gt; ssh_user</label>
+            <input type="text" id="vps-ssh-user" placeholder="root" spellcheck="false">
+          </div>
+          <div class="field">
+            <label>&gt; ssh_pass</label>
+            <input type="password" id="vps-ssh-pass" placeholder="********">
+          </div>
+          <div class="deploy-status" id="deploy-status">
+            <span class="status-indicator" id="vps-status-dot">●</span>
+            <span id="vps-status-text">not deployed</span>
+          </div>
+          <div class="deploy-progress hidden" id="deploy-progress">
+            <div class="progress-bar"><div class="progress-fill" id="progress-fill"></div></div>
+            <div class="progress-text" id="progress-text">...</div>
+          </div>
+          <div class="btn-row-small">
+            <button class="chip" id="vps-test-btn">test</button>
+            <button class="chip" id="vps-deploy-btn">deploy</button>
+            <button class="chip" id="vps-status-btn">status</button>
+            <button class="chip warn" id="vps-uninstall-btn">uninstall</button>
+          </div>
+        </div>
       </div>
 
       <div class="btn-row">

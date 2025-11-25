@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod deployer;
 mod killswitch;
 mod process_manager;
 
@@ -9,7 +10,7 @@ use std::fs;
 use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tauri::State;
+use tauri::{AppHandle, State};
 use tokio::net::lookup_host;
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
@@ -66,6 +67,8 @@ struct Config {
     killswitch: bool,
     #[serde(default)]
     insecure: bool,
+    #[serde(default)]
+    vps: deployer::VpsConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -97,6 +100,7 @@ impl Default for Config {
             autoconnect: false,
             killswitch: false,
             insecure: false,
+            vps: deployer::VpsConfig::default(),
         }
     }
 }
@@ -476,6 +480,193 @@ async fn probe_server(server: String, port: String) -> Result<ProbeResult, Strin
     })
 }
 
+// ============================================================================
+// VPS Deployment Commands
+// ============================================================================
+
+/// Save VPS configuration
+#[tauri::command]
+fn save_vps_config(vps: deployer::VpsConfig) -> Result<(), String> {
+    let mut config = Config::load();
+    config.vps = vps;
+    config.save()
+}
+
+/// Get VPS configuration
+#[tauri::command]
+fn get_vps_config() -> deployer::VpsConfig {
+    Config::load().vps
+}
+
+/// Test SSH connection to VPS
+#[tauri::command]
+async fn test_vps_connection(vps: deployer::VpsConfig) -> Result<(), String> {
+    let deployer = deployer::Deployer::new(&vps)
+        .map_err(|e| format!("Invalid VPS config: {}", e))?;
+
+    deployer.test_connection()
+        .await
+        .map_err(|e| format!("Connection failed: {}", e))
+}
+
+/// Check VPS server status
+#[tauri::command]
+async fn check_vps_status(vps: deployer::VpsConfig) -> Result<deployer::ServerStatus, String> {
+    let deployer = deployer::Deployer::new(&vps)
+        .map_err(|e| format!("Invalid VPS config: {}", e))?;
+
+    Ok(deployer.check_status().await)
+}
+
+/// Deploy VPN server to VPS
+#[tauri::command]
+async fn deploy_server(
+    vps: deployer::VpsConfig,
+    app: AppHandle,
+) -> Result<(), String> {
+    let deployer = deployer::Deployer::new(&vps)
+        .map_err(|e| format!("Invalid VPS config: {}", e))?
+        .with_app_handle(app);
+
+    // Find server and keygen binaries
+    let (server_binary, keygen_binary) = find_server_binaries()
+        .map_err(|e| format!("Failed to find server binaries: {}", e))?;
+
+    // Find or create secrets directory
+    let secrets_dir = find_secrets_dir();
+
+    // Run deployment
+    deployer.deploy(&server_binary, &keygen_binary, &secrets_dir)
+        .await
+        .map_err(|e| format!("Deployment failed: {}", e))?;
+
+    // Update config to mark as deployed
+    let mut config = Config::load();
+    config.vps = vps;
+    config.vps.deployed = true;
+    config.server = config.vps.host.clone();
+    config.save()?;
+
+    Ok(())
+}
+
+/// Stop VPN server on VPS
+#[tauri::command]
+async fn stop_vps_server(vps: deployer::VpsConfig) -> Result<(), String> {
+    let deployer = deployer::Deployer::new(&vps)
+        .map_err(|e| format!("Invalid VPS config: {}", e))?;
+
+    deployer.stop_server()
+        .await
+        .map_err(|e| format!("Failed to stop server: {}", e))
+}
+
+/// Start VPN server on VPS (must be deployed first)
+#[tauri::command]
+async fn start_vps_server(vps: deployer::VpsConfig) -> Result<(), String> {
+    let deployer = deployer::Deployer::new(&vps)
+        .map_err(|e| format!("Invalid VPS config: {}", e))?;
+
+    deployer.start_server()
+        .await
+        .map_err(|e| format!("Failed to start server: {}", e))
+}
+
+/// Uninstall VPN server from VPS
+#[tauri::command]
+async fn uninstall_server(vps: deployer::VpsConfig) -> Result<(), String> {
+    let deployer = deployer::Deployer::new(&vps)
+        .map_err(|e| format!("Invalid VPS config: {}", e))?;
+
+    deployer.uninstall()
+        .await
+        .map_err(|e| format!("Uninstall failed: {}", e))?;
+
+    // Update config
+    let mut config = Config::load();
+    config.vps.deployed = false;
+    config.save()?;
+
+    Ok(())
+}
+
+/// Get VPS server logs
+#[tauri::command]
+async fn get_vps_logs(vps: deployer::VpsConfig, lines: u32) -> Result<String, String> {
+    let deployer = deployer::Deployer::new(&vps)
+        .map_err(|e| format!("Invalid VPS config: {}", e))?;
+
+    deployer.get_logs(lines)
+        .await
+        .map_err(|e| format!("Failed to get logs: {}", e))
+}
+
+/// Find server binaries for deployment
+fn find_server_binaries() -> Result<(PathBuf, PathBuf), String> {
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+        .unwrap_or_else(|| PathBuf::from("."));
+
+    // Search paths for binaries
+    let search_paths = [
+        exe_dir.clone(),
+        exe_dir.join(".."),
+        exe_dir.join("../.."),
+        exe_dir.join("../../.."),
+        PathBuf::from("target/release"),
+        PathBuf::from("target/debug"),
+    ];
+
+    let mut server_binary = None;
+    let mut keygen_binary = None;
+
+    for base in &search_paths {
+        let server_path = base.join("vpn-server");
+        let keygen_path = base.join("vpr-keygen");
+
+        if server_path.exists() && server_binary.is_none() {
+            server_binary = Some(server_path);
+        }
+        if keygen_path.exists() && keygen_binary.is_none() {
+            keygen_binary = Some(keygen_path);
+        }
+
+        if server_binary.is_some() && keygen_binary.is_some() {
+            break;
+        }
+    }
+
+    let server = server_binary.ok_or_else(|| {
+        "vpn-server binary not found. Run 'cargo build --release -p masque-core' first.".to_string()
+    })?;
+
+    let keygen = keygen_binary.ok_or_else(|| {
+        "vpr-keygen binary not found. Run 'cargo build --release -p vpr-crypto' first.".to_string()
+    })?;
+
+    Ok((server, keygen))
+}
+
+/// Find or create secrets directory
+fn find_secrets_dir() -> PathBuf {
+    // Try standard locations
+    let candidates = [
+        std::env::var("VPR_SECRETS_DIR").ok().map(PathBuf::from),
+        directories::ProjectDirs::from("com", "vpr", "client")
+            .map(|d| d.config_dir().join("secrets")),
+        Some(PathBuf::from("secrets")),
+    ];
+
+    for candidate in candidates.into_iter().flatten() {
+        if candidate.exists() || std::fs::create_dir_all(&candidate).is_ok() {
+            return candidate;
+        }
+    }
+
+    PathBuf::from("secrets")
+}
+
 fn main() {
     // Try to self-elevate for TUN/nftables if not already root (Linux)
     if let Err(e) = ensure_root() {
@@ -602,7 +793,17 @@ fn main() {
             disconnect,
             get_statistics,
             probe_server,
-            check_tunnel
+            check_tunnel,
+            // VPS deployment commands
+            save_vps_config,
+            get_vps_config,
+            test_vps_connection,
+            check_vps_status,
+            deploy_server,
+            stop_vps_server,
+            start_vps_server,
+            uninstall_server,
+            get_vps_logs
         ])
         .run(tauri::generate_context!())
         .map_err(|e| {

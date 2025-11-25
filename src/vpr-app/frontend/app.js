@@ -1,4 +1,5 @@
 const { invoke } = window.__TAURI__.core;
+const { listen } = window.__TAURI__.event;
 
 // Elements
 const mainView = document.getElementById('main-view');
@@ -140,29 +141,7 @@ async function loadConfig() {
   }
 }
 
-// Save config
-saveBtn.addEventListener('click', async () => {
-  try {
-    await invoke('save_config', {
-      config: {
-        server: cfgServer.value.trim(),
-        port: cfgPort.value.trim(),
-        username: cfgUsername.value.trim(),
-        mode: cfgMode.value,
-        doh_endpoint: cfgDoh.value.trim(),
-        autoconnect: cfgAutoconnect.checked,
-        killswitch: cfgKillswitch.checked,
-        insecure: cfgInsecure.checked,
-      }
-    });
-    showError('');
-    settingsView.classList.add('hidden');
-    mainView.classList.remove('hidden');
-    probeServer();
-  } catch (e) {
-    showError(e);
-  }
-});
+// Save config - handler moved to VPS section at bottom of file
 
 // Пробивка сервера
 probeBtn.addEventListener('click', () => probeServer());
@@ -527,3 +506,251 @@ async function init() {
 }
 
 document.addEventListener('DOMContentLoaded', init);
+
+// ============================================================================
+// VPS Deployment Section
+// ============================================================================
+
+// VPS Elements
+const vpsHost = document.getElementById('vps-host');
+const vpsSshPort = document.getElementById('vps-ssh-port');
+const vpsSshUser = document.getElementById('vps-ssh-user');
+const vpsSshPass = document.getElementById('vps-ssh-pass');
+const vpsStatusDot = document.getElementById('vps-status-dot');
+const vpsStatusText = document.getElementById('vps-status-text');
+const deployProgress = document.getElementById('deploy-progress');
+const progressFill = document.getElementById('progress-fill');
+const progressText = document.getElementById('progress-text');
+const vpsTestBtn = document.getElementById('vps-test-btn');
+const vpsDeployBtn = document.getElementById('vps-deploy-btn');
+const vpsStatusBtn = document.getElementById('vps-status-btn');
+const vpsUninstallBtn = document.getElementById('vps-uninstall-btn');
+
+// Get VPS config object from form
+function getVpsConfig() {
+  return {
+    host: vpsHost.value.trim(),
+    ssh_port: parseInt(vpsSshPort.value.trim() || '22', 10),
+    ssh_user: vpsSshUser.value.trim() || 'root',
+    ssh_password: vpsSshPass.value || null,
+    ssh_key_path: null,
+    deployed: false
+  };
+}
+
+// Load VPS config from backend
+async function loadVpsConfig() {
+  try {
+    const cfg = await invoke('get_vps_config');
+    vpsHost.value = cfg.host || '';
+    vpsSshPort.value = cfg.ssh_port || '22';
+    vpsSshUser.value = cfg.ssh_user || 'root';
+    // Don't load password for security
+    if (cfg.deployed) {
+      setVpsStatus('deployed', 'deployed');
+    }
+  } catch (e) {
+    console.error('VPS config load failed:', e);
+  }
+}
+
+// Set VPS status display
+function setVpsStatus(state, text) {
+  vpsStatusDot.classList.remove('health-ok', 'health-bad', 'health-unknown');
+  switch (state) {
+    case 'deployed':
+    case 'running':
+      vpsStatusDot.classList.add('health-ok');
+      break;
+    case 'error':
+    case 'stopped':
+      vpsStatusDot.classList.add('health-bad');
+      break;
+    default:
+      vpsStatusDot.classList.add('health-unknown');
+  }
+  vpsStatusText.textContent = text;
+}
+
+// Show/hide progress
+function showProgress(show) {
+  if (show) {
+    deployProgress.classList.remove('hidden');
+  } else {
+    deployProgress.classList.add('hidden');
+  }
+}
+
+// Update progress bar
+function updateProgress(percent, message) {
+  progressFill.style.width = `${percent}%`;
+  progressText.textContent = message;
+}
+
+// Disable all VPS buttons
+function disableVpsButtons(disable) {
+  vpsTestBtn.disabled = disable;
+  vpsDeployBtn.disabled = disable;
+  vpsStatusBtn.disabled = disable;
+  vpsUninstallBtn.disabled = disable;
+}
+
+// Test SSH connection
+vpsTestBtn.addEventListener('click', async () => {
+  const vps = getVpsConfig();
+  if (!vps.host) {
+    setVpsStatus('error', 'host required');
+    return;
+  }
+  if (!vps.ssh_password) {
+    setVpsStatus('error', 'password required');
+    return;
+  }
+
+  setVpsStatus('unknown', 'testing...');
+  disableVpsButtons(true);
+
+  try {
+    await invoke('test_vps_connection', { vps });
+    setVpsStatus('running', 'SSH OK');
+  } catch (e) {
+    setVpsStatus('error', e.toString().substring(0, 30));
+  } finally {
+    disableVpsButtons(false);
+  }
+});
+
+// Deploy server
+vpsDeployBtn.addEventListener('click', async () => {
+  const vps = getVpsConfig();
+  if (!vps.host || !vps.ssh_password) {
+    setVpsStatus('error', 'host & password required');
+    return;
+  }
+
+  setVpsStatus('unknown', 'deploying...');
+  showProgress(true);
+  updateProgress(0, 'Starting deployment...');
+  disableVpsButtons(true);
+
+  try {
+    await invoke('deploy_server', { vps });
+    setVpsStatus('deployed', 'deployed & running');
+    updateProgress(100, 'Complete!');
+    // Auto-fill server field
+    cfgServer.value = vps.host;
+    // Clear password after successful deploy
+    vpsSshPass.value = '';
+  } catch (e) {
+    setVpsStatus('error', e.toString().substring(0, 40));
+    updateProgress(0, 'Failed: ' + e.toString().substring(0, 50));
+  } finally {
+    disableVpsButtons(false);
+    setTimeout(() => showProgress(false), 3000);
+  }
+});
+
+// Check server status
+vpsStatusBtn.addEventListener('click', async () => {
+  const vps = getVpsConfig();
+  if (!vps.host) {
+    setVpsStatus('error', 'host required');
+    return;
+  }
+  if (!vps.ssh_password) {
+    setVpsStatus('error', 'password required');
+    return;
+  }
+
+  setVpsStatus('unknown', 'checking...');
+  disableVpsButtons(true);
+
+  try {
+    const status = await invoke('check_vps_status', { vps });
+    if (status.running) {
+      setVpsStatus('running', 'running' + (status.version ? ` (${status.version})` : ''));
+    } else if (status.deployed) {
+      setVpsStatus('stopped', 'deployed but stopped');
+    } else {
+      setVpsStatus('unknown', 'not deployed');
+    }
+  } catch (e) {
+    setVpsStatus('error', e.toString().substring(0, 30));
+  } finally {
+    disableVpsButtons(false);
+  }
+});
+
+// Uninstall server
+vpsUninstallBtn.addEventListener('click', async () => {
+  const vps = getVpsConfig();
+  if (!vps.host || !vps.ssh_password) {
+    setVpsStatus('error', 'host & password required');
+    return;
+  }
+
+  if (!confirm('Remove VPN server from VPS? This cannot be undone.')) {
+    return;
+  }
+
+  setVpsStatus('unknown', 'uninstalling...');
+  disableVpsButtons(true);
+
+  try {
+    await invoke('uninstall_server', { vps });
+    setVpsStatus('unknown', 'not deployed');
+  } catch (e) {
+    setVpsStatus('error', e.toString().substring(0, 30));
+  } finally {
+    disableVpsButtons(false);
+  }
+});
+
+// Listen for deploy progress events from backend
+listen('deploy_progress', (event) => {
+  const progress = event.payload;
+  updateProgress(progress.percent, progress.message);
+  if (progress.error) {
+    setVpsStatus('error', progress.error.substring(0, 40));
+  }
+});
+
+// Load VPS config on settings open
+const originalSettingsClick = settingsBtn.onclick;
+settingsBtn.addEventListener('click', () => {
+  loadVpsConfig();
+});
+
+// Also save VPS config when saving main config
+const originalSaveClick = saveBtn.onclick;
+saveBtn.removeEventListener('click', originalSaveClick);
+saveBtn.addEventListener('click', async () => {
+  try {
+    // Save main config
+    await invoke('save_config', {
+      config: {
+        server: cfgServer.value.trim(),
+        port: cfgPort.value.trim(),
+        username: cfgUsername.value.trim(),
+        mode: cfgMode.value,
+        doh_endpoint: cfgDoh.value.trim(),
+        autoconnect: cfgAutoconnect.checked,
+        killswitch: cfgKillswitch.checked,
+        insecure: cfgInsecure.checked,
+      }
+    });
+
+    // Save VPS config if host is provided
+    const vpsConfig = getVpsConfig();
+    if (vpsConfig.host) {
+      await invoke('save_vps_config', { vps: vpsConfig });
+    }
+
+    showError('');
+    settingsView.classList.add('hidden');
+    mainView.classList.remove('hidden');
+    probeServer();
+  } catch (e) {
+    showError(e);
+  }
+});
