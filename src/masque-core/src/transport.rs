@@ -513,4 +513,219 @@ mod tests {
         assert_eq!(stats.bytes_received, 0);
         assert_eq!(stats.reconnections, 0);
     }
+
+    #[test]
+    fn test_transport_type_equality() {
+        assert_eq!(TransportType::Quic, TransportType::Quic);
+        assert_ne!(TransportType::Quic, TransportType::WebSocket);
+        assert_ne!(TransportType::WebSocket, TransportType::WebRtc);
+    }
+
+    #[test]
+    fn test_connection_state_equality() {
+        assert_eq!(ConnectionState::Disconnected, ConnectionState::Disconnected);
+        assert_ne!(ConnectionState::Connected, ConnectionState::Connecting);
+        assert_ne!(ConnectionState::Reconnecting, ConnectionState::Failed);
+    }
+
+    #[test]
+    fn test_transport_stats_fields() {
+        let stats = TransportStats {
+            bytes_sent: 1000,
+            bytes_received: 2000,
+            packets_sent: 10,
+            packets_received: 20,
+            reconnections: 2,
+            current_rtt_ms: Some(50),
+        };
+        assert_eq!(stats.bytes_sent, 1000);
+        assert_eq!(stats.bytes_received, 2000);
+        assert_eq!(stats.packets_sent, 10);
+        assert_eq!(stats.packets_received, 20);
+        assert_eq!(stats.reconnections, 2);
+        assert_eq!(stats.current_rtt_ms, Some(50));
+    }
+
+    #[test]
+    fn test_transport_stats_clone() {
+        let stats = TransportStats {
+            bytes_sent: 100,
+            bytes_received: 200,
+            packets_sent: 5,
+            packets_received: 10,
+            reconnections: 1,
+            current_rtt_ms: Some(30),
+        };
+        let cloned = stats.clone();
+        assert_eq!(stats.bytes_sent, cloned.bytes_sent);
+        assert_eq!(stats.current_rtt_ms, cloned.current_rtt_ms);
+    }
+
+    #[test]
+    fn test_fallback_config_custom() {
+        let config = FallbackConfig {
+            primary: TransportType::WebSocket,
+            fallbacks: vec![TransportType::Quic],
+            connect_timeout: Duration::from_secs(5),
+            max_reconnects: 5,
+            reconnect_delay: Duration::from_secs(1),
+            probe_interval: Duration::from_secs(30),
+        };
+        assert_eq!(config.primary, TransportType::WebSocket);
+        assert_eq!(config.fallbacks.len(), 1);
+        assert_eq!(config.max_reconnects, 5);
+    }
+
+    #[tokio::test]
+    async fn test_fallback_transport_stats() {
+        let transport = FallbackTransport::new(FallbackConfig::default());
+        let stats = transport.stats().await;
+        assert_eq!(stats.bytes_sent, 0);
+        assert_eq!(stats.reconnections, 0);
+    }
+
+    #[test]
+    fn test_webrtc_transport_add_turn_server() {
+        let mut transport = WebRtcTransport::new(WebRtcConfig::default());
+        let turn = TurnServer {
+            url: "turn:example.com:3478".to_string(),
+            username: "user".to_string(),
+            credential: "pass".to_string(),
+        };
+        transport.add_turn_server(turn);
+        assert_eq!(transport.config.turn_servers.len(), 1);
+    }
+
+    #[test]
+    fn test_webrtc_transport_stun_servers() {
+        let transport = WebRtcTransport::new(WebRtcConfig::default());
+        let stun = transport.stun_servers();
+        assert!(!stun.is_empty());
+        assert!(stun[0].contains("stun"));
+    }
+
+    #[test]
+    fn test_websocket_transport_set_url() {
+        let mut transport = WebSocketTransport::new();
+        transport.set_url("wss://example.com/ws");
+        assert_eq!(transport.url, Some("wss://example.com/ws".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_webrtc_transport_disconnect() {
+        let mut transport = WebRtcTransport::new(WebRtcConfig::default());
+        transport.disconnect().await.unwrap();
+        assert_eq!(transport.state(), ConnectionState::Disconnected);
+    }
+
+    #[tokio::test]
+    async fn test_websocket_transport_disconnect() {
+        let mut transport = WebSocketTransport::new();
+        transport.disconnect().await.unwrap();
+        assert_eq!(transport.state(), ConnectionState::Disconnected);
+    }
+
+    #[test]
+    fn test_webrtc_transport_rtt() {
+        let mut transport = WebRtcTransport::new(WebRtcConfig::default());
+        assert!(transport.rtt().is_none());
+
+        transport.stats.current_rtt_ms = Some(100);
+        assert_eq!(transport.rtt(), Some(Duration::from_millis(100)));
+    }
+
+    #[test]
+    fn test_websocket_transport_rtt() {
+        let mut transport = WebSocketTransport::new();
+        assert!(transport.rtt().is_none());
+
+        transport.stats.current_rtt_ms = Some(50);
+        assert_eq!(transport.rtt(), Some(Duration::from_millis(50)));
+    }
+
+    #[test]
+    fn test_webrtc_transport_stats() {
+        let transport = WebRtcTransport::new(WebRtcConfig::default());
+        let stats = transport.stats();
+        assert_eq!(stats.bytes_sent, 0);
+    }
+
+    #[test]
+    fn test_websocket_transport_stats() {
+        let transport = WebSocketTransport::new();
+        let stats = transport.stats();
+        assert_eq!(stats.bytes_sent, 0);
+    }
+
+    #[tokio::test]
+    async fn test_webrtc_connect_not_implemented() {
+        let mut transport = WebRtcTransport::new(WebRtcConfig::default());
+        let addr: SocketAddr = "127.0.0.1:443".parse().unwrap();
+        let result = transport.connect(addr).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_websocket_connect_not_implemented() {
+        let mut transport = WebSocketTransport::new();
+        let addr: SocketAddr = "127.0.0.1:443".parse().unwrap();
+        let result = transport.connect(addr).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_webrtc_send_not_connected() {
+        let mut transport = WebRtcTransport::new(WebRtcConfig::default());
+        let result = transport.send(b"test").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_websocket_send_not_connected() {
+        let mut transport = WebSocketTransport::new();
+        let result = transport.send(b"test").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_webrtc_recv_not_connected() {
+        let mut transport = WebRtcTransport::new(WebRtcConfig::default());
+        let result = transport.recv().await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_websocket_recv_not_connected() {
+        let mut transport = WebSocketTransport::new();
+        let result = transport.recv().await;
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_webrtc_config_clone() {
+        let config = WebRtcConfig::default();
+        let cloned = config.clone();
+        assert_eq!(config.channel_label, cloned.channel_label);
+        assert_eq!(config.stun_servers.len(), cloned.stun_servers.len());
+    }
+
+    #[test]
+    fn test_turn_server_clone() {
+        let turn = TurnServer {
+            url: "turn:example.com".to_string(),
+            username: "user".to_string(),
+            credential: "pass".to_string(),
+        };
+        let cloned = turn.clone();
+        assert_eq!(turn.url, cloned.url);
+        assert_eq!(turn.username, cloned.username);
+    }
+
+    #[test]
+    fn test_fallback_config_clone() {
+        let config = FallbackConfig::default();
+        let cloned = config.clone();
+        assert_eq!(config.primary, cloned.primary);
+        assert_eq!(config.fallbacks.len(), cloned.fallbacks.len());
+    }
 }

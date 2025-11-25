@@ -121,4 +121,125 @@ mod tests {
         s.add(200.0);
         assert!((s.current() - 100.0).abs() < 0.01);
     }
+
+    #[test]
+    fn test_new_tracker() {
+        let tracker = SuspicionTracker::new();
+        assert!(tracker.current() < 0.01);
+    }
+
+    #[test]
+    fn test_default_tracker() {
+        let tracker = SuspicionTracker::default();
+        assert!(tracker.current() < 0.01);
+    }
+
+    #[test]
+    fn test_with_half_life() {
+        let tracker = SuspicionTracker::with_half_life(60.0);
+        tracker.add(50.0);
+        // Should be close to 50 immediately
+        assert!((tracker.current() - 50.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn test_add_negative_clamped() {
+        let tracker = SuspicionTracker::new();
+        tracker.add(-10.0);
+        // Negative clamped to 0
+        assert!(tracker.current() < 0.01);
+    }
+
+    #[test]
+    fn test_add_multiple() {
+        let tracker = SuspicionTracker::new();
+        tracker.add(10.0);
+        tracker.add(20.0);
+        tracker.add(30.0);
+        // Should be close to 60 (10 + 20 + 30)
+        let current = tracker.current();
+        assert!(current >= 55.0 && current <= 65.0);
+    }
+
+    #[test]
+    fn test_add_up_to_max() {
+        let tracker = SuspicionTracker::new();
+        for _ in 0..20 {
+            tracker.add(50.0);
+        }
+        // Should cap at 100
+        let current = tracker.current();
+        assert!((current - 100.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_decay_explicit() {
+        let tracker = SuspicionTracker::with_half_life(0.5);
+        tracker.add(80.0);
+        std::thread::sleep(Duration::from_millis(600));
+        tracker.decay();
+        // After ~1 half-life, should be around 40
+        let current = tracker.current();
+        assert!(current < 60.0);
+    }
+
+    #[test]
+    fn test_decay_factor_zero_half_life() {
+        let factor = decay_factor(Duration::from_secs(1), 0.0);
+        assert_eq!(factor, 0.0);
+    }
+
+    #[test]
+    fn test_decay_factor_negative_half_life() {
+        let factor = decay_factor(Duration::from_secs(1), -5.0);
+        assert_eq!(factor, 0.0);
+    }
+
+    #[test]
+    fn test_decay_factor_normal() {
+        // After 1 half-life, factor should be 0.5
+        let factor = decay_factor(Duration::from_secs(30), 30.0);
+        assert!((factor - 0.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_decay_factor_two_half_lives() {
+        // After 2 half-lives, factor should be 0.25
+        let factor = decay_factor(Duration::from_secs(60), 30.0);
+        assert!((factor - 0.25).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_prometheus_format() {
+        let tracker = SuspicionTracker::new();
+        tracker.add(42.0);
+        let prom = tracker.prometheus("test");
+        assert!(prom.contains("# HELP test_score"));
+        assert!(prom.contains("# TYPE test_score gauge"));
+        assert!(prom.contains("test_score"));
+    }
+
+    #[test]
+    fn test_prometheus_prefix() {
+        let tracker = SuspicionTracker::new();
+        let prom = tracker.prometheus("myprefix");
+        assert!(prom.contains("myprefix_score"));
+    }
+
+    #[test]
+    fn test_current_triggers_decay() {
+        let tracker = SuspicionTracker::with_half_life(0.1);
+        tracker.add(50.0);
+        std::thread::sleep(Duration::from_millis(150));
+        // current() should trigger decay
+        let val = tracker.current();
+        assert!(val < 50.0);
+    }
+
+    #[test]
+    fn test_tracker_debug() {
+        let tracker = SuspicionTracker::new();
+        let debug_str = format!("{:?}", tracker);
+        assert!(debug_str.contains("SuspicionTracker"));
+    }
 }

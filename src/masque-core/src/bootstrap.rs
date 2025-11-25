@@ -432,4 +432,196 @@ mod tests {
         let result = client.fetch_cached().await;
         assert!(result.is_err());
     }
+
+    #[tokio::test]
+    async fn test_clear_cache() {
+        let temp_dir = TempDir::new().expect("failed to create temp dir");
+        let keypair = SigningKeypair::generate();
+        let servers = vec![ServerEndpoint::new("srv1", "1.2.3.4", 443, "key1")];
+        let payload = ManifestPayload::new(servers);
+        let signed = SignedManifest::sign(&payload, &keypair).expect("failed to sign");
+
+        let mut config = ManifestClientConfig::default();
+        config.cache_dir = temp_dir.path().to_path_buf();
+        config.expected_pubkey = keypair.public_bytes();
+
+        let client = ManifestClient::new(config).expect("failed to create client");
+        client
+            .cache_manifest(&signed)
+            .await
+            .expect("failed to cache");
+
+        // Verify cache exists
+        let cache_file = temp_dir.path().join("manifest.json");
+        assert!(cache_file.exists());
+
+        // Clear cache
+        client.clear_cache().await.expect("failed to clear cache");
+        assert!(!cache_file.exists());
+    }
+
+    #[tokio::test]
+    async fn test_clear_cache_nonexistent() {
+        let temp_dir = TempDir::new().expect("failed to create temp dir");
+        let mut config = ManifestClientConfig::default();
+        config.cache_dir = temp_dir.path().to_path_buf();
+
+        let client = ManifestClient::new(config).expect("failed to create client");
+
+        // Should not error on nonexistent cache
+        let result = client.clear_cache().await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_has_fresh_cache_no_cache() {
+        let temp_dir = TempDir::new().expect("failed to create temp dir");
+        let mut config = ManifestClientConfig::default();
+        config.cache_dir = temp_dir.path().to_path_buf();
+
+        let client = ManifestClient::new(config).expect("failed to create client");
+        assert!(!client.has_fresh_cache().await);
+    }
+
+    #[tokio::test]
+    async fn test_has_fresh_cache_with_fresh() {
+        let temp_dir = TempDir::new().expect("failed to create temp dir");
+        let keypair = SigningKeypair::generate();
+        let servers = vec![ServerEndpoint::new("srv1", "1.2.3.4", 443, "key1")];
+        let payload = ManifestPayload::new(servers);
+        let signed = SignedManifest::sign(&payload, &keypair).expect("failed to sign");
+
+        let mut config = ManifestClientConfig::default();
+        config.cache_dir = temp_dir.path().to_path_buf();
+        config.expected_pubkey = keypair.public_bytes();
+
+        let client = ManifestClient::new(config).expect("failed to create client");
+        client
+            .cache_manifest(&signed)
+            .await
+            .expect("failed to cache");
+
+        assert!(client.has_fresh_cache().await);
+    }
+
+    #[tokio::test]
+    async fn test_has_fresh_cache_expired() {
+        let temp_dir = TempDir::new().expect("failed to create temp dir");
+        let keypair = SigningKeypair::generate();
+        let servers = vec![ServerEndpoint::new("srv1", "1.2.3.4", 443, "key1")];
+        let mut payload = ManifestPayload::new(servers);
+        payload.expires_at = 0; // expired
+        let signed = SignedManifest::sign(&payload, &keypair).expect("failed to sign");
+
+        let mut config = ManifestClientConfig::default();
+        config.cache_dir = temp_dir.path().to_path_buf();
+        config.expected_pubkey = keypair.public_bytes();
+
+        let client = ManifestClient::new(config).expect("failed to create client");
+        client
+            .cache_manifest(&signed)
+            .await
+            .expect("failed to cache");
+
+        assert!(!client.has_fresh_cache().await);
+    }
+
+    #[tokio::test]
+    async fn test_cache_dir_getter() {
+        let temp_dir = TempDir::new().expect("failed to create temp dir");
+        let mut config = ManifestClientConfig::default();
+        config.cache_dir = temp_dir.path().to_path_buf();
+
+        let client = ManifestClient::new(config).expect("failed to create client");
+        assert_eq!(client.cache_dir(), temp_dir.path());
+    }
+
+    #[test]
+    fn test_manifest_client_config_clone() {
+        let config1 = ManifestClientConfig::default();
+        let config2 = config1.clone();
+        assert_eq!(config1.max_retries, config2.max_retries);
+        assert_eq!(config1.timeout, config2.timeout);
+    }
+
+    #[tokio::test]
+    async fn test_fetch_cached_no_cache() {
+        let temp_dir = TempDir::new().expect("failed to create temp dir");
+        let mut config = ManifestClientConfig::default();
+        config.cache_dir = temp_dir.path().to_path_buf();
+
+        let client = ManifestClient::new(config).expect("failed to create client");
+        let result = client.fetch_cached().await;
+        assert!(result.is_err());
+        assert!(result.err().unwrap().to_string().contains("no cached"));
+    }
+
+    #[tokio::test]
+    async fn test_cache_manifest_creates_directory() {
+        let temp_dir = TempDir::new().expect("failed to create temp dir");
+        let nested_cache = temp_dir.path().join("nested").join("cache").join("dir");
+        let keypair = SigningKeypair::generate();
+        let servers = vec![ServerEndpoint::new("srv1", "1.2.3.4", 443, "key1")];
+        let payload = ManifestPayload::new(servers);
+        let signed = SignedManifest::sign(&payload, &keypair).expect("failed to sign");
+
+        let mut config = ManifestClientConfig::default();
+        config.cache_dir = nested_cache.clone();
+        config.expected_pubkey = keypair.public_bytes();
+
+        let client = ManifestClient::new(config).expect("failed to create client");
+
+        // Directory should not exist yet
+        assert!(!nested_cache.exists());
+
+        client
+            .cache_manifest(&signed)
+            .await
+            .expect("failed to cache");
+
+        // Directory should be created
+        assert!(nested_cache.exists());
+        assert!(nested_cache.join("manifest.json").exists());
+    }
+
+    #[tokio::test]
+    async fn test_fetch_cached_invalid_signature() {
+        let temp_dir = TempDir::new().expect("failed to create temp dir");
+        let keypair1 = SigningKeypair::generate();
+        let keypair2 = SigningKeypair::generate();
+        let servers = vec![ServerEndpoint::new("srv1", "1.2.3.4", 443, "key1")];
+        let payload = ManifestPayload::new(servers);
+        // Sign with keypair1
+        let signed = SignedManifest::sign(&payload, &keypair1).expect("failed to sign");
+
+        let mut config = ManifestClientConfig::default();
+        config.cache_dir = temp_dir.path().to_path_buf();
+        // But expect keypair2's public key
+        config.expected_pubkey = keypair2.public_bytes();
+
+        let client = ManifestClient::new(config).expect("failed to create client");
+        client
+            .cache_manifest(&signed)
+            .await
+            .expect("failed to cache");
+
+        // Should fail signature verification
+        let result = client.fetch_cached().await;
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_config_custom_values() {
+        let mut config = ManifestClientConfig::default();
+        config.max_retries = 5;
+        config.timeout = Duration::from_secs(60);
+        config.retry_backoff_base = Duration::from_secs(2);
+        config.rss_feeds = vec!["http://feed1.com".to_string()];
+        config.doh_endpoints = vec!["doh.example.com".to_string()];
+
+        assert_eq!(config.max_retries, 5);
+        assert_eq!(config.timeout, Duration::from_secs(60));
+        assert_eq!(config.rss_feeds.len(), 1);
+        assert_eq!(config.doh_endpoints.len(), 1);
+    }
 }

@@ -379,4 +379,187 @@ mod tests {
 
         assert_eq!(received.client_ip, Ipv4Addr::new(10, 8, 0, 10));
     }
+
+    #[test]
+    fn test_vpn_config_with_padding() {
+        let config = VpnConfig::new(Ipv4Addr::new(10, 8, 0, 2), Ipv4Addr::new(10, 8, 0, 1))
+            .with_padding("bucket", 5000, 64, 1400);
+
+        assert_eq!(config.padding_strategy, Some("bucket".to_string()));
+        assert_eq!(config.padding_max_jitter_us, Some(5000));
+        assert_eq!(config.padding_min_size, Some(64));
+        assert_eq!(config.padding_mtu, Some(1400));
+    }
+
+    #[test]
+    fn test_vpn_config_with_suspicion() {
+        let config = VpnConfig::new(Ipv4Addr::new(10, 8, 0, 2), Ipv4Addr::new(10, 8, 0, 1))
+            .with_suspicion(42.5);
+
+        assert_eq!(config.suspicion_score, Some(42.5));
+    }
+
+    #[test]
+    fn test_from_bytes_too_short() {
+        let result = VpnConfig::from_bytes(&[0, 1, 2]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("too short"));
+    }
+
+    #[test]
+    fn test_from_bytes_too_large() {
+        let mut data = vec![0u8; 8];
+        // Set length to MAX_CONFIG_SIZE + 1
+        let len = (MAX_CONFIG_SIZE + 1) as u32;
+        data[0..4].copy_from_slice(&len.to_be_bytes());
+        let result = VpnConfig::from_bytes(&data);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("too large"));
+    }
+
+    #[test]
+    fn test_from_bytes_truncated() {
+        let config = VpnConfig::new(Ipv4Addr::new(10, 8, 0, 2), Ipv4Addr::new(10, 8, 0, 1));
+        let bytes = config.to_bytes().unwrap();
+        // Truncate the data
+        let truncated = &bytes[..bytes.len() - 10];
+        let result = VpnConfig::from_bytes(truncated);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("truncated"));
+    }
+
+    #[test]
+    fn test_vpn_config_full_roundtrip() {
+        let config = VpnConfig::new(Ipv4Addr::new(10, 8, 0, 2), Ipv4Addr::new(10, 8, 0, 1))
+            .with_dns(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)))
+            .with_route("10.0.0.0/8")
+            .with_route("172.16.0.0/12")
+            .with_mtu(1380)
+            .with_session_id("session-123")
+            .with_padding("rand-bucket", 3000, 128, 1380)
+            .with_rotation(3600, 1_000_000)
+            .with_suspicion(75.0);
+
+        let bytes = config.to_bytes().unwrap();
+        let parsed = VpnConfig::from_bytes(&bytes).unwrap();
+
+        assert_eq!(parsed.client_ip, config.client_ip);
+        assert_eq!(parsed.gateway, config.gateway);
+        assert_eq!(parsed.dns_servers.len(), 1);
+        assert_eq!(parsed.routes.len(), 2);
+        assert_eq!(parsed.mtu, 1380);
+        assert_eq!(parsed.session_id, Some("session-123".to_string()));
+        assert_eq!(parsed.padding_strategy, Some("rand-bucket".to_string()));
+        assert_eq!(parsed.padding_max_jitter_us, Some(3000));
+        assert_eq!(parsed.padding_min_size, Some(128));
+        assert_eq!(parsed.padding_mtu, Some(1380));
+        assert_eq!(parsed.session_rekey_secs, Some(3600));
+        assert_eq!(parsed.session_rekey_bytes, Some(1_000_000));
+        assert_eq!(parsed.suspicion_score, Some(75.0));
+    }
+
+    #[test]
+    fn test_vpn_config_debug() {
+        let config = VpnConfig::new(Ipv4Addr::new(10, 8, 0, 2), Ipv4Addr::new(10, 8, 0, 1));
+        let debug_str = format!("{:?}", config);
+        assert!(debug_str.contains("VpnConfig"));
+        assert!(debug_str.contains("10.8.0.2"));
+    }
+
+    #[test]
+    fn test_config_ack_debug() {
+        let ack = ConfigAck::ok();
+        let debug_str = format!("{:?}", ack);
+        assert!(debug_str.contains("ConfigAck"));
+        assert!(debug_str.contains("accepted"));
+    }
+
+    #[tokio::test]
+    async fn test_config_ack_async_roundtrip() {
+        let ack = ConfigAck::error("connection refused");
+
+        let (mut client, mut server) = tokio::io::duplex(256);
+
+        let send_task = tokio::spawn(async move {
+            ack.send(&mut client).await.unwrap();
+        });
+
+        let recv_task = tokio::spawn(async move { ConfigAck::recv(&mut server).await.unwrap() });
+
+        send_task.await.unwrap();
+        let received = recv_task.await.unwrap();
+
+        assert!(!received.accepted);
+        assert_eq!(received.error.as_deref(), Some("connection refused"));
+    }
+
+    #[tokio::test]
+    async fn test_recv_too_large_config() {
+        let (mut client, mut server) = tokio::io::duplex(32);
+
+        // Send an oversized length prefix
+        let oversized_len = (MAX_CONFIG_SIZE + 100) as u32;
+        tokio::spawn(async move {
+            use tokio::io::AsyncWriteExt;
+            client.write_all(&oversized_len.to_be_bytes()).await.unwrap();
+        });
+
+        let result = VpnConfig::recv(&mut server).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("too large"));
+    }
+
+    #[tokio::test]
+    async fn test_config_ack_recv_too_large() {
+        let (mut client, mut server) = tokio::io::duplex(32);
+
+        // Send an oversized length prefix (> 4096)
+        let oversized_len: u32 = 5000;
+        tokio::spawn(async move {
+            use tokio::io::AsyncWriteExt;
+            client.write_all(&oversized_len.to_be_bytes()).await.unwrap();
+        });
+
+        let result = ConfigAck::recv(&mut server).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("too large"));
+    }
+
+    #[test]
+    fn test_vpn_config_clone() {
+        let config = VpnConfig::new(Ipv4Addr::new(10, 8, 0, 2), Ipv4Addr::new(10, 8, 0, 1))
+            .with_session_id("test");
+
+        let cloned = config.clone();
+        assert_eq!(cloned.client_ip, config.client_ip);
+        assert_eq!(cloned.session_id, config.session_id);
+    }
+
+    #[test]
+    fn test_config_ack_clone() {
+        let ack = ConfigAck::error("test");
+        let cloned = ack.clone();
+        assert_eq!(cloned.accepted, ack.accepted);
+        assert_eq!(cloned.error, ack.error);
+    }
+
+    #[test]
+    fn test_vpn_config_default_values() {
+        let config = VpnConfig::new(Ipv4Addr::new(10, 8, 0, 2), Ipv4Addr::new(10, 8, 0, 1));
+
+        // Check defaults
+        assert_eq!(config.netmask, Ipv4Addr::new(255, 255, 255, 0));
+        assert!(config.dns_servers.is_empty());
+        assert!(config.routes.is_empty());
+        assert_eq!(config.mtu, 1400);
+        assert!(config.session_id.is_none());
+        assert!(config.padding_strategy.is_none());
+        assert!(config.padding_max_jitter_us.is_none());
+        assert!(config.padding_min_size.is_none());
+        assert!(config.padding_mtu.is_none());
+        assert!(config.session_rekey_secs.is_none());
+        assert!(config.session_rekey_bytes.is_none());
+        assert!(config.suspicion_score.is_none());
+        assert!(config.routing_config.is_none());
+    }
 }

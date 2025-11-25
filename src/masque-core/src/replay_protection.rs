@@ -496,4 +496,254 @@ mod tests {
         assert!(prom.contains("replay_replays_blocked"));
         assert!(prom.contains("replay_entries_expired"));
     }
+
+    #[test]
+    fn test_replay_error_display() {
+        let err = ReplayError::DuplicateMessage;
+        assert!(err.to_string().contains("duplicate message"));
+
+        let err = ReplayError::CacheCorrupted;
+        assert!(err.to_string().contains("corrupted"));
+    }
+
+    #[test]
+    fn test_replay_error_equality() {
+        assert_eq!(ReplayError::DuplicateMessage, ReplayError::DuplicateMessage);
+        assert_eq!(ReplayError::CacheCorrupted, ReplayError::CacheCorrupted);
+        assert_ne!(ReplayError::DuplicateMessage, ReplayError::CacheCorrupted);
+    }
+
+    #[test]
+    fn test_replay_error_is_error_trait() {
+        let err: &dyn std::error::Error = &ReplayError::DuplicateMessage;
+        assert!(err.to_string().contains("duplicate"));
+    }
+
+    #[test]
+    fn test_replay_metrics_default() {
+        let metrics = ReplayMetrics::default();
+        let snap = metrics.snapshot();
+        assert_eq!(snap.messages_processed, 0);
+        assert_eq!(snap.replays_blocked, 0);
+        assert_eq!(snap.entries_expired, 0);
+    }
+
+    #[test]
+    fn test_replay_metrics_snapshot_clone() {
+        let metrics = ReplayMetrics::default();
+        metrics.messages_processed.fetch_add(5, Ordering::Relaxed);
+        let snap = metrics.snapshot();
+        let snap_clone = snap;
+        assert_eq!(snap.messages_processed, snap_clone.messages_processed);
+    }
+
+    #[test]
+    fn test_nonce_cache_default() {
+        let cache = NonceCache::default();
+        assert!(cache.is_empty());
+        assert_eq!(cache.len(), 0);
+    }
+
+    #[test]
+    fn test_nonce_cache_is_empty() {
+        let cache = NonceCache::new();
+        assert!(cache.is_empty());
+        assert!(cache.check_and_record(b"msg").is_ok());
+        assert!(!cache.is_empty());
+    }
+
+    #[test]
+    fn test_nonce_cache_len() {
+        let cache = NonceCache::new();
+        assert_eq!(cache.len(), 0);
+
+        for i in 0..5 {
+            let msg = format!("msg_{}", i);
+            assert!(cache.check_and_record(msg.as_bytes()).is_ok());
+        }
+        assert_eq!(cache.len(), 5);
+    }
+
+    #[test]
+    fn test_is_replay_without_recording() {
+        let cache = NonceCache::new();
+        let msg = b"test message";
+
+        // Check doesn't record
+        assert!(!cache.is_replay(msg));
+        assert!(!cache.is_replay(msg)); // Still not a replay
+
+        // Record it
+        assert!(cache.check_and_record(msg).is_ok());
+        assert!(cache.is_replay(msg)); // Now it's a replay
+    }
+
+    #[test]
+    fn test_is_replay_after_expiration() {
+        let cache = NonceCache::with_ttl(Duration::from_millis(30));
+        let msg = b"expiring check";
+
+        assert!(cache.check_and_record(msg).is_ok());
+        assert!(cache.is_replay(msg));
+
+        std::thread::sleep(Duration::from_millis(60));
+
+        // After expiration, not a replay anymore
+        assert!(!cache.is_replay(msg));
+    }
+
+    #[test]
+    fn test_empty_message() {
+        let cache = NonceCache::new();
+        let empty: &[u8] = b"";
+
+        assert!(cache.check_and_record(empty).is_ok());
+        assert_eq!(
+            cache.check_and_record(empty),
+            Err(ReplayError::DuplicateMessage)
+        );
+    }
+
+    #[test]
+    fn test_very_short_message() {
+        let cache = NonceCache::new();
+        let short = b"a";
+
+        assert!(cache.check_and_record(short).is_ok());
+        assert!(cache.is_replay(short));
+    }
+
+    #[test]
+    fn test_very_long_message() {
+        let cache = NonceCache::new();
+        let long_msg = vec![42u8; 10000];
+
+        assert!(cache.check_and_record(&long_msg).is_ok());
+        assert!(cache.is_replay(&long_msg));
+    }
+
+    #[test]
+    fn test_cleanup_on_non_expired() {
+        let cache = NonceCache::new(); // 5 min TTL
+
+        for i in 0..5 {
+            let msg = format!("no_expire_{}", i);
+            cache.check_and_record(msg.as_bytes()).unwrap();
+        }
+
+        assert_eq!(cache.len(), 5);
+        cache.cleanup();
+        // Nothing should be removed (not expired)
+        assert_eq!(cache.len(), 5);
+    }
+
+    #[test]
+    fn test_metrics_increment() {
+        let cache = NonceCache::new();
+
+        // Process unique messages
+        for i in 0..3 {
+            let msg = format!("unique_{}", i);
+            cache.check_and_record(msg.as_bytes()).unwrap();
+        }
+
+        // Try replays
+        for i in 0..2 {
+            let msg = format!("unique_{}", i);
+            let _ = cache.check_and_record(msg.as_bytes());
+        }
+
+        let snap = cache.metrics().snapshot();
+        assert_eq!(snap.messages_processed, 3);
+        assert_eq!(snap.replays_blocked, 2);
+    }
+
+    #[test]
+    fn test_prometheus_format_valid() {
+        let cache = NonceCache::new();
+        cache.check_and_record(b"test1").unwrap();
+        let _ = cache.check_and_record(b"test1"); // replay
+
+        let prom = cache.metrics().to_prometheus("rp");
+        // Check Prometheus format
+        assert!(prom.contains("# TYPE rp_messages_processed counter"));
+        assert!(prom.contains("rp_messages_processed 1"));
+        assert!(prom.contains("rp_replays_blocked 1"));
+        assert!(prom.contains("rp_entries_expired 0"));
+    }
+
+    #[test]
+    fn test_hash_prefix_boundary() {
+        let cache = NonceCache::new();
+
+        // Messages identical up to HASH_PREFIX_LEN (128) should be treated same
+        let mut msg1 = vec![0u8; 128];
+        let mut msg2 = vec![0u8; 129];
+        for i in 0..128 {
+            msg1[i] = (i % 256) as u8;
+            msg2[i] = (i % 256) as u8;
+        }
+        msg2[128] = 99; // Extra byte after prefix
+
+        cache.check_and_record(&msg1).unwrap();
+        // Should be duplicate since first 128 bytes are identical
+        assert_eq!(
+            cache.check_and_record(&msg2),
+            Err(ReplayError::DuplicateMessage)
+        );
+    }
+
+    #[test]
+    fn test_concurrent_access() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let cache = Arc::new(NonceCache::new());
+        let mut handles = vec![];
+
+        for i in 0..4 {
+            let cache_clone = Arc::clone(&cache);
+            let handle = thread::spawn(move || {
+                for j in 0..100 {
+                    let msg = format!("thread_{}_{}", i, j);
+                    let _ = cache_clone.check_and_record(msg.as_bytes());
+                }
+            });
+            handles.push(handle);
+        }
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        // Should have 400 unique messages
+        assert_eq!(cache.metrics().snapshot().messages_processed, 400);
+    }
+
+    #[test]
+    fn test_default_ttl_constant() {
+        assert_eq!(DEFAULT_TTL, Duration::from_secs(300));
+    }
+
+    #[test]
+    fn test_nonce_entry_debug() {
+        // NonceEntry is private but we can test the cache behavior
+        let cache = NonceCache::with_ttl(Duration::from_millis(10));
+        cache.check_and_record(b"debug_test").unwrap();
+        // Entry should exist
+        assert!(!cache.is_empty());
+    }
+
+    #[test]
+    fn test_replay_metrics_snapshot_debug() {
+        let snap = ReplayMetricsSnapshot {
+            messages_processed: 10,
+            replays_blocked: 5,
+            entries_expired: 2,
+        };
+        let debug_str = format!("{:?}", snap);
+        assert!(debug_str.contains("10"));
+        assert!(debug_str.contains("5"));
+        assert!(debug_str.contains("2"));
+    }
 }

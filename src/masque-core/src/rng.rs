@@ -103,4 +103,98 @@ mod tests {
         let _ = random_u64();
         assert!(osrng_call_count() >= 1, "Counting must track when enabled");
     }
+
+    #[test]
+    fn test_secure_rng_fill_bytes() {
+        let _guard = TEST_MUTEX.lock().unwrap();
+        enable_counting();
+        reset_osrng_calls();
+
+        let mut buf = [0u8; 32];
+        let mut rng = secure_rng();
+        rng.fill_bytes(&mut buf);
+
+        assert!(osrng_call_count() >= 1);
+        // Check that buffer is likely not all zeros
+        assert!(buf.iter().any(|&b| b != 0));
+    }
+
+    #[test]
+    fn test_secure_rng_try_fill_bytes() {
+        let _guard = TEST_MUTEX.lock().unwrap();
+        enable_counting();
+        reset_osrng_calls();
+
+        let mut buf = [0u8; 16];
+        let mut rng = secure_rng();
+        let result = rng.try_fill_bytes(&mut buf);
+
+        assert!(result.is_ok());
+        assert!(osrng_call_count() >= 1);
+    }
+
+    #[test]
+    fn test_secure_rng_next_u32() {
+        let _guard = TEST_MUTEX.lock().unwrap();
+        enable_counting();
+        reset_osrng_calls();
+
+        let mut rng = secure_rng();
+        let _v = rng.next_u32();
+
+        assert!(osrng_call_count() >= 1);
+    }
+
+    #[test]
+    fn test_random_u64_returns_different_values() {
+        let _guard = TEST_MUTEX.lock().unwrap();
+        enable_counting();
+
+        // With cryptographic randomness, we should get different values
+        let v1 = random_u64();
+        let v2 = random_u64();
+        let v3 = random_u64();
+
+        // Extremely unlikely all three would be equal
+        assert!(!(v1 == v2 && v2 == v3));
+    }
+
+    #[test]
+    fn test_reset_osrng_calls() {
+        let _guard = TEST_MUTEX.lock().unwrap();
+        enable_counting();
+
+        let _ = random_u64();
+        assert!(osrng_call_count() >= 1);
+
+        reset_osrng_calls();
+        assert_eq!(osrng_call_count(), 0);
+    }
+
+    #[test]
+    fn test_counting_osrng_default() {
+        let _guard = TEST_MUTEX.lock().unwrap();
+        enable_counting();
+        reset_osrng_calls();
+
+        let mut rng = CountingOsRng::default();
+        let _ = rng.next_u64();
+
+        assert!(osrng_call_count() >= 1);
+    }
+
+    #[test]
+    fn test_counting_multiple_operations() {
+        let _guard = TEST_MUTEX.lock().unwrap();
+        enable_counting();
+        reset_osrng_calls();
+
+        let mut rng = secure_rng();
+        let _ = rng.next_u32();
+        let _ = rng.next_u64();
+        let mut buf = [0u8; 8];
+        rng.fill_bytes(&mut buf);
+
+        assert!(osrng_call_count() >= 3);
+    }
 }

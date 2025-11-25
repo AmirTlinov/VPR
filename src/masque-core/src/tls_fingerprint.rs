@@ -640,4 +640,159 @@ mod tests {
         // Should return default groups if custom profile not loaded
         assert!(!kx_groups.is_empty());
     }
+
+    #[test]
+    fn test_grease_mode_deterministic() {
+        let v1 = grease_value(GreaseMode::Deterministic(42));
+        let v2 = grease_value(GreaseMode::Deterministic(42));
+        assert_eq!(v1, v2);
+    }
+
+    #[test]
+    fn test_grease_mode_different_seeds() {
+        let v1 = grease_value(GreaseMode::Deterministic(1));
+        let v2 = grease_value(GreaseMode::Deterministic(100));
+        // May or may not be same, just testing it doesn't panic
+        let _ = v1;
+        let _ = v2;
+    }
+
+    #[test]
+    fn test_tls_version_ja3_values() {
+        assert_eq!(TlsVersion::Tls10.ja3_value(), 769);
+        assert_eq!(TlsVersion::Tls11.ja3_value(), 770);
+        assert_eq!(TlsVersion::Tls12.ja3_value(), 771);
+        assert_eq!(TlsVersion::Tls13.ja3_value(), 771);
+    }
+
+    #[test]
+    fn test_tls_profile_equality() {
+        assert_eq!(TlsProfile::Chrome, TlsProfile::Chrome);
+        assert_ne!(TlsProfile::Chrome, TlsProfile::Firefox);
+        assert_ne!(TlsProfile::Safari, TlsProfile::Random);
+    }
+
+    #[test]
+    fn test_tls_profile_bucket_equality() {
+        assert_eq!(TlsProfileBucket::Main, TlsProfileBucket::Main);
+        assert_ne!(TlsProfileBucket::Main, TlsProfileBucket::Canary);
+    }
+
+    #[test]
+    fn test_grease_mode_equality() {
+        assert_eq!(GreaseMode::Random, GreaseMode::Random);
+        assert_eq!(GreaseMode::Deterministic(1), GreaseMode::Deterministic(1));
+        assert_ne!(GreaseMode::Deterministic(1), GreaseMode::Deterministic(2));
+        assert_ne!(GreaseMode::Random, GreaseMode::Deterministic(1));
+    }
+
+    #[test]
+    fn test_ja3_fingerprint_from_chrome() {
+        let fp = Ja3Fingerprint::from_profile_with_grease(&TlsProfile::Chrome, GreaseMode::Deterministic(1));
+        let hash = fp.to_ja3_hash();
+        assert_eq!(hash.len(), 32); // MD5 hex is 32 chars
+    }
+
+    #[test]
+    fn test_ja3_fingerprint_from_firefox() {
+        let fp = Ja3Fingerprint::from_profile_with_grease(&TlsProfile::Firefox, GreaseMode::Deterministic(1));
+        let hash = fp.to_ja3_hash();
+        assert_eq!(hash.len(), 32);
+    }
+
+    #[test]
+    fn test_ja3_fingerprint_from_safari() {
+        let fp = Ja3Fingerprint::from_profile_with_grease(&TlsProfile::Safari, GreaseMode::Deterministic(1));
+        let hash = fp.to_ja3_hash();
+        assert_eq!(hash.len(), 32);
+    }
+
+    #[test]
+    fn test_ja4_fingerprint_from_chrome() {
+        let fp = Ja4Fingerprint::from_profile(&TlsProfile::Chrome);
+        assert!(fp.to_string().starts_with("c") || fp.to_string().starts_with("t"));
+    }
+
+    #[test]
+    fn test_chrome_cipher_suites() {
+        let suites = TlsProfile::Chrome.rustls_cipher_suites();
+        assert!(!suites.is_empty());
+    }
+
+    #[test]
+    fn test_firefox_cipher_suites() {
+        let suites = TlsProfile::Firefox.rustls_cipher_suites();
+        assert!(!suites.is_empty());
+    }
+
+    #[test]
+    fn test_safari_cipher_suites() {
+        let suites = TlsProfile::Safari.rustls_cipher_suites();
+        assert!(!suites.is_empty());
+    }
+
+    #[test]
+    fn test_random_profile_cipher_suites() {
+        let suites = TlsProfile::Random.rustls_cipher_suites();
+        assert!(!suites.is_empty());
+    }
+
+    #[test]
+    fn test_chrome_kx_groups() {
+        let groups = TlsProfile::Chrome.rustls_kx_groups();
+        assert!(!groups.is_empty());
+    }
+
+    #[test]
+    fn test_firefox_kx_groups() {
+        let groups = TlsProfile::Firefox.rustls_kx_groups();
+        assert!(!groups.is_empty());
+    }
+
+    #[test]
+    fn test_select_tls_profile_no_canary() {
+        let (profile, bucket) = select_tls_profile(TlsProfile::Chrome, None, 50.0, Some(1));
+        assert_eq!(profile, TlsProfile::Chrome);
+        assert_eq!(bucket, TlsProfileBucket::Main);
+    }
+
+    #[test]
+    fn test_map_kx_groups_empty() {
+        let groups = map_kx_groups(vec![]);
+        assert!(groups.is_empty());
+    }
+
+    #[test]
+    fn test_map_kx_groups_known() {
+        let groups = map_kx_groups(vec!["X25519".to_string(), "SECP256R1".to_string()]);
+        assert_eq!(groups.len(), 2);
+    }
+
+    #[test]
+    fn test_map_kx_groups_unknown_ignored() {
+        let groups = map_kx_groups(vec!["UNKNOWN".to_string(), "X25519".to_string()]);
+        assert_eq!(groups.len(), 1);
+    }
+
+    #[test]
+    fn test_map_cipher_suites_empty() {
+        let result = map_cipher_suites(vec![]);
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_map_cipher_suites_tls13() {
+        let result = map_cipher_suites(vec![0x1301, 0x1302, 0x1303]);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().len(), 3);
+    }
+
+    #[test]
+    fn test_known_ja3_hashes_exist() {
+        // Known JA3 hashes are MD5 hashes (32 hex chars)
+        assert_eq!(known_ja3::CHROME_120.len(), 32);
+        assert_eq!(known_ja3::FIREFOX_121.len(), 32);
+        assert_eq!(known_ja3::SAFARI_17.len(), 32);
+    }
 }

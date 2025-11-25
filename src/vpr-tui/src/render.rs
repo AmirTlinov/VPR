@@ -69,8 +69,8 @@ pub fn draw(frame: &mut Frame<'_>, globe: &GlobeRenderer, area: Rect, angle: f32
         render_orphaned_warning(frame, layout[1], &stats.network_health);
     }
 
-    // Content and footer indices depend on whether warning is shown
-    let (content_idx, footer_idx) = if needs_warning { (2, 3) } else { (2, 3) };
+    // Content and footer indices (layout always has 4 elements, warning slot may be empty)
+    let (content_idx, footer_idx) = (2, 3);
 
     // Content Layout: Globe (Left), Info Panel (Right)
     let content_layout = Layout::default()
