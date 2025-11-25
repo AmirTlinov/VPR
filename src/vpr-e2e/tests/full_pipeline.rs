@@ -422,34 +422,38 @@ fn test_config_validation() {
 fn test_report_generation() {
     use vpr_e2e::report::{E2eReport, TestResult};
 
-    let results = vec![
-        TestResult {
-            name: "test_1".into(),
-            passed: true,
-            duration_ms: 100,
-            details: Some("OK".into()),
-            metrics: None,
-            error: None,
-        },
-        TestResult {
-            name: "test_2".into(),
-            passed: false,
-            duration_ms: 50,
-            details: None,
-            metrics: None,
-            error: Some("Failed".into()),
-        },
-    ];
+    let mut report = E2eReport::new("test.server.com".into(), 443, "chrome".into());
 
-    let report = E2eReport::new(results.clone());
-    assert_eq!(report.total_tests(), 2);
-    assert_eq!(report.passed_tests(), 1);
-    assert_eq!(report.failed_tests(), 1);
+    // Add test results
+    report.add_test(TestResult {
+        name: "test_1".into(),
+        passed: true,
+        duration_ms: 100,
+        details: Some("OK".into()),
+        metrics: None,
+        error: None,
+    });
+    report.add_test(TestResult {
+        name: "test_2".into(),
+        passed: false,
+        duration_ms: 50,
+        details: None,
+        metrics: None,
+        error: Some("Failed".into()),
+    });
+
+    assert_eq!(report.tests.len(), 2);
+    assert_eq!(report.tests_passed, 1);
+    assert_eq!(report.tests_failed, 1);
+    assert!(!report.all_passed());
 
     // Generate markdown
     let md = report.to_markdown();
     assert!(md.contains("test_1"));
     assert!(md.contains("test_2"));
-    assert!(md.contains("PASSED"));
-    assert!(md.contains("FAILED"));
+    // to_markdown() uses "PASS" and "FAIL" for individual test status
+    assert!(md.contains("PASS"), "Markdown should contain PASS");
+    assert!(md.contains("FAIL"), "Markdown should contain FAIL");
+    // Summary uses "SOME TESTS FAILED" since we have a failing test
+    assert!(md.contains("FAILED"), "Markdown should contain FAILED in summary");
 }

@@ -7074,6 +7074,7 @@ dependencies = [
  "dirs",
  "futures",
  "indicatif",
+ "libc",
  "serde",
  "serde_json",
  "tempfile",

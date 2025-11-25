@@ -282,10 +282,12 @@ impl Deployer {
         // Enable IP forwarding
         let _ = self.ssh_exec("sysctl -w net.ipv4.ip_forward=1").await;
 
-        // Start server in background
+        // Start server in background using setsid to fully detach from SSH session
+        // Triple-fork pattern: bash spawns sh which starts server in new session
+        // The outer `&` returns immediately, setsid creates new session leader
         self.ssh_exec(&format!(
             "cd {remote_dir} && \
-             RUST_LOG=info nohup ./bin/vpn-server \
+             ( setsid ./bin/vpn-server \
              --bind 0.0.0.0:{vpn_port} \
              --tun-name vpr-srv \
              --tun-addr 10.9.0.1 \
@@ -298,7 +300,7 @@ impl Deployer {
              --key secrets/server.key \
              --enable-forwarding \
              --idle-timeout 300 \
-             > logs/server.log 2>&1 &"
+             </dev/null >logs/server.log 2>&1 & ) && exit 0"
         ))
         .await?;
 
