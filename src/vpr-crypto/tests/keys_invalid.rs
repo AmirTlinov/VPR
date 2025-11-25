@@ -21,12 +21,19 @@ fn noise_keypair_from_secret_bytes_works() {
     let bytes: [u8; 32] = [0x42; 32];
     let kp = NoiseKeypair::from_secret_bytes(&bytes);
     // from_secret_bytes always succeeds with valid 32-byte input
-    assert!(kp.public_bytes().iter().any(|b| *b != 0), "keypair should be created");
+    assert!(
+        kp.public_bytes().iter().any(|b| *b != 0),
+        "keypair should be created"
+    );
 }
 
 #[test]
 fn noise_keypair_generation_is_unique() {
     let kp1 = NoiseKeypair::generate();
     let kp2 = NoiseKeypair::generate();
-    assert_ne!(kp1.public_bytes(), kp2.public_bytes(), "generated keypairs should be unique");
+    assert_ne!(
+        kp1.public_bytes(),
+        kp2.public_bytes(),
+        "generated keypairs should be unique"
+    );
 }

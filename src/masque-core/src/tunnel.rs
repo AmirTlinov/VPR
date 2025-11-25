@@ -225,7 +225,10 @@ mod tests {
         let bad_proto = &[1, 99, 1, b'a', 0, 80];
         let result = parse_connect_frame(bad_proto);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("unsupported proto"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("unsupported proto"));
     }
 
     #[test]
@@ -265,7 +268,10 @@ mod tests {
         };
         let result = build_connect_frame(&req);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("hostname too long"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("hostname too long"));
     }
 
     #[test]
@@ -277,7 +283,10 @@ mod tests {
         };
         let result = build_connect_frame(&req);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("port must be non-zero"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("port must be non-zero"));
     }
 
     #[tokio::test]
@@ -328,7 +337,10 @@ mod tests {
 
         let result = read_connect_request(&mut server).await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("empty connect frame"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("empty connect frame"));
     }
 
     #[test]

@@ -31,6 +31,7 @@ const cfgMode = document.getElementById('cfg-mode');
 const cfgDoh = document.getElementById('cfg-doh');
 const cfgAutoconnect = document.getElementById('cfg-autoconnect');
 const cfgKillswitch = document.getElementById('cfg-killswitch');
+const cfgInsecure = document.getElementById('cfg-insecure');
 
 // State
 let currentStatus = 'Disconnected';
@@ -133,6 +134,7 @@ async function loadConfig() {
     cfgDoh.value = cfg.doh_endpoint || '/dns-query';
     cfgAutoconnect.checked = cfg.autoconnect || false;
     cfgKillswitch.checked = cfg.killswitch || false;
+    cfgInsecure.checked = cfg.insecure || false;
   } catch (e) {
     console.error('Config load failed:', e);
   }
@@ -142,13 +144,16 @@ async function loadConfig() {
 saveBtn.addEventListener('click', async () => {
   try {
     await invoke('save_config', {
-      server: cfgServer.value.trim(),
-      port: cfgPort.value.trim(),
-      username: cfgUsername.value.trim(),
-      mode: cfgMode.value,
-      dohEndpoint: cfgDoh.value.trim(),
-      autoconnect: cfgAutoconnect.checked,
-      killswitch: cfgKillswitch.checked,
+      config: {
+        server: cfgServer.value.trim(),
+        port: cfgPort.value.trim(),
+        username: cfgUsername.value.trim(),
+        mode: cfgMode.value,
+        doh_endpoint: cfgDoh.value.trim(),
+        autoconnect: cfgAutoconnect.checked,
+        killswitch: cfgKillswitch.checked,
+        insecure: cfgInsecure.checked,
+      }
     });
     showError('');
     settingsView.classList.add('hidden');
@@ -234,7 +239,6 @@ function updateUI(status, error = null) {
       connectBtn.disabled = false;
       startStats();
       scheduleTunnelChecks();
-      // Авто-обновление health раз в 30 сек
       scheduleHealthChecks();
       break;
 
@@ -247,6 +251,18 @@ function updateUI(status, error = null) {
       connectBtn.disabled = true;
       stopStats();
       stopHealthChecks();
+      stopTunnelChecks();
+      break;
+
+    case 'Error':
+      startAnimation('earth');
+      statusDot.textContent = '×';
+      statusDot.classList.add('health-bad');
+      statusText.textContent = 'ERROR';
+      btnText.textContent = '[ RETRY ]';
+      connectBtn.disabled = false;
+      stopStats();
+      setHealth('bad', 'connection failed');
       stopTunnelChecks();
       break;
   }
@@ -385,7 +401,7 @@ function stopStats() {
   statDown.textContent = '0';
 }
 
-function updateStats() {
+async function updateStats() {
   if (!connectTime) return;
 
   const elapsed = Math.floor((Date.now() - connectTime) / 1000);
@@ -394,11 +410,20 @@ function updateStats() {
   const s = elapsed % 60;
   statTime.textContent = `${pad(h)}:${pad(m)}:${pad(s)}`;
 
-  // Simulate traffic
-  bytesUp += Math.random() * 5000;
-  bytesDown += Math.random() * 15000;
-  statUp.textContent = formatBytes(bytesUp);
-  statDown.textContent = formatBytes(bytesDown);
+  // Get real statistics from backend
+  try {
+    const stats = await invoke('get_statistics');
+    if (stats) {
+      statUp.textContent = formatBytes(stats.bytes_sent || 0);
+      statDown.textContent = formatBytes(stats.bytes_received || 0);
+    }
+  } catch (e) {
+    // Fallback to simulated traffic if backend fails
+    bytesUp += Math.random() * 5000;
+    bytesDown += Math.random() * 15000;
+    statUp.textContent = formatBytes(bytesUp);
+    statDown.textContent = formatBytes(bytesDown);
+  }
 }
 
 function pad(n) {
@@ -416,7 +441,7 @@ function formatBytes(b) {
 connectBtn.addEventListener('click', async () => {
   if (currentStatus === 'Connected') {
     await disconnect();
-  } else if (currentStatus === 'Disconnected') {
+  } else if (currentStatus === 'Disconnected' || currentStatus === 'Error') {
     await connect();
   }
 });
@@ -461,12 +486,41 @@ async function disconnect() {
   }
 }
 
+// Periodic state check
+let stateCheckInterval = null;
+
+async function checkState() {
+  try {
+    const state = await invoke('get_state');
+    // Only update if status changed
+    if (state.status !== currentStatus) {
+      updateUI(state.status, state.error);
+    }
+  } catch (e) {
+    console.error('State check failed:', e);
+  }
+}
+
+function startStateCheck() {
+  if (stateCheckInterval) return;
+  stateCheckInterval = setInterval(checkState, 2000);
+}
+
+function stopStateCheck() {
+  if (stateCheckInterval) {
+    clearInterval(stateCheckInterval);
+    stateCheckInterval = null;
+  }
+}
+
 // Init
 async function init() {
   await loadConfig();
   try {
     const state = await invoke('get_state');
     updateUI(state.status, state.error);
+    // Start periodic state check
+    startStateCheck();
   } catch (e) {
     console.error('Init failed:', e);
   }

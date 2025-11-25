@@ -70,9 +70,9 @@ pub const VPR_LOGO: &[&str] = &[
 
 /// Глитч символы для эффектов
 pub const GLITCH_CHARS: &[char] = &[
-    '█', '▓', '▒', '░', '▄', '▀', '▌', '▐', '│', '┤', '╡', '╢', '╖', '╕', '╣', '║',
-    '╗', '╝', '╜', '╛', '┐', '└', '┴', '┬', '├', '─', '┼', '╞', '╟', '╚', '╔', '╩',
-    '╦', '╠', '═', '╬', '╧', '╨', '╤', '╥', '╙', '╘', '╒', '╓', '╫', '╪', '┘', '┌',
+    '█', '▓', '▒', '░', '▄', '▀', '▌', '▐', '│', '┤', '╡', '╢', '╖', '╕', '╣', '║', '╗', '╝', '╜',
+    '╛', '┐', '└', '┴', '┬', '├', '─', '┼', '╞', '╟', '╚', '╔', '╩', '╦', '╠', '═', '╬', '╧', '╨',
+    '╤', '╥', '╙', '╘', '╒', '╓', '╫', '╪', '┘', '┌',
 ];
 
 /// Хакерские сообщения
@@ -152,7 +152,7 @@ pub fn glitch_text(text: &str, tick: u64, intensity: f32) -> String {
 pub fn matrix_rain(width: usize, height: usize, tick: u64) -> Vec<String> {
     let chars = "ｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉﾊﾋﾌﾍﾎﾏﾐﾑﾒﾓﾔﾕﾖﾗﾘﾙﾚﾛﾜﾝ0123456789";
     let chars: Vec<char> = chars.chars().collect();
-    
+
     (0..height)
         .map(|y| {
             (0..width)
@@ -174,7 +174,7 @@ pub fn matrix_rain(width: usize, height: usize, tick: u64) -> Vec<String> {
 pub fn hacker_progress_bar(progress: f32, width: usize) -> String {
     let filled = (progress * width as f32) as usize;
     let empty = width - filled;
-    
+
     format!(
         "[{}{}] {:>3}%",
         "█".repeat(filled),

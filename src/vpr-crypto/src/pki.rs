@@ -339,8 +339,12 @@ mod tests {
         let intermediate =
             generate_intermediate_ca(&config, "test-node", &root.cert, &root.key).unwrap();
 
-        assert!(intermediate.cert_pem.starts_with("-----BEGIN CERTIFICATE-----"));
-        assert!(intermediate.key_pem.starts_with("-----BEGIN PRIVATE KEY-----"));
+        assert!(intermediate
+            .cert_pem
+            .starts_with("-----BEGIN CERTIFICATE-----"));
+        assert!(intermediate
+            .key_pem
+            .starts_with("-----BEGIN PRIVATE KEY-----"));
     }
 
     #[test]

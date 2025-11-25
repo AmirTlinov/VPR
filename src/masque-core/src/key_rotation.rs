@@ -812,7 +812,10 @@ mod tests {
     fn test_constants() {
         assert_eq!(SESSION_KEY_TIME_LIMIT, Duration::from_secs(60));
         assert_eq!(SESSION_KEY_DATA_LIMIT, 1024 * 1024 * 1024);
-        assert_eq!(NOISE_KEY_ROTATION_INTERVAL, Duration::from_secs(14 * 24 * 60 * 60));
+        assert_eq!(
+            NOISE_KEY_ROTATION_INTERVAL,
+            Duration::from_secs(14 * 24 * 60 * 60)
+        );
         assert_eq!(TLS_CERT_ROTATION_INTERVAL, Duration::from_secs(6 * 60 * 60));
     }
 
@@ -925,7 +928,10 @@ mod tests {
             called = true;
         });
 
-        assert!(!called, "Callback should not be called when no rotation needed");
+        assert!(
+            !called,
+            "Callback should not be called when no rotation needed"
+        );
     }
 
     #[tokio::test]

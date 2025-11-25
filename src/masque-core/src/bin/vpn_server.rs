@@ -1153,7 +1153,10 @@ async fn handle_vpn_client_with_config(
                             }
                             Err(_) => {
                                 // Not a valid IP packet - likely cover traffic, silently drop
-                                trace!(packet_len = packet.len(), "Dropping non-IP packet (cover traffic)");
+                                trace!(
+                                    packet_len = packet.len(),
+                                    "Dropping non-IP packet (cover traffic)"
+                                );
                             }
                         }
                     }
@@ -1440,8 +1443,12 @@ async fn probe_metrics_task(
             Ok::<(), std::io::Error>(())
         })
         .await
-        .unwrap_or_else(|e| Err(std::io::Error::other(e)))
-        {
+        .unwrap_or_else(|e| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                e.to_string(),
+            ))
+        }) {
             warn!(%e, "Failed to persist probe metrics");
         }
     }

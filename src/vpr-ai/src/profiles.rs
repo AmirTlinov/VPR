@@ -256,7 +256,12 @@ mod tests {
         let profile = ProfileStats::for_profile(TrafficProfile::Netflix);
         // Check that exact common sizes return 0 padding
         for &size in profile.common_sizes {
-            assert_eq!(profile.suggested_padding(size), 0, "size {} should have 0 padding", size);
+            assert_eq!(
+                profile.suggested_padding(size),
+                0,
+                "size {} should have 0 padding",
+                size
+            );
         }
     }
 
@@ -324,7 +329,11 @@ mod tests {
                 "{:?} burst_lengths min > max",
                 profile_type
             );
-            assert!(profile.burst_lengths.0 > 0, "{:?} burst min is 0", profile_type);
+            assert!(
+                profile.burst_lengths.0 > 0,
+                "{:?} burst min is 0",
+                profile_type
+            );
         }
     }
 

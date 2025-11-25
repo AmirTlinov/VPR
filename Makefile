@@ -1,15 +1,8 @@
-.PHONY: vpn app dev build clean
-.PHONY: diag
+.PHONY: vpn app dev build clean diag tui
 
-.PHONY: tui tui-frame
-
-# Run ASCII TUI globe
+# Run VPR desktop app (hacker style Watch Dogs 2)
 tui:
-	@cd src/vpr-app && \
-	python3 -m http.server 1421 --directory frontend >/tmp/vpr-frontend.log 2>&1 & \
-	SERVER_PID=$$!; \
-	trap "kill $$SERVER_PID" EXIT; \
-	cargo tauri dev
+	@cd src/vpr-app && cargo tauri dev
 
 # Diagnostics: run after "Online" to verify tunnel and routing
 diag:
@@ -25,7 +18,7 @@ vpn:
 	fi
 	@echo "Starting VPR..."
 	@./target/release/vpr-app 2>/dev/null &
-	@sleep 1 && pgrep -x vpr-app > /dev/null && echo "✓ VPR running (PID: $$(pgrep -x vpr-app))" || echo "✗ Failed to start"
+	@sleep 1 && pgrep -x vpr-app > /dev/null && echo "✓ VPR running (PID: $(pgrep -x vpr-app))" || echo "✗ Failed to start"
 
 # Run VPN app in development mode
 dev:

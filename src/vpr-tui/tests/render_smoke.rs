@@ -10,7 +10,10 @@ fn render_frame_produces_output() {
     let frame = globe.render_frame(width, height, 0.0, 0);
     // Ensure the frame has content (non-zero occupied ratio)
     let ratio = frame.occupied_ratio();
-    assert!(ratio > 0.1, "frame should have visible content, got ratio={ratio}");
+    assert!(
+        ratio > 0.1,
+        "frame should have visible content, got ratio={ratio}"
+    );
 }
 
 #[test]
@@ -20,7 +23,10 @@ fn render_frame_handles_edge_sizes() {
     // Zero dimensions should not panic (may return NaN ratio due to 0/0)
     let frame_zero = globe.render_frame(0, 0, 0.0, 0);
     let ratio_zero = frame_zero.occupied_ratio();
-    assert!(ratio_zero.is_nan() || ratio_zero == 0.0, "zero frame ratio should be NaN or 0.0");
+    assert!(
+        ratio_zero.is_nan() || ratio_zero == 0.0,
+        "zero frame ratio should be NaN or 0.0"
+    );
 
     // Small dimensions
     let frame_small = globe.render_frame(10, 5, 0.5, 1);
@@ -43,5 +49,8 @@ fn rotation_affects_frame() {
     let ratio1 = frame1.occupied_ratio();
     let ratio2 = frame2.occupied_ratio();
     // At minimum, both should have some content
-    assert!(ratio1 > 0.0 && ratio2 > 0.0, "both frames should have content");
+    assert!(
+        ratio1 > 0.0 && ratio2 > 0.0,
+        "both frames should have content"
+    );
 }

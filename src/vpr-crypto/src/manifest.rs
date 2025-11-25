@@ -676,7 +676,8 @@ mod tests {
             .unwrap()
             .as_secs()
             + 3600;
-        assert!((payload.expires_at as i64 - expected_expires as i64).abs() < 5); // 5 second tolerance
+        assert!((payload.expires_at as i64 - expected_expires as i64).abs() < 5);
+        // 5 second tolerance
     }
 
     #[test]

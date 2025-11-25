@@ -7,7 +7,10 @@ fn noise_keypair_secret_bytes_accessible() {
     // secret_bytes returns [u8; 32]
     let secret = kp.secret_bytes();
     // Should have some non-zero bytes (extremely unlikely all zeros from random)
-    assert!(secret.iter().any(|b| *b != 0), "secret should have non-zero bytes");
+    assert!(
+        secret.iter().any(|b| *b != 0),
+        "secret should have non-zero bytes"
+    );
 }
 
 #[test]
@@ -23,5 +26,9 @@ fn noise_keypair_roundtrip_via_secret() {
     let original = NoiseKeypair::generate();
     let secret = original.secret_bytes();
     let restored = NoiseKeypair::from_secret_bytes(&secret);
-    assert_eq!(original.public_bytes(), restored.public_bytes(), "restored keypair should match");
+    assert_eq!(
+        original.public_bytes(),
+        restored.public_bytes(),
+        "restored keypair should match"
+    );
 }

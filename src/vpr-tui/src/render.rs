@@ -9,8 +9,8 @@ use ratatui::Frame;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::ascii_art::{
-    glitch_text, get_doge_message, get_hacker_message, hacker_progress_bar, pulse, spinner,
-    DOGE, SKULL,
+    get_doge_message, get_hacker_message, glitch_text, hacker_progress_bar, pulse, spinner, DOGE,
+    SKULL,
 };
 use crate::globe::GlobeRenderer;
 
@@ -42,20 +42,20 @@ pub fn draw(frame: &mut Frame<'_>, globe: &GlobeRenderer, area: Rect, angle: f32
         Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(3),  // Header (bigger for logo)
-                Constraint::Length(3),  // Warning banner
-                Constraint::Min(10),    // Content
-                Constraint::Length(2),  // Footer
+                Constraint::Length(3), // Header (bigger for logo)
+                Constraint::Length(3), // Warning banner
+                Constraint::Min(10),   // Content
+                Constraint::Length(2), // Footer
             ])
             .split(area)
     } else {
         Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(3),  // Header
-                Constraint::Length(0),  // No warning
-                Constraint::Min(10),    // Content
-                Constraint::Length(2),  // Footer
+                Constraint::Length(3), // Header
+                Constraint::Length(0), // No warning
+                Constraint::Min(10),   // Content
+                Constraint::Length(2), // Footer
             ])
             .split(area)
     };
@@ -103,7 +103,9 @@ fn render_hacker_header(frame: &mut Frame<'_>, area: Rect, stats: &UiStats) {
         Line::from(vec![
             Span::styled(
                 " ██╗   ██╗██████╗ ██████╗  ",
-                Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Magenta)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 format!(" {} ", spinner(stats.tick)),
@@ -111,7 +113,9 @@ fn render_hacker_header(frame: &mut Frame<'_>, area: Rect, stats: &UiStats) {
             ),
             Span::styled(
                 glitched_status,
-                Style::default().fg(status_color).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(status_color)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 format!(" {} ", pulse(stats.tick)),
@@ -129,7 +133,9 @@ fn render_hacker_header(frame: &mut Frame<'_>, area: Rect, stats: &UiStats) {
             ),
             Span::styled(
                 " [ENCRYPTED:ML-KEM768] ",
-                Style::default().fg(Color::Green).add_modifier(Modifier::RAPID_BLINK),
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::RAPID_BLINK),
             ),
             Span::styled(
                 get_hacker_message(stats.tick),
@@ -182,12 +188,7 @@ fn render_globe_with_effects(
     angle: f32,
     stats: &UiStats,
 ) {
-    let ascii = globe.render_frame(
-        area.width as usize,
-        area.height as usize,
-        angle,
-        stats.tick,
-    );
+    let ascii = globe.render_frame(area.width as usize, area.height as usize, angle, stats.tick);
 
     // Цвет глобуса меняется в зависимости от статуса
     let globe_color = match &stats.network_health {
@@ -236,27 +237,34 @@ fn render_hacker_panel(frame: &mut Frame<'_>, area: Rect, stats: &UiStats) {
 fn render_ascii_art(frame: &mut Frame<'_>, area: Rect, stats: &UiStats) {
     // Показываем Doge каждые 100 тиков, иначе Skull
     let show_doge = (stats.tick / 100) % 2 == 0;
-    
+
     let art: Vec<Line> = if show_doge {
         DOGE.iter()
             .take(area.height as usize - 2)
             .enumerate()
             .map(|(i, line)| {
-                let color = if i % 2 == 0 { Color::Yellow } else { Color::Rgb(255, 200, 100) };
+                let color = if i % 2 == 0 {
+                    Color::Yellow
+                } else {
+                    Color::Rgb(255, 200, 100)
+                };
                 Line::from(Span::styled(*line, Style::default().fg(color)))
             })
             .collect()
     } else {
-        SKULL.iter()
+        SKULL
+            .iter()
             .take(area.height as usize - 2)
-            .map(|line| {
-                Line::from(Span::styled(*line, Style::default().fg(Color::Red)))
-            })
+            .map(|line| Line::from(Span::styled(*line, Style::default().fg(Color::Red))))
             .collect()
     };
 
     let title = if show_doge {
-        format!(" {} {} ", get_doge_message(stats.tick), get_doge_message(stats.tick + 7))
+        format!(
+            " {} {} ",
+            get_doge_message(stats.tick),
+            get_doge_message(stats.tick + 7)
+        )
     } else {
         " ☠ DEDSEC ☠ ".to_string()
     };
@@ -265,7 +273,11 @@ fn render_ascii_art(frame: &mut Frame<'_>, area: Rect, stats: &UiStats) {
         Paragraph::new(art).block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(if show_doge { Color::Yellow } else { Color::Red }))
+                .border_style(Style::default().fg(if show_doge {
+                    Color::Yellow
+                } else {
+                    Color::Red
+                }))
                 .title(title),
         ),
         area,
@@ -292,7 +304,11 @@ fn render_network_stats(frame: &mut Frame<'_>, area: Rect, stats: &UiStats) {
             Span::styled(" ◉ LATENCY: ", Style::default().fg(Color::Yellow)),
             Span::styled(
                 hacker_progress_bar(latency_progress, 20),
-                Style::default().fg(if stats.latency_ms < 50 { Color::Green } else { Color::Red }),
+                Style::default().fg(if stats.latency_ms < 50 {
+                    Color::Green
+                } else {
+                    Color::Red
+                }),
             ),
             Span::styled(
                 format!(" {} ms", stats.latency_ms),
@@ -301,10 +317,7 @@ fn render_network_stats(frame: &mut Frame<'_>, area: Rect, stats: &UiStats) {
         ]),
         Line::from(vec![
             Span::styled(" ⚡ FPS:     ", Style::default().fg(Color::Magenta)),
-            Span::styled(
-                format!("{} ", stats.fps),
-                Style::default().fg(Color::White),
-            ),
+            Span::styled(format!("{} ", stats.fps), Style::default().fg(Color::White)),
             Span::styled(
                 "█".repeat((stats.fps / 10) as usize),
                 Style::default().fg(Color::Green),
@@ -325,7 +338,7 @@ fn render_network_stats(frame: &mut Frame<'_>, area: Rect, stats: &UiStats) {
 
 fn render_hex_dump(frame: &mut Frame<'_>, area: Rect, stats: &UiStats) {
     let mut lines = vec![];
-    
+
     for i in 0..8 {
         let offset = stats.tick.wrapping_add(i as u64) * 16;
         let hex_part: String = (0..8)
@@ -342,9 +355,16 @@ fn render_hex_dump(frame: &mut Frame<'_>, area: Rect, stats: &UiStats) {
             hex_part
         };
 
-        let color = if i % 2 == 0 { Color::DarkGray } else { Color::Rgb(80, 80, 80) };
+        let color = if i % 2 == 0 {
+            Color::DarkGray
+        } else {
+            Color::Rgb(80, 80, 80)
+        };
         lines.push(Line::from(vec![
-            Span::styled(format!("0x{:08X}: ", offset), Style::default().fg(Color::Yellow)),
+            Span::styled(
+                format!("0x{:08X}: ", offset),
+                Style::default().fg(Color::Yellow),
+            ),
             Span::styled(display, Style::default().fg(color)),
         ]));
     }
@@ -376,13 +396,17 @@ fn render_system_tasks(frame: &mut Frame<'_>, area: Rect, stats: &UiStats) {
         .map(|(i, (name, status, color))| {
             let blink = (stats.tick / 5 + i as u64) % 3 == 0;
             let prefix = if blink { "▶" } else { "►" };
-            
+
             Line::from(vec![
                 Span::styled(format!(" {} ", prefix), Style::default().fg(*color)),
                 Span::styled(format!("{:<15}", name), Style::default().fg(Color::White)),
                 Span::styled(
                     format!("[{}]", status),
-                    Style::default().fg(*color).add_modifier(if blink { Modifier::BOLD } else { Modifier::empty() }),
+                    Style::default().fg(*color).add_modifier(if blink {
+                        Modifier::BOLD
+                    } else {
+                        Modifier::empty()
+                    }),
                 ),
             ])
         })
@@ -414,16 +438,23 @@ fn render_hacker_footer(frame: &mut Frame<'_>, area: Rect, stats: &UiStats) {
     let mut spans = vec![
         Span::styled(
             format!(" {} COMMAND > ", spinner(stats.tick)),
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled(scrolled, Style::default().fg(Color::DarkGray)),
     ];
 
     if needs_repair {
         let repair_style = if stats.tick % 20 < 10 {
-            Style::default().fg(Color::Black).bg(Color::Yellow).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
         };
         spans.push(Span::styled(" [R: HACK_REPAIR] ", repair_style));
     }
@@ -448,7 +479,6 @@ fn render_hacker_footer(frame: &mut Frame<'_>, area: Rect, stats: &UiStats) {
         area,
     );
 }
-
 
 #[cfg(test)]
 mod tests {

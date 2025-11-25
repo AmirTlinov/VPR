@@ -548,8 +548,14 @@ mod tests {
     #[test]
     fn test_probe_detection_equality() {
         assert_eq!(ProbeDetection::Legitimate, ProbeDetection::Legitimate);
-        assert_ne!(ProbeDetection::Legitimate, ProbeDetection::Suspicious("x".to_string()));
-        assert_ne!(ProbeDetection::Suspicious("a".to_string()), ProbeDetection::Blocked("b".to_string()));
+        assert_ne!(
+            ProbeDetection::Legitimate,
+            ProbeDetection::Suspicious("x".to_string())
+        );
+        assert_ne!(
+            ProbeDetection::Suspicious("a".to_string()),
+            ProbeDetection::Blocked("b".to_string())
+        );
     }
 
     #[test]

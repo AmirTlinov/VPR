@@ -1112,12 +1112,30 @@ pub fn setup_ipv6_nat(
     // IPv6 NAT - check if rule exists (suppresses "Bad rule" stderr)
     let nat_exists = iptables_rule_exists(
         "ip6tables",
-        &["-t", "nat", "-C", "POSTROUTING", "-o", outbound_iface, "-j", "MASQUERADE"],
+        &[
+            "-t",
+            "nat",
+            "-C",
+            "POSTROUTING",
+            "-o",
+            outbound_iface,
+            "-j",
+            "MASQUERADE",
+        ],
     );
 
     if !nat_exists {
         let status = Command::new("ip6tables")
-            .args(["-t", "nat", "-A", "POSTROUTING", "-o", outbound_iface, "-j", "MASQUERADE"])
+            .args([
+                "-t",
+                "nat",
+                "-A",
+                "POSTROUTING",
+                "-o",
+                outbound_iface,
+                "-j",
+                "MASQUERADE",
+            ])
             .status()
             .context("setting up IPv6 NAT")?;
 
@@ -1139,12 +1157,30 @@ pub fn setup_ipv6_nat(
     // Forward rules - check if rule exists (suppresses "Bad rule" stderr)
     let forward_exists = iptables_rule_exists(
         "ip6tables",
-        &["-C", "FORWARD", "-i", tun_name, "-o", outbound_iface, "-j", "ACCEPT"],
+        &[
+            "-C",
+            "FORWARD",
+            "-i",
+            tun_name,
+            "-o",
+            outbound_iface,
+            "-j",
+            "ACCEPT",
+        ],
     );
 
     if !forward_exists {
         let status = Command::new("ip6tables")
-            .args(["-A", "FORWARD", "-i", tun_name, "-o", outbound_iface, "-j", "ACCEPT"])
+            .args([
+                "-A",
+                "FORWARD",
+                "-i",
+                tun_name,
+                "-o",
+                outbound_iface,
+                "-j",
+                "ACCEPT",
+            ])
             .status()
             .context("allowing IPv6 forward from TUN")?;
 
@@ -1283,7 +1319,16 @@ pub fn setup_nat_with_config(
         // Forward rules - check if rule exists (suppresses "Bad rule" stderr)
         let forward_exists = iptables_rule_exists(
             "iptables",
-            &["-C", "FORWARD", "-i", tun_name, "-o", &config.outbound_iface, "-j", "ACCEPT"],
+            &[
+                "-C",
+                "FORWARD",
+                "-i",
+                tun_name,
+                "-o",
+                &config.outbound_iface,
+                "-j",
+                "ACCEPT",
+            ],
         );
 
         if !forward_exists {

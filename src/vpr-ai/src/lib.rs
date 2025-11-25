@@ -194,25 +194,55 @@ mod tests {
     #[test]
     fn test_profile_parsing_all_variants() {
         // Test all lowercase variants
-        assert_eq!("youtube".parse::<TrafficProfile>().unwrap(), TrafficProfile::YouTube);
-        assert_eq!("zoom".parse::<TrafficProfile>().unwrap(), TrafficProfile::Zoom);
-        assert_eq!("gaming".parse::<TrafficProfile>().unwrap(), TrafficProfile::Gaming);
-        assert_eq!("browsing".parse::<TrafficProfile>().unwrap(), TrafficProfile::Browsing);
-        assert_eq!("netflix".parse::<TrafficProfile>().unwrap(), TrafficProfile::Netflix);
+        assert_eq!(
+            "youtube".parse::<TrafficProfile>().unwrap(),
+            TrafficProfile::YouTube
+        );
+        assert_eq!(
+            "zoom".parse::<TrafficProfile>().unwrap(),
+            TrafficProfile::Zoom
+        );
+        assert_eq!(
+            "gaming".parse::<TrafficProfile>().unwrap(),
+            TrafficProfile::Gaming
+        );
+        assert_eq!(
+            "browsing".parse::<TrafficProfile>().unwrap(),
+            TrafficProfile::Browsing
+        );
+        assert_eq!(
+            "netflix".parse::<TrafficProfile>().unwrap(),
+            TrafficProfile::Netflix
+        );
     }
 
     #[test]
     fn test_profile_parsing_case_insensitive() {
-        assert_eq!("YOUTUBE".parse::<TrafficProfile>().unwrap(), TrafficProfile::YouTube);
-        assert_eq!("YouTube".parse::<TrafficProfile>().unwrap(), TrafficProfile::YouTube);
-        assert_eq!("yOuTuBe".parse::<TrafficProfile>().unwrap(), TrafficProfile::YouTube);
+        assert_eq!(
+            "YOUTUBE".parse::<TrafficProfile>().unwrap(),
+            TrafficProfile::YouTube
+        );
+        assert_eq!(
+            "YouTube".parse::<TrafficProfile>().unwrap(),
+            TrafficProfile::YouTube
+        );
+        assert_eq!(
+            "yOuTuBe".parse::<TrafficProfile>().unwrap(),
+            TrafficProfile::YouTube
+        );
     }
 
     #[test]
     fn test_profile_parsing_web_alias() {
         // "web" is an alias for "browsing"
-        assert_eq!("web".parse::<TrafficProfile>().unwrap(), TrafficProfile::Browsing);
-        assert_eq!("WEB".parse::<TrafficProfile>().unwrap(), TrafficProfile::Browsing);
+        assert_eq!(
+            "web".parse::<TrafficProfile>().unwrap(),
+            TrafficProfile::Browsing
+        );
+        assert_eq!(
+            "WEB".parse::<TrafficProfile>().unwrap(),
+            TrafficProfile::Browsing
+        );
     }
 
     #[test]

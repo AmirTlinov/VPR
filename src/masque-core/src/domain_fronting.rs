@@ -485,7 +485,10 @@ mod tests {
     #[test]
     fn test_all_cdn_providers_default_front() {
         assert_eq!(CdnProvider::Fastly.default_front(), Some("fastly.net"));
-        assert_eq!(CdnProvider::CloudFront.default_front(), Some("cloudfront.net"));
+        assert_eq!(
+            CdnProvider::CloudFront.default_front(),
+            Some("cloudfront.net")
+        );
         assert_eq!(CdnProvider::Google.default_front(), Some("google.com"));
         assert_eq!(CdnProvider::Azure.default_front(), Some("azureedge.net"));
         assert_eq!(CdnProvider::Akamai.default_front(), Some("akamai.net"));
@@ -531,47 +534,34 @@ mod tests {
 
     #[test]
     fn test_front_config_with_ip() {
-        let config = FrontConfig::new(
-            CdnProvider::Cloudflare,
-            "cdn.example.com",
-            "target.com",
-        )
-        .with_ip("192.168.1.1");
+        let config = FrontConfig::new(CdnProvider::Cloudflare, "cdn.example.com", "target.com")
+            .with_ip("192.168.1.1");
 
         assert_eq!(config.ip_override, Some("192.168.1.1".to_string()));
     }
 
     #[test]
     fn test_front_config_with_priority() {
-        let config = FrontConfig::new(
-            CdnProvider::Cloudflare,
-            "cdn.example.com",
-            "target.com",
-        )
-        .with_priority(50);
+        let config = FrontConfig::new(CdnProvider::Cloudflare, "cdn.example.com", "target.com")
+            .with_priority(50);
 
         assert_eq!(config.priority, 50);
     }
 
     #[test]
     fn test_front_config_build_url_no_prefix() {
-        let config = FrontConfig::new(
-            CdnProvider::Cloudflare,
-            "cdn.example.com",
-            "target.com",
-        );
+        let config = FrontConfig::new(CdnProvider::Cloudflare, "cdn.example.com", "target.com");
 
-        assert_eq!(config.build_url("/api/data"), "https://cdn.example.com/api/data");
+        assert_eq!(
+            config.build_url("/api/data"),
+            "https://cdn.example.com/api/data"
+        );
     }
 
     #[test]
     fn test_front_config_build_url_trailing_slash_prefix() {
-        let config = FrontConfig::new(
-            CdnProvider::Cloudflare,
-            "cdn.example.com",
-            "target.com",
-        )
-        .with_path_prefix("/proxy/");
+        let config = FrontConfig::new(CdnProvider::Cloudflare, "cdn.example.com", "target.com")
+            .with_path_prefix("/proxy/");
 
         assert_eq!(
             config.build_url("/api/data"),
@@ -581,11 +571,7 @@ mod tests {
 
     #[test]
     fn test_front_config_debug_and_clone() {
-        let config = FrontConfig::new(
-            CdnProvider::Cloudflare,
-            "cdn.example.com",
-            "target.com",
-        );
+        let config = FrontConfig::new(CdnProvider::Cloudflare, "cdn.example.com", "target.com");
 
         let debug_str = format!("{:?}", config);
         assert!(debug_str.contains("FrontConfig"));
@@ -597,11 +583,7 @@ mod tests {
 
     #[test]
     fn test_front_config_serialization() {
-        let config = FrontConfig::new(
-            CdnProvider::Cloudflare,
-            "cdn.example.com",
-            "target.com",
-        );
+        let config = FrontConfig::new(CdnProvider::Cloudflare, "cdn.example.com", "target.com");
 
         let json = serde_json::to_string(&config).unwrap();
         assert!(json.contains("cloudflare"));
@@ -742,10 +724,7 @@ mod tests {
 
     #[test]
     fn test_reflector_config_debug_and_clone() {
-        let config = ReflectorConfig::new(
-            vec!["target.com".to_string()],
-            "127.0.0.1:8080",
-        );
+        let config = ReflectorConfig::new(vec!["target.com".to_string()], "127.0.0.1:8080");
 
         let debug_str = format!("{:?}", config);
         assert!(debug_str.contains("ReflectorConfig"));
@@ -757,10 +736,7 @@ mod tests {
 
     #[test]
     fn test_reflector_config_serialization() {
-        let config = ReflectorConfig::new(
-            vec!["target.com".to_string()],
-            "127.0.0.1:8080",
-        );
+        let config = ReflectorConfig::new(vec!["target.com".to_string()], "127.0.0.1:8080");
 
         let json = serde_json::to_string(&config).unwrap();
         assert!(json.contains("target.com"));
@@ -772,10 +748,7 @@ mod tests {
 
     #[test]
     fn test_reflector_is_host_allowed_exact() {
-        let config = ReflectorConfig::new(
-            vec!["target.com".to_string()],
-            "127.0.0.1:8080",
-        );
+        let config = ReflectorConfig::new(vec!["target.com".to_string()], "127.0.0.1:8080");
 
         assert!(config.is_host_allowed("target.com"));
         assert!(!config.is_host_allowed("other.com"));
@@ -783,10 +756,7 @@ mod tests {
 
     #[test]
     fn test_reflector_is_host_allowed_subdomain() {
-        let config = ReflectorConfig::new(
-            vec!["target.com".to_string()],
-            "127.0.0.1:8080",
-        );
+        let config = ReflectorConfig::new(vec!["target.com".to_string()], "127.0.0.1:8080");
 
         assert!(config.is_host_allowed("sub.target.com"));
         assert!(config.is_host_allowed("deep.sub.target.com"));

@@ -25,7 +25,12 @@ use rustls::{Certificate, PrivateKey, ServerConfig};
 use serde::Deserialize;
 use serde_json::json;
 use std::{
-    collections::HashMap, fs, io::BufReader, net::SocketAddr, path::PathBuf, sync::Arc,
+    collections::HashMap,
+    fs,
+    io::BufReader,
+    net::SocketAddr,
+    path::{Path, PathBuf},
+    sync::Arc,
     time::Duration,
 };
 use tokio::net::UdpSocket;
@@ -124,7 +129,11 @@ async fn main() -> Result<()> {
         .init();
 
     let args = Args::parse();
-    let file_cfg = args.config.as_ref().map(load_config).transpose()?;
+    let file_cfg = args
+        .config
+        .as_ref()
+        .map(|p| load_config(p.as_path()))
+        .transpose()?;
     let bind = file_cfg
         .as_ref()
         .and_then(|cfg| cfg.bind)
@@ -216,7 +225,7 @@ async fn main() -> Result<()> {
             }
         } else {
             // Check if renewal is needed
-            if let Some(_) = mgr.renew_if_needed(domain).await? {
+            if mgr.renew_if_needed(domain).await?.is_some() {
                 info!("Certificate renewed for domain: {}", domain);
             }
         }
@@ -276,7 +285,13 @@ async fn main() -> Result<()> {
             loop {
                 interval.tick().await;
                 let mut mgr = manager_clone.write().await;
-                if let Some(_) = mgr.renew_if_needed(&domain_clone).await.ok().flatten() {
+                if mgr
+                    .renew_if_needed(&domain_clone)
+                    .await
+                    .ok()
+                    .flatten()
+                    .is_some()
+                {
                     info!(
                         "Certificate automatically renewed for domain: {}",
                         domain_clone
@@ -396,8 +411,8 @@ fn fail(err: anyhow::Error) -> (StatusCode, Json<serde_json::Value>) {
     )
 }
 
-fn load_config(path: &PathBuf) -> Result<FileConfig> {
-    let builder = config_rs::Config::builder().add_source(config_rs::File::from(path.clone()));
+fn load_config(path: &Path) -> Result<FileConfig> {
+    let builder = config_rs::Config::builder().add_source(config_rs::File::from(path));
     let cfg = builder
         .build()
         .context("reading config")?
@@ -554,7 +569,7 @@ fn load_key(path: &PathBuf) -> Result<PrivateKeyDer<'static>> {
     let file = fs::File::open(path).with_context(|| format!("reading key {path:?}"))?;
     let mut reader = BufReader::new(file);
     match rustls_pemfile::private_key(&mut reader).context("parsing private key")? {
-        Some(key) => Ok(PrivateKeyDer::from(key)),
+        Some(key) => Ok(key),
         None => bail!("no private key in {path:?}"),
     }
 }

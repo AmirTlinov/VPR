@@ -791,17 +791,17 @@ mod tests {
     fn test_maybe_cleanup_interval() {
         // Create cache with short cleanup interval (by calling cleanup directly)
         let cache = NonceCache::with_ttl(Duration::from_millis(10));
-        
+
         for i in 0..5 {
             let msg = format!("cleanup_interval_{}", i);
             cache.check_and_record(msg.as_bytes()).unwrap();
         }
-        
+
         std::thread::sleep(Duration::from_millis(50));
-        
+
         // Trigger cleanup through maybe_cleanup (internal)
         cache.cleanup();
-        
+
         assert_eq!(cache.len(), 0);
     }
 
@@ -811,16 +811,16 @@ mod tests {
         // Note: default max is 50_000 which is too large for test
         // Instead, test behavior by adding many unique messages
         let cache = NonceCache::with_ttl(Duration::from_millis(10));
-        
+
         // Add messages that will expire
         for i in 0..100 {
             let msg = format!("max_test_{}", i);
             cache.check_and_record(msg.as_bytes()).unwrap();
         }
-        
+
         std::thread::sleep(Duration::from_millis(50));
         cache.cleanup();
-        
+
         // All expired entries should be removed
         assert_eq!(cache.len(), 0);
         assert!(cache.metrics().snapshot().entries_expired >= 100);
@@ -829,15 +829,15 @@ mod tests {
     #[test]
     fn test_prometheus_with_all_metrics() {
         let cache = NonceCache::with_ttl(Duration::from_millis(10));
-        
+
         // Generate some activity
         cache.check_and_record(b"prom1").unwrap();
         cache.check_and_record(b"prom2").unwrap();
         let _ = cache.check_and_record(b"prom1"); // replay
-        
+
         std::thread::sleep(Duration::from_millis(50));
         cache.cleanup();
-        
+
         let prom = cache.metrics().to_prometheus("test_prefix");
         assert!(prom.contains("test_prefix_messages_processed 2"));
         assert!(prom.contains("test_prefix_replays_blocked 1"));
@@ -847,24 +847,24 @@ mod tests {
     #[test]
     fn test_partial_message_overlap() {
         let cache = NonceCache::new();
-        
+
         // Messages differ in first 128 bytes should be different
         let mut msg1 = vec![0u8; 200];
         let mut msg2 = vec![0u8; 200];
-        
+
         msg1[0] = 1;
         msg2[0] = 2;
-        
+
         assert!(cache.check_and_record(&msg1).is_ok());
         assert!(cache.check_and_record(&msg2).is_ok()); // Different hash
-        
+
         assert_eq!(cache.len(), 2);
     }
 
     #[test]
     fn test_binary_data_handling() {
         let cache = NonceCache::new();
-        
+
         // Test with binary data including nulls
         let binary = vec![0u8, 1, 2, 0, 255, 128, 0, 64];
         assert!(cache.check_and_record(&binary).is_ok());
@@ -882,41 +882,41 @@ mod tests {
     #[test]
     fn test_multiple_cleanup_calls() {
         let cache = NonceCache::with_ttl(Duration::from_millis(20));
-        
+
         for i in 0..10 {
             let msg = format!("multi_cleanup_{}", i);
             cache.check_and_record(msg.as_bytes()).unwrap();
         }
-        
+
         // Multiple cleanup calls should be safe
         cache.cleanup();
         cache.cleanup();
         cache.cleanup();
-        
+
         assert!(cache.len() <= 10);
     }
 
     #[test]
     fn test_mixed_expiration() {
         let cache = NonceCache::with_ttl(Duration::from_millis(50));
-        
+
         // Add first batch
         for i in 0..5 {
             let msg = format!("early_{}", i);
             cache.check_and_record(msg.as_bytes()).unwrap();
         }
-        
+
         std::thread::sleep(Duration::from_millis(30));
-        
+
         // Add second batch
         for i in 0..5 {
             let msg = format!("late_{}", i);
             cache.check_and_record(msg.as_bytes()).unwrap();
         }
-        
+
         std::thread::sleep(Duration::from_millis(30));
         cache.cleanup();
-        
+
         // First batch should be expired, second batch might still be valid
         assert!(cache.len() <= 10);
     }

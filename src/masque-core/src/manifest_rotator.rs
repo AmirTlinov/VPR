@@ -414,7 +414,9 @@ mod tests {
     #[test]
     fn test_rotation_strategy_scheduled() {
         let target = SystemTime::now() + Duration::from_secs(3600);
-        let strategy = RotationStrategy::Scheduled { target_time: target };
+        let strategy = RotationStrategy::Scheduled {
+            target_time: target,
+        };
         match strategy {
             RotationStrategy::Scheduled { target_time } => {
                 assert!(target_time > SystemTime::now());
@@ -559,9 +561,15 @@ mod tests {
         tokio::fs::create_dir_all(&backup_dir).await.unwrap();
 
         // Create test backup files
-        tokio::fs::write(backup_dir.join("manifest_1.json"), "{}").await.unwrap();
-        tokio::fs::write(backup_dir.join("manifest_2.json"), "{}").await.unwrap();
-        tokio::fs::write(backup_dir.join("other.txt"), "not a backup").await.unwrap();
+        tokio::fs::write(backup_dir.join("manifest_1.json"), "{}")
+            .await
+            .unwrap();
+        tokio::fs::write(backup_dir.join("manifest_2.json"), "{}")
+            .await
+            .unwrap();
+        tokio::fs::write(backup_dir.join("other.txt"), "not a backup")
+            .await
+            .unwrap();
 
         let keypair = SigningKeypair::generate();
         let config = ManifestRotatorConfig {
@@ -777,7 +785,9 @@ mod tests {
 
         // Create 5 backup files
         for i in 1..=5 {
-            tokio::fs::write(backup_dir.join(format!("manifest_{}.json", i)), "{}").await.unwrap();
+            tokio::fs::write(backup_dir.join(format!("manifest_{}.json", i)), "{}")
+                .await
+                .unwrap();
         }
 
         let keypair = SigningKeypair::generate();
@@ -812,8 +822,12 @@ mod tests {
         tokio::fs::create_dir_all(&backup_dir).await.unwrap();
 
         // Create 2 backup files (under limit of 5)
-        tokio::fs::write(backup_dir.join("manifest_1.json"), "{}").await.unwrap();
-        tokio::fs::write(backup_dir.join("manifest_2.json"), "{}").await.unwrap();
+        tokio::fs::write(backup_dir.join("manifest_1.json"), "{}")
+            .await
+            .unwrap();
+        tokio::fs::write(backup_dir.join("manifest_2.json"), "{}")
+            .await
+            .unwrap();
 
         let keypair = SigningKeypair::generate();
         let config = ManifestRotatorConfig {

@@ -689,21 +689,30 @@ mod tests {
 
     #[test]
     fn test_ja3_fingerprint_from_chrome() {
-        let fp = Ja3Fingerprint::from_profile_with_grease(&TlsProfile::Chrome, GreaseMode::Deterministic(1));
+        let fp = Ja3Fingerprint::from_profile_with_grease(
+            &TlsProfile::Chrome,
+            GreaseMode::Deterministic(1),
+        );
         let hash = fp.to_ja3_hash();
         assert_eq!(hash.len(), 32); // MD5 hex is 32 chars
     }
 
     #[test]
     fn test_ja3_fingerprint_from_firefox() {
-        let fp = Ja3Fingerprint::from_profile_with_grease(&TlsProfile::Firefox, GreaseMode::Deterministic(1));
+        let fp = Ja3Fingerprint::from_profile_with_grease(
+            &TlsProfile::Firefox,
+            GreaseMode::Deterministic(1),
+        );
         let hash = fp.to_ja3_hash();
         assert_eq!(hash.len(), 32);
     }
 
     #[test]
     fn test_ja3_fingerprint_from_safari() {
-        let fp = Ja3Fingerprint::from_profile_with_grease(&TlsProfile::Safari, GreaseMode::Deterministic(1));
+        let fp = Ja3Fingerprint::from_profile_with_grease(
+            &TlsProfile::Safari,
+            GreaseMode::Deterministic(1),
+        );
         let hash = fp.to_ja3_hash();
         assert_eq!(hash.len(), 32);
     }
@@ -812,7 +821,10 @@ mod tests {
     fn test_tls_profile_from_str() {
         assert_eq!(TlsProfile::from_str("chrome").unwrap(), TlsProfile::Chrome);
         assert_eq!(TlsProfile::from_str("CHROME").unwrap(), TlsProfile::Chrome);
-        assert_eq!(TlsProfile::from_str("firefox").unwrap(), TlsProfile::Firefox);
+        assert_eq!(
+            TlsProfile::from_str("firefox").unwrap(),
+            TlsProfile::Firefox
+        );
         assert_eq!(TlsProfile::from_str("safari").unwrap(), TlsProfile::Safari);
         assert_eq!(TlsProfile::from_str("random").unwrap(), TlsProfile::Random);
         assert_eq!(TlsProfile::from_str("custom").unwrap(), TlsProfile::Custom);
@@ -977,7 +989,11 @@ mod tests {
             TlsProfile::Custom,
         ] {
             let suites = profile.cipher_suites();
-            assert!(!suites.is_empty(), "Profile {:?} has empty cipher suites", profile);
+            assert!(
+                !suites.is_empty(),
+                "Profile {:?} has empty cipher suites",
+                profile
+            );
         }
     }
 
@@ -992,7 +1008,11 @@ mod tests {
             TlsProfile::Custom,
         ] {
             let exts = profile.extensions();
-            assert!(!exts.is_empty(), "Profile {:?} has empty extensions", profile);
+            assert!(
+                !exts.is_empty(),
+                "Profile {:?} has empty extensions",
+                profile
+            );
         }
     }
 
@@ -1007,7 +1027,11 @@ mod tests {
             TlsProfile::Custom,
         ] {
             let curves = profile.elliptic_curves();
-            assert!(!curves.is_empty(), "Profile {:?} has empty elliptic curves", profile);
+            assert!(
+                !curves.is_empty(),
+                "Profile {:?} has empty elliptic curves",
+                profile
+            );
         }
     }
 
@@ -1022,7 +1046,11 @@ mod tests {
             TlsProfile::Custom,
         ] {
             let formats = profile.ec_point_formats();
-            assert!(!formats.is_empty(), "Profile {:?} has empty EC point formats", profile);
+            assert!(
+                !formats.is_empty(),
+                "Profile {:?} has empty EC point formats",
+                profile
+            );
             assert_eq!(formats[0], 0); // Uncompressed is always first
         }
     }
@@ -1044,7 +1072,10 @@ mod tests {
     fn test_map_cipher_suites_unknown() {
         let result = map_cipher_suites(vec![0x1301, 0xFFFF, 0x1302]);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Unknown cipher suite ID"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Unknown cipher suite ID"));
     }
 
     #[test]
@@ -1067,19 +1098,19 @@ mod tests {
         // Test deterministic mode produces valid GREASE values
         for seed in 0..100 {
             let v = grease_value(GreaseMode::Deterministic(seed));
-            assert!(GREASE_VALUES.contains(&v), "Invalid GREASE value: {:04X}", v);
+            assert!(
+                GREASE_VALUES.contains(&v),
+                "Invalid GREASE value: {:04X}",
+                v
+            );
         }
     }
 
     #[test]
     fn test_select_tls_profile_negative_percentage() {
         // Negative should be clamped to 0
-        let (profile, bucket) = select_tls_profile(
-            TlsProfile::Chrome,
-            Some(TlsProfile::Safari),
-            -50.0,
-            Some(1),
-        );
+        let (profile, bucket) =
+            select_tls_profile(TlsProfile::Chrome, Some(TlsProfile::Safari), -50.0, Some(1));
         assert_eq!(profile, TlsProfile::Chrome);
         assert_eq!(bucket, TlsProfileBucket::Main);
     }
@@ -1087,12 +1118,8 @@ mod tests {
     #[test]
     fn test_select_tls_profile_over_hundred_percentage() {
         // Over 100 should be clamped to 100
-        let (profile, bucket) = select_tls_profile(
-            TlsProfile::Chrome,
-            Some(TlsProfile::Safari),
-            150.0,
-            Some(1),
-        );
+        let (profile, bucket) =
+            select_tls_profile(TlsProfile::Chrome, Some(TlsProfile::Safari), 150.0, Some(1));
         assert_eq!(profile, TlsProfile::Safari);
         assert_eq!(bucket, TlsProfileBucket::Canary);
     }

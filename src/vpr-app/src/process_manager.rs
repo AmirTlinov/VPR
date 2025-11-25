@@ -126,12 +126,14 @@ impl VpnProcessManager {
         if let Ok(path) = std::env::var("VPR_VPN_CLIENT") {
             let p = PathBuf::from(path);
             if p.exists() {
+                info!(path = %p.display(), "Using VPR_VPN_CLIENT from env");
                 return Ok(p);
             }
         }
 
         // 2) Попробуем найти рядом с самим бинарем приложения (bundle/standalone сценарий)
         if let Ok(exe_path) = std::env::current_exe() {
+            info!(exe = %exe_path.display(), "Current executable path");
             if let Some(exe_dir) = exe_path.parent() {
                 let local_candidates = [
                     exe_dir.join("vpn-client"),
@@ -140,9 +142,16 @@ impl VpnProcessManager {
                     exe_dir.join("../vpn_client"),
                     exe_dir.join("../../vpn-client"),
                     exe_dir.join("../../vpn_client"),
+                    // Tauri dev mode: exe is in target/debug/vpr-app
+                    exe_dir.join("vpn-client"),
                 ];
-                if let Some(found) = local_candidates.iter().find(|p| p.exists()) {
-                    return Ok(found.canonicalize().unwrap_or_else(|_| (*found).clone()));
+                for candidate in &local_candidates {
+                    if candidate.exists() {
+                        info!(path = %candidate.display(), "Found vpn-client near exe");
+                        return Ok(candidate
+                            .canonicalize()
+                            .unwrap_or_else(|_| candidate.clone()));
+                    }
                 }
             }
         }
@@ -151,6 +160,8 @@ impl VpnProcessManager {
         let mut candidates: Vec<PathBuf> = vec![
             PathBuf::from("./vpn-client"),
             PathBuf::from("./vpn_client"),
+            PathBuf::from("./target/debug/vpn-client"),
+            PathBuf::from("./target/release/vpn-client"),
             PathBuf::from("/usr/local/bin/vpn-client"),
             PathBuf::from("/usr/local/bin/vpn_client"),
             PathBuf::from("/usr/bin/vpn-client"),
@@ -182,12 +193,27 @@ impl VpnProcessManager {
             }
         }
 
-        if let Some(found) = candidates.into_iter().find(|p| p.exists()) {
-            return Ok(found);
+        // 6) Относительно текущей рабочей директории
+        if let Ok(cwd) = std::env::current_dir() {
+            candidates.push(cwd.join("target/debug/vpn-client"));
+            candidates.push(cwd.join("target/release/vpn-client"));
         }
 
+        for candidate in &candidates {
+            if candidate.exists() {
+                info!(path = %candidate.display(), "Found vpn-client");
+                return Ok(candidate.clone());
+            }
+        }
+
+        // Логируем все проверенные пути для отладки
+        error!(
+            candidates = ?candidates.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+            "vpn-client binary not found in any location"
+        );
+
         anyhow::bail!(
-            "vpn-client binary not found. Set VPR_VPN_CLIENT=/path/to/vpn-client or build with: cargo build --bin vpn_client"
+            "vpn-client binary not found. Set VPR_VPN_CLIENT=/path/to/vpn-client or build with: cargo build --bin vpn-client"
         )
     }
 
@@ -236,9 +262,16 @@ impl VpnProcessManager {
 
         // Построить команду запуска
         // VPN client needs root privileges for TUN device creation
-        // Use pkexec for privilege escalation on Linux
-        let mut cmd = TokioCommand::new("pkexec");
-        cmd.arg(&binary_path);
+        // Если уже root — запускаем напрямую, иначе через pkexec
+        let is_root = unsafe { libc::geteuid() } == 0;
+
+        let mut cmd = if is_root {
+            TokioCommand::new(&binary_path)
+        } else {
+            let mut c = TokioCommand::new("pkexec");
+            c.arg(&binary_path);
+            c
+        };
         cmd.arg("--server")
             .arg(format!("{}:{}", config.server, config.port))
             .arg("--server-name")
@@ -284,11 +317,38 @@ impl VpnProcessManager {
         // Установить переменные окружения для процесса
         cmd.env("RUST_LOG", "info");
 
+        // Логируем полную команду для отладки
+        info!(is_root = is_root, "Spawning vpn-client process");
+
         // Запустить процесс
-        let child = cmd.spawn().context("spawning vpn-client process")?;
+        let mut child = cmd.spawn().context("spawning vpn-client process")?;
 
         // Сохранить процесс
         let process_handle = child.id();
+
+        // Запустить задачу для чтения stdout/stderr
+        if let Some(stdout) = child.stdout.take() {
+            let stdout_reader = tokio::io::BufReader::new(stdout);
+            tokio::spawn(async move {
+                use tokio::io::AsyncBufReadExt;
+                let mut lines = stdout_reader.lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    info!(target: "vpn-client", "[stdout] {}", line);
+                }
+            });
+        }
+
+        if let Some(stderr) = child.stderr.take() {
+            let stderr_reader = tokio::io::BufReader::new(stderr);
+            tokio::spawn(async move {
+                use tokio::io::AsyncBufReadExt;
+                let mut lines = stderr_reader.lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    warn!(target: "vpn-client", "[stderr] {}", line);
+                }
+            });
+        }
+
         *self.process.write().await = Some(child);
 
         info!(pid = process_handle, "VPN client process started");
@@ -315,52 +375,80 @@ impl VpnProcessManager {
         });
 
         // Обновить статус на Running через небольшую задержку,
-        // НО только если процесс всё ещё жив
+        // НО только если процесс всё ещё жив И TUN устройство создано
         let status_clone = self.status.clone();
         let status_tx_clone = self.status_tx.clone();
         let statistics_clone = self.statistics.clone();
         let process_for_check = self.process.clone();
+        let tun_name = config.tun_name.clone();
         tokio::spawn(async move {
-            sleep(Duration::from_millis(500)).await;
-            
-            // Проверяем что процесс всё ещё жив
-            let process_alive = {
-                let mut process_guard = process_for_check.write().await;
-                if let Some(child) = process_guard.as_mut() {
-                    match child.try_wait() {
-                        Ok(Some(exit_status)) => {
-                            // Процесс уже завершился — это ошибка!
-                            error!(
-                                exit_code = ?exit_status.code(),
-                                "VPN client process exited immediately after start"
-                            );
-                            false
+            // Ждём до 10 секунд пока TUN устройство появится
+            let mut tun_created = false;
+            for i in 0..20 {
+                sleep(Duration::from_millis(500)).await;
+
+                // Проверяем что процесс всё ещё жив
+                let process_alive = {
+                    let mut process_guard = process_for_check.write().await;
+                    if let Some(child) = process_guard.as_mut() {
+                        match child.try_wait() {
+                            Ok(Some(exit_status)) => {
+                                error!(
+                                    exit_code = ?exit_status.code(),
+                                    "VPN client process exited"
+                                );
+                                false
+                            }
+                            Ok(None) => true,
+                            Err(e) => {
+                                error!(%e, "Failed to check process status");
+                                false
+                            }
                         }
-                        Ok(None) => true, // Процесс всё ещё работает
-                        Err(e) => {
-                            error!(%e, "Failed to check process status");
-                            false
-                        }
+                    } else {
+                        false
                     }
-                } else {
-                    false // Процесс не существует
+                };
+
+                if !process_alive {
+                    let mut status = status_clone.write().await;
+                    *status = ProcessStatus::Error;
+                    let _ = status_tx_clone.send(ProcessStatus::Error);
+                    error!("VPN client process died");
+                    return;
                 }
-            };
-            
+
+                // Проверяем TUN устройство
+                let tun_check = std::process::Command::new("ip")
+                    .args(["link", "show", &tun_name])
+                    .output();
+
+                if let Ok(output) = tun_check {
+                    if output.status.success() {
+                        tun_created = true;
+                        info!(tun = %tun_name, attempt = i + 1, "TUN device created");
+                        break;
+                    }
+                }
+
+                if i % 4 == 0 {
+                    info!(tun = %tun_name, attempt = i + 1, "Waiting for TUN device...");
+                }
+            }
+
             let mut status = status_clone.write().await;
             if *status == ProcessStatus::Starting {
-                if process_alive {
+                if tun_created {
                     *status = ProcessStatus::Running;
                     let _ = status_tx_clone.send(ProcessStatus::Running);
 
-                    // Обновить статистику
                     let mut stats = statistics_clone.write().await;
                     stats.connected_at = Some(chrono::Utc::now());
-                    info!("VPN client confirmed running");
+                    info!("VPN connected successfully");
                 } else {
                     *status = ProcessStatus::Error;
                     let _ = status_tx_clone.send(ProcessStatus::Error);
-                    error!("VPN client failed to start - process died within 500ms");
+                    error!("VPN connection failed - TUN device not created within 10s");
                 }
             }
         });
@@ -401,16 +489,16 @@ impl VpnProcessManager {
                 if let Some(pid) = child.id() {
                     if let Err(e) = signal::kill(Pid::from_raw(pid as i32), Signal::SIGTERM) {
                         warn!(%e, "Failed to send SIGTERM, trying kill");
-                        let _ = child.kill();
+                        let _ = child.kill().await;
                     }
                 } else {
-                    let _ = child.kill();
+                    let _ = child.kill().await;
                 }
             }
 
             #[cfg(not(unix))]
             {
-                let _ = child.kill();
+                let _ = child.kill().await;
             }
 
             // Подождать завершения процесса (graceful shutdown)
@@ -420,7 +508,7 @@ impl VpnProcessManager {
             loop {
                 if start.elapsed() > timeout {
                     warn!("Process did not terminate gracefully, forcing kill");
-                    let _ = child.kill();
+                    let _ = child.kill().await;
                     break;
                 }
 
@@ -533,5 +621,45 @@ impl VpnProcessManager {
 impl Default for VpnProcessManager {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn manager_starts_in_stopped_state() {
+        let manager = VpnProcessManager::new();
+        assert_eq!(manager.get_status().await, ProcessStatus::Stopped);
+    }
+
+    #[tokio::test]
+    async fn manager_default_statistics_are_zero() {
+        let manager = VpnProcessManager::new();
+        let stats = manager.get_statistics().await;
+        assert_eq!(stats.bytes_sent, 0);
+        assert_eq!(stats.bytes_received, 0);
+    }
+
+    #[tokio::test]
+    async fn stop_when_stopped_is_noop() {
+        let manager = VpnProcessManager::new();
+        let result = manager.stop().await;
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn config_default_values() {
+        let config = VpnClientConfig::default();
+        assert_eq!(config.port, 443);
+        assert!(!config.insecure);
+    }
+
+    #[test]
+    fn process_manager_default_impl() {
+        let manager = VpnProcessManager::default();
+        // Just verify the Default impl works
+        let _ = manager;
     }
 }

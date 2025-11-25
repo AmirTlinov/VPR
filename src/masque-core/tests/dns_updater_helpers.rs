@@ -34,5 +34,8 @@ fn dns_updater_factory_requires_cloudflare_credentials() {
         propagation_delay: Duration::from_secs(10),
     };
     let result = DnsUpdaterFactory::create(&config);
-    assert!(result.is_err(), "Cloudflare without credentials should fail");
+    assert!(
+        result.is_err(),
+        "Cloudflare without credentials should fail"
+    );
 }

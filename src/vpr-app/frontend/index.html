@@ -114,14 +114,18 @@
         </div>
 
         <div class="config-section">
-          <div class="section-label"># options</div>
+          <div class="section-label"># security</div>
           <div class="field-check">
-            <input type="checkbox" id="cfg-autoconnect">
-            <label for="cfg-autoconnect">auto_init</label>
+            <input type="checkbox" id="cfg-insecure">
+            <label for="cfg-insecure">insecure <span class="warn-text">(skip TLS verify)</span></label>
           </div>
           <div class="field-check">
             <input type="checkbox" id="cfg-killswitch">
             <label for="cfg-killswitch">kill_switch</label>
+          </div>
+          <div class="field-check">
+            <input type="checkbox" id="cfg-autoconnect">
+            <label for="cfg-autoconnect">auto_init</label>
           </div>
         </div>
       </div>

@@ -156,10 +156,10 @@ impl NetworkStateGuard {
             return Ok(false);
         }
 
-        let content = std::fs::read_to_string(&state_path)
-            .context("reading orphaned state file")?;
-        let state: NetworkState = serde_json::from_str(&content)
-            .context("parsing orphaned state file")?;
+        let content =
+            std::fs::read_to_string(&state_path).context("reading orphaned state file")?;
+        let state: NetworkState =
+            serde_json::from_str(&content).context("parsing orphaned state file")?;
 
         if state.cleaned_up {
             info!("State file exists but cleanup was completed");
@@ -206,7 +206,9 @@ impl NetworkStateGuard {
 
     /// Record that DNS was modified
     pub fn record_dns_change(&mut self, backup_path: PathBuf) -> Result<()> {
-        self.state.changes.push(NetworkChange::DnsModified { backup_path });
+        self.state
+            .changes
+            .push(NetworkChange::DnsModified { backup_path });
         self.persist()
     }
 
@@ -227,10 +229,9 @@ impl NetworkStateGuard {
 
     /// Record that split tunnel routes were added
     pub fn record_split_routes(&mut self, tun_name: String, routes: Vec<String>) -> Result<()> {
-        self.state.changes.push(NetworkChange::SplitTunnelRoutes {
-            tun_name,
-            routes,
-        });
+        self.state
+            .changes
+            .push(NetworkChange::SplitTunnelRoutes { tun_name, routes });
         self.persist()
     }
 
@@ -242,18 +243,26 @@ impl NetworkStateGuard {
 
     /// Record that firewall rules were added
     pub fn record_firewall_rules(&mut self, rule_ids: Vec<String>) -> Result<()> {
-        self.state.changes.push(NetworkChange::FirewallRulesAdded { rule_ids });
+        self.state
+            .changes
+            .push(NetworkChange::FirewallRulesAdded { rule_ids });
         self.persist()
     }
 
     /// Perform cleanup of all recorded changes (called on normal shutdown)
     pub fn cleanup(&mut self) -> Result<()> {
         if self.dry_run {
-            info!("Dry-run mode: would cleanup {} changes", self.state.changes.len());
+            info!(
+                "Dry-run mode: would cleanup {} changes",
+                self.state.changes.len()
+            );
             return Ok(());
         }
 
-        info!(changes = self.state.changes.len(), "Performing network cleanup");
+        info!(
+            changes = self.state.changes.len(),
+            "Performing network cleanup"
+        );
 
         // Restore in reverse order (LIFO)
         let mut errors = Vec::new();
@@ -275,7 +284,10 @@ impl NetworkStateGuard {
             info!("Network cleanup completed successfully");
             Ok(())
         } else {
-            Err(anyhow::anyhow!("Some cleanup operations failed: {:?}", errors))
+            Err(anyhow::anyhow!(
+                "Some cleanup operations failed: {:?}",
+                errors
+            ))
         }
     }
 
@@ -306,15 +318,13 @@ impl NetworkStateGuard {
             std::fs::create_dir_all(parent).ok();
         }
 
-        let content = serde_json::to_string_pretty(&self.state)
-            .context("serializing network state")?;
+        let content =
+            serde_json::to_string_pretty(&self.state).context("serializing network state")?;
 
         // Atomic write: write to temp file, then rename
         let temp_path = self.state_path.with_extension("tmp");
-        std::fs::write(&temp_path, &content)
-            .context("writing state file")?;
-        std::fs::rename(&temp_path, &self.state_path)
-            .context("renaming state file")?;
+        std::fs::write(&temp_path, &content).context("writing state file")?;
+        std::fs::rename(&temp_path, &self.state_path).context("renaming state file")?;
 
         debug!(path = %self.state_path.display(), "Network state persisted");
         Ok(())
@@ -345,33 +355,28 @@ impl NetworkStateGuard {
 
     fn restore_single_change(change: &NetworkChange) -> Result<()> {
         match change {
-            NetworkChange::DnsModified { backup_path } => {
-                Self::restore_dns(backup_path)
-            }
+            NetworkChange::DnsModified { backup_path } => Self::restore_dns(backup_path),
             NetworkChange::DefaultRouteSet {
                 tun_name,
                 original_gateway,
                 original_interface,
-            } => {
-                Self::restore_default_route(tun_name, original_gateway.as_ref(), original_interface.as_deref())
-            }
+            } => Self::restore_default_route(
+                tun_name,
+                original_gateway.as_ref(),
+                original_interface.as_deref(),
+            ),
             NetworkChange::SplitTunnelRoutes { tun_name, routes } => {
                 Self::restore_split_routes(tun_name, routes)
             }
-            NetworkChange::TunCreated { name } => {
-                Self::remove_tun_interface(name)
-            }
-            NetworkChange::FirewallRulesAdded { rule_ids } => {
-                Self::remove_firewall_rules(rule_ids)
-            }
+            NetworkChange::TunCreated { name } => Self::remove_tun_interface(name),
+            NetworkChange::FirewallRulesAdded { rule_ids } => Self::remove_firewall_rules(rule_ids),
         }
     }
 
     fn restore_dns(backup_path: &Path) -> Result<()> {
         let resolv_path = Path::new("/etc/resolv.conf");
         if backup_path.exists() {
-            std::fs::copy(backup_path, resolv_path)
-                .context("restoring resolv.conf from backup")?;
+            std::fs::copy(backup_path, resolv_path).context("restoring resolv.conf from backup")?;
             std::fs::remove_file(backup_path).ok();
             info!("DNS configuration restored from backup");
         } else {
@@ -393,7 +398,15 @@ impl NetworkStateGuard {
         // Restore original default route if known
         if let (Some(gw), Some(iface)) = (original_gateway, original_interface) {
             std::process::Command::new("ip")
-                .args(["route", "add", "default", "via", &gw.to_string(), "dev", iface])
+                .args([
+                    "route",
+                    "add",
+                    "default",
+                    "via",
+                    &gw.to_string(),
+                    "dev",
+                    iface,
+                ])
                 .output()
                 .context("restoring original default route")?;
             info!(gateway = %gw, interface = %iface, "Default route restored");
@@ -426,7 +439,16 @@ impl NetworkStateGuard {
         for rule_id in rule_ids {
             // Try iptables first
             let _ = std::process::Command::new("iptables")
-                .args(["-D", "FORWARD", "-m", "comment", "--comment", rule_id, "-j", "ACCEPT"])
+                .args([
+                    "-D",
+                    "FORWARD",
+                    "-m",
+                    "comment",
+                    "--comment",
+                    rule_id,
+                    "-j",
+                    "ACCEPT",
+                ])
                 .output();
             // Try nftables
             let _ = std::process::Command::new("nft")
@@ -470,8 +492,12 @@ mod tests {
             started_at: Some(1234567890),
             pid: Some(12345),
             changes: vec![
-                NetworkChange::TunCreated { name: "vpr0".to_string() },
-                NetworkChange::DnsModified { backup_path: PathBuf::from("/tmp/dns.bak") },
+                NetworkChange::TunCreated {
+                    name: "vpr0".to_string(),
+                },
+                NetworkChange::DnsModified {
+                    backup_path: PathBuf::from("/tmp/dns.bak"),
+                },
             ],
             cleaned_up: false,
         };
@@ -486,7 +512,9 @@ mod tests {
         let mut state = NetworkState::default();
         assert!(!state.has_pending_changes());
 
-        state.changes.push(NetworkChange::TunCreated { name: "vpr0".to_string() });
+        state.changes.push(NetworkChange::TunCreated {
+            name: "vpr0".to_string(),
+        });
         assert!(state.has_pending_changes());
 
         state.cleaned_up = true;

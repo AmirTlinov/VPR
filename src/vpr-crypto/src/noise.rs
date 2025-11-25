@@ -622,8 +622,8 @@ mod tests {
             x25519_dalek::x25519(server_static, x25519_dalek::X25519_BASEPOINT_BYTES);
 
         // NK pattern: client doesn't send static key
-        let mut initiator = NoiseInitiator::new_nk(&server_public)
-            .expect("test: failed to create NK initiator");
+        let mut initiator =
+            NoiseInitiator::new_nk(&server_public).expect("test: failed to create NK initiator");
         let mut responder =
             NoiseResponder::new_nk(&server_static).expect("test: failed to create NK responder");
 
@@ -817,7 +817,9 @@ mod tests {
         let (payload1, peer_hybrid) = responder.read_message(&msg1).unwrap();
         assert_eq!(payload1, large_payload);
 
-        let (msg2, _) = responder.write_message(&large_payload, &peer_hybrid).unwrap();
+        let (msg2, _) = responder
+            .write_message(&large_payload, &peer_hybrid)
+            .unwrap();
         let (payload2, _) = initiator.read_message(&msg2).unwrap();
         assert_eq!(payload2, large_payload);
     }

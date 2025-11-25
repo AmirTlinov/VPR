@@ -59,7 +59,10 @@ fn manifest_rotator_generates_plan() {
     let endpoints = vec![sample_endpoint("srv-1", "example.com")];
 
     let plan = rotator.generate_rotation_plan(&[], &endpoints);
-    assert!(!plan.stages.is_empty(), "Plan should have at least one stage");
+    assert!(
+        !plan.stages.is_empty(),
+        "Plan should have at least one stage"
+    );
 }
 
 #[tokio::test]
@@ -85,9 +88,19 @@ async fn manifest_rotator_rotate_immediate() {
     let endpoints = vec![sample_endpoint("srv-1", "test.example.com")];
 
     let result = rotator.rotate(endpoints, None, None).await;
-    assert!(result.is_ok(), "Immediate rotation should succeed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Immediate rotation should succeed: {:?}",
+        result.err()
+    );
 
     let manifest = result.unwrap();
-    assert!(!manifest.payload.is_empty(), "Manifest payload should not be empty");
-    assert!(!manifest.signature.is_empty(), "Manifest signature should not be empty");
+    assert!(
+        !manifest.payload.is_empty(),
+        "Manifest payload should not be empty"
+    );
+    assert!(
+        !manifest.signature.is_empty(),
+        "Manifest signature should not be empty"
+    );
 }

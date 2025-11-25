@@ -714,7 +714,10 @@ mod tests {
         assert_eq!(html_escape(">"), "&gt;");
         assert_eq!(html_escape("\""), "&quot;");
         assert_eq!(html_escape("'"), "&apos;");
-        assert_eq!(html_escape("<script>&</script>"), "&lt;script&gt;&amp;&lt;/script&gt;");
+        assert_eq!(
+            html_escape("<script>&</script>"),
+            "&lt;script&gt;&amp;&lt;/script&gt;"
+        );
     }
 
     #[test]
@@ -724,7 +727,10 @@ mod tests {
         assert_eq!(html_unescape("&gt;"), ">");
         assert_eq!(html_unescape("&quot;"), "\"");
         assert_eq!(html_unescape("&apos;"), "'");
-        assert_eq!(html_unescape("&lt;script&gt;&amp;&lt;/script&gt;"), "<script>&</script>");
+        assert_eq!(
+            html_unescape("&lt;script&gt;&amp;&lt;/script&gt;"),
+            "<script>&</script>"
+        );
     }
 
     #[test]
@@ -780,15 +786,13 @@ mod tests {
     fn build_rss_feed_creates_valid_xml() {
         let config = StegoRssConfig::default();
         let encoder = StegoRssEncoder::new(config);
-        let items = vec![
-            RssItem {
-                title: "Test Title".into(),
-                description: "Test Description".into(),
-                link: "https://example.com/1".into(),
-                guid: "guid-1".into(),
-                pub_date: "1234567890".into(),
-            },
-        ];
+        let items = vec![RssItem {
+            title: "Test Title".into(),
+            description: "Test Description".into(),
+            link: "https://example.com/1".into(),
+            guid: "guid-1".into(),
+            pub_date: "1234567890".into(),
+        }];
         let xml = encoder.build_rss_feed(&items).unwrap();
         assert!(xml.contains("<?xml version=\"1.0\""));
         assert!(xml.contains("<rss version=\"2.0\">"));
@@ -1037,7 +1041,8 @@ mod tests {
     fn decode_base64_content_empty_fails() {
         let config = StegoRssConfig::default();
         let decoder = StegoRssDecoder::new(config);
-        let xml = r#"<rss><channel><item><description>No data here</description></item></channel></rss>"#;
+        let xml =
+            r#"<rss><channel><item><description>No data here</description></item></channel></rss>"#;
         let result = decoder.decode_base64_content(xml);
         assert!(result.is_err());
     }

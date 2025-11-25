@@ -29,6 +29,7 @@ use masque_core::hybrid_handshake::HybridClient;
 use masque_core::key_rotation::{
     rotation_check_task, KeyRotationConfig, KeyRotationManager, SessionKeyLimits, SessionKeyState,
 };
+use masque_core::network_guard::NetworkStateGuard;
 use masque_core::padding::{Padder, PaddingConfig, PaddingStrategy};
 use masque_core::quic_stream::QuicBiStream;
 use masque_core::tls_fingerprint::{
@@ -41,7 +42,6 @@ use masque_core::tun::{
     TunDevice,
 };
 use masque_core::vpn_config::{ConfigAck, VpnConfig};
-use masque_core::network_guard::NetworkStateGuard;
 use masque_core::vpn_tunnel::{
     channel_to_tun, forward_quic_to_tun, forward_tun_to_quic, tun_to_channel, PacketEncapsulator,
 };
@@ -283,14 +283,14 @@ fn preferred_tls13_cipher(profile: &TlsProfile) -> u16 {
 /// Returns a receiver that completes when SIGTERM or SIGINT is received
 fn setup_shutdown_signal() -> oneshot::Receiver<()> {
     let (tx, rx) = oneshot::channel();
-    
+
     tokio::spawn(async move {
         #[cfg(unix)]
         {
             use tokio::signal::unix::{signal, SignalKind};
             let mut sigterm = signal(SignalKind::terminate()).expect("SIGTERM handler");
             let mut sigint = signal(SignalKind::interrupt()).expect("SIGINT handler");
-            
+
             tokio::select! {
                 _ = sigterm.recv() => {
                     info!("Received SIGTERM - initiating graceful shutdown");
@@ -300,16 +300,16 @@ fn setup_shutdown_signal() -> oneshot::Receiver<()> {
                 }
             }
         }
-        
+
         #[cfg(not(unix))]
         {
             tokio::signal::ctrl_c().await.expect("Ctrl+C handler");
             info!("Received Ctrl+C - initiating graceful shutdown");
         }
-        
+
         let _ = tx.send(());
     });
-    
+
     rx
 }
 
@@ -578,8 +578,7 @@ async fn run_vpn_client(args: Args, shutdown_signal: oneshot::Receiver<()>) -> R
 
     // Create network state guard for crash recovery
     // This persists network changes to disk so they can be undone after crash/kill -9
-    let mut network_guard = NetworkStateGuard::new()
-        .context("initializing network state guard")?;
+    let mut network_guard = NetworkStateGuard::new().context("initializing network state guard")?;
 
     // Record TUN creation
     network_guard
@@ -644,7 +643,8 @@ async fn run_vpn_client(args: Args, shutdown_signal: oneshot::Receiver<()>) -> R
                 )
                 .with_context(|| format!("setting up split tunnel with {} routes", routes.len()))?;
                 // Record split tunnel routes for crash recovery
-                let route_cidrs: Vec<String> = routes.iter().map(|r| r.destination.to_string()).collect();
+                let route_cidrs: Vec<String> =
+                    routes.iter().map(|r| r.destination.to_string()).collect();
                 network_guard
                     .record_split_routes(tun.name().to_string(), route_cidrs)
                     .context("recording split tunnel routes")?;

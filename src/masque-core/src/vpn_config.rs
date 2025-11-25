@@ -501,7 +501,10 @@ mod tests {
         let oversized_len = (MAX_CONFIG_SIZE + 100) as u32;
         tokio::spawn(async move {
             use tokio::io::AsyncWriteExt;
-            client.write_all(&oversized_len.to_be_bytes()).await.unwrap();
+            client
+                .write_all(&oversized_len.to_be_bytes())
+                .await
+                .unwrap();
         });
 
         let result = VpnConfig::recv(&mut server).await;
@@ -517,7 +520,10 @@ mod tests {
         let oversized_len: u32 = 5000;
         tokio::spawn(async move {
             use tokio::io::AsyncWriteExt;
-            client.write_all(&oversized_len.to_be_bytes()).await.unwrap();
+            client
+                .write_all(&oversized_len.to_be_bytes())
+                .await
+                .unwrap();
         });
 
         let result = ConfigAck::recv(&mut server).await;

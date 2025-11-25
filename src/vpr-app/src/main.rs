@@ -64,6 +64,8 @@ struct Config {
     doh_endpoint: String,
     autoconnect: bool,
     killswitch: bool,
+    #[serde(default)]
+    insecure: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -94,6 +96,7 @@ impl Default for Config {
             doh_endpoint: "/dns-query".into(),
             autoconnect: false,
             killswitch: false,
+            insecure: false,
         }
     }
 }
@@ -174,25 +177,8 @@ fn get_config() -> Config {
 }
 
 #[tauri::command]
-fn save_config(
-    server: String,
-    port: String,
-    username: String,
-    mode: String,
-    doh_endpoint: String,
-    autoconnect: bool,
-    killswitch: bool,
-) -> Result<(), String> {
-    Config {
-        server,
-        port,
-        username,
-        mode,
-        doh_endpoint,
-        autoconnect,
-        killswitch,
-    }
-    .save()
+fn save_config(config: Config) -> Result<(), String> {
+    config.save()
 }
 
 #[tauri::command]
@@ -224,19 +210,52 @@ async fn connect(
     let config = Config::load();
 
     // Найти путь к секретам
-    let secrets_dir = directories::ProjectDirs::from("com", "vpr", "client")
-        .map(|d| d.config_dir().to_path_buf())
-        .unwrap_or_else(|| PathBuf::from("."))
-        .parent()
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("secrets");
+    // 1) Проверяем VPR_SECRETS_DIR env
+    // 2) Проверяем ./secrets относительно exe
+    // 3) Проверяем ./secrets относительно cwd
+    // 4) Проверяем ~/.config/vpr/secrets
+    let secrets_dir = std::env::var("VPR_SECRETS_DIR")
+        .ok()
+        .map(PathBuf::from)
+        .filter(|p| p.exists())
+        .or_else(|| {
+            std::env::current_exe().ok().and_then(|exe| {
+                let exe_dir = exe.parent()?;
+                // Tauri dev: exe is in target/debug/, secrets is in workspace root
+                let candidates = [
+                    exe_dir.join("secrets"),
+                    exe_dir.join("../secrets"),
+                    exe_dir.join("../../secrets"),
+                    exe_dir.join("../../../secrets"),
+                ];
+                candidates.into_iter().find(|p| p.exists())
+            })
+        })
+        .or_else(|| {
+            std::env::current_dir().ok().and_then(|cwd| {
+                let p = cwd.join("secrets");
+                if p.exists() {
+                    Some(p)
+                } else {
+                    None
+                }
+            })
+        })
+        .or_else(|| {
+            directories::ProjectDirs::from("com", "vpr", "client")
+                .map(|d| d.config_dir().join("secrets"))
+                .filter(|p| p.exists())
+        })
+        .unwrap_or_else(|| PathBuf::from("secrets"));
+
+    tracing::info!(secrets_dir = %secrets_dir.display(), "Using secrets directory");
 
     // Построить конфигурацию VPN клиента
     let port_num: u16 = port.parse().map_err(|e| format!("Invalid port: {}", e))?;
 
-    // Enable insecure mode for localhost/127.0.0.1 (self-signed certs)
+    // Enable insecure mode if configured or for localhost
     let is_localhost = server == "localhost" || server == "127.0.0.1" || server.starts_with("127.");
+    let use_insecure = config.insecure || is_localhost;
 
     let vpn_config = VpnClientConfig {
         server: server.clone(),
@@ -250,7 +269,7 @@ async fn connect(
         dns_protection: true,
         dns_servers: vec![],
         tls_profile: "chrome".to_string(),
-        insecure: is_localhost,
+        insecure: use_insecure,
         killswitch: config.killswitch,
     };
 
@@ -503,16 +522,40 @@ fn main() {
             tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
             let port = config.port.parse::<u16>().unwrap_or(443);
-            let secrets_dir = directories::ProjectDirs::from("com", "vpr", "client")
-                .map(|d| d.config_dir().to_path_buf())
-                .unwrap_or_else(|| PathBuf::from("."))
-                .parent()
-                .map(|p| p.to_path_buf())
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join("secrets");
+            // Найти путь к секретам (та же логика что и в connect)
+            let secrets_dir = std::env::var("VPR_SECRETS_DIR")
+                .ok()
+                .map(PathBuf::from)
+                .filter(|p| p.exists())
+                .or_else(|| {
+                    std::env::current_exe().ok().and_then(|exe| {
+                        let exe_dir = exe.parent()?;
+                        let candidates = [
+                            exe_dir.join("secrets"),
+                            exe_dir.join("../secrets"),
+                            exe_dir.join("../../secrets"),
+                            exe_dir.join("../../../secrets"),
+                        ];
+                        candidates.into_iter().find(|p| p.exists())
+                    })
+                })
+                .or_else(|| {
+                    std::env::current_dir().ok().and_then(|cwd| {
+                        let p = cwd.join("secrets");
+                        if p.exists() {
+                            Some(p)
+                        } else {
+                            None
+                        }
+                    })
+                })
+                .unwrap_or_else(|| PathBuf::from("secrets"));
 
-            // Enable insecure mode for localhost/127.0.0.1 (self-signed certs)
-            let is_localhost = config.server == "localhost" || config.server == "127.0.0.1" || config.server.starts_with("127.");
+            // Enable insecure mode if configured or for localhost
+            let is_localhost = config.server == "localhost"
+                || config.server == "127.0.0.1"
+                || config.server.starts_with("127.");
+            let use_insecure = config.insecure || is_localhost;
 
             let vpn_config = VpnClientConfig {
                 server: config.server.clone(),
@@ -526,7 +569,7 @@ fn main() {
                 dns_protection: true,
                 dns_servers: vec![],
                 tls_profile: "chrome".to_string(),
-                insecure: is_localhost,
+                insecure: use_insecure,
                 killswitch: config.killswitch,
             };
 

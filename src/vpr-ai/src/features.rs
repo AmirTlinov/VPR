@@ -369,7 +369,7 @@ mod tests {
 
         // First packet features at offset 0
         assert!(tensor[0] > 0.0); // size_normalized
-        // Second packet at offset 4
+                                  // Second packet at offset 4
         assert!(tensor[4] > 0.0);
         // Rest should be zeros
         assert_eq!(tensor[8], 0.0);

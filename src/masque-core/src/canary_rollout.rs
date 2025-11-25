@@ -462,7 +462,9 @@ mod tests {
             start_time: SystemTime::now(),
         };
         match state {
-            CanaryState::InProgress { current_percent, .. } => {
+            CanaryState::InProgress {
+                current_percent, ..
+            } => {
                 assert_eq!(current_percent, 50);
             }
             _ => panic!("Expected InProgress"),
