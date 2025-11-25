@@ -518,6 +518,16 @@ async fn run_vpn_client(args: Args) -> Result<()> {
     // Routing state for cleanup
     let mut routing_state = RoutingState::new();
 
+    // Create network state guard for crash recovery
+    // This persists network changes to disk so they can be undone after crash/kill -9
+    let mut network_guard = NetworkStateGuard::new()
+        .context("initializing network state guard")?;
+
+    // Record TUN creation
+    network_guard
+        .record_tun_created(tun.name().to_string())
+        .context("recording TUN creation")?;
+
     // Determine routing policy from config or CLI
     let routing_config = vpn_config.routing_config.as_ref();
 
@@ -541,6 +551,10 @@ async fn run_vpn_client(args: Args) -> Result<()> {
         RoutingPolicy::Full => {
             if args.set_default_route {
                 setup_routing(tun.name(), vpn_config.gateway).context("setting up routing")?;
+                // Record default route change for crash recovery
+                network_guard
+                    .record_default_route(tun.name().to_string(), None, None)
+                    .context("recording default route")?;
             }
         }
         RoutingPolicy::Split => {
@@ -571,6 +585,11 @@ async fn run_vpn_client(args: Args) -> Result<()> {
                     &mut routing_state,
                 )
                 .with_context(|| format!("setting up split tunnel with {} routes", routes.len()))?;
+                // Record split tunnel routes for crash recovery
+                let route_cidrs: Vec<String> = routes.iter().map(|r| r.destination.to_string()).collect();
+                network_guard
+                    .record_split_routes(tun.name().to_string(), route_cidrs)
+                    .context("recording split tunnel routes")?;
             } else {
                 warn!("Split tunnel enabled but no routes specified - VPN may not route traffic correctly");
             }
@@ -690,6 +709,10 @@ async fn run_vpn_client(args: Args) -> Result<()> {
                     dns_servers
                 )
             })?;
+            // Record DNS change for crash recovery
+            network_guard
+                .record_dns_change(std::path::PathBuf::from("/tmp/vpr-resolv.conf.bak"))
+                .context("recording DNS change")?;
             info!(
                 dns_count = dns_servers.len(),
                 dns_servers = ?dns_servers,
@@ -751,6 +774,15 @@ async fn run_vpn_client(args: Args) -> Result<()> {
         } else {
             info!("DNS protection disabled, original config restored");
         }
+    }
+
+    // Cleanup network state (removes state file on success)
+    // This is also called automatically via Drop trait, but explicit is better
+    if let Err(e) = network_guard.cleanup() {
+        tracing::error!(
+            %e,
+            "Network cleanup failed - run 'vpn-client --repair' to fix"
+        );
     }
 
     let _ = rotation_shutdown_tx.send(());
