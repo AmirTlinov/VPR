@@ -522,4 +522,303 @@ mod tests {
             .expect("test: failed to decrypt");
         assert_eq!(pt, b"secret message");
     }
+
+    // Additional tests for coverage
+
+    #[test]
+    fn test_pattern_constants() {
+        assert_eq!(PATTERN_IK, "Noise_IK_25519_ChaChaPoly_SHA256");
+        assert_eq!(PATTERN_NK, "Noise_NK_25519_ChaChaPoly_SHA256");
+    }
+
+    #[test]
+    fn test_hybrid_public_from_bytes_valid() {
+        let kp = HybridKeypair::generate();
+        let pub_bundle = kp.public_bundle();
+
+        let reconstructed = HybridPublic::from_bytes(&pub_bundle.x25519, &pub_bundle.mlkem)
+            .expect("valid bytes should parse");
+        assert_eq!(reconstructed.x25519, pub_bundle.x25519);
+        assert_eq!(reconstructed.mlkem, pub_bundle.mlkem);
+    }
+
+    #[test]
+    fn test_hybrid_public_from_bytes_x25519_too_short() {
+        let short_x25519 = [0u8; 31]; // Should be 32
+        let mlkem = vec![0u8; 1184];
+
+        let result = HybridPublic::from_bytes(&short_x25519, &mlkem);
+        match result {
+            Ok(_) => panic!("expected error"),
+            Err(e) => assert!(e.to_string().contains("x25519")),
+        }
+    }
+
+    #[test]
+    fn test_hybrid_public_from_bytes_mlkem_wrong_length() {
+        let x25519 = [0u8; 32];
+        let short_mlkem = vec![0u8; 1000]; // Should be 1184
+
+        let result = HybridPublic::from_bytes(&x25519, &short_mlkem);
+        match result {
+            Ok(_) => panic!("expected error"),
+            Err(e) => assert!(e.to_string().contains("ML-KEM768")),
+        }
+    }
+
+    #[test]
+    fn test_hybrid_public_to_bytes() {
+        let kp = HybridKeypair::generate();
+        let pub_bundle = kp.public_bundle();
+
+        let bytes = pub_bundle.to_bytes();
+        assert_eq!(bytes.len(), 32 + 1184); // X25519 + ML-KEM768
+        assert_eq!(&bytes[..32], &pub_bundle.x25519);
+        assert_eq!(&bytes[32..], &pub_bundle.mlkem);
+    }
+
+    #[test]
+    fn test_hybrid_public_clone() {
+        let kp = HybridKeypair::generate();
+        let pub_bundle = kp.public_bundle();
+        let cloned = pub_bundle.clone();
+
+        assert_eq!(pub_bundle.x25519, cloned.x25519);
+        assert_eq!(pub_bundle.mlkem, cloned.mlkem);
+    }
+
+    #[test]
+    fn test_hybrid_secret_combine() {
+        let x25519 = [1u8; 32];
+        let mlkem = [2u8; 32];
+
+        let secret = HybridSecret::combine(&x25519, &mlkem);
+        // Just verify it produces 32-byte output
+        assert_eq!(secret.combined.len(), 32);
+
+        // Same inputs should produce same output
+        let secret2 = HybridSecret::combine(&x25519, &mlkem);
+        assert_eq!(secret.combined, secret2.combined);
+    }
+
+    #[test]
+    fn test_hybrid_secret_different_inputs() {
+        let x25519_1 = [1u8; 32];
+        let x25519_2 = [2u8; 32];
+        let mlkem = [3u8; 32];
+
+        let secret1 = HybridSecret::combine(&x25519_1, &mlkem);
+        let secret2 = HybridSecret::combine(&x25519_2, &mlkem);
+
+        assert_ne!(secret1.combined, secret2.combined);
+    }
+
+    #[test]
+    fn test_noise_nk_handshake() {
+        // Generate server static key only
+        let mut server_static = [0u8; 32];
+        rng::fill(&mut server_static);
+        let server_public =
+            x25519_dalek::x25519(server_static, x25519_dalek::X25519_BASEPOINT_BYTES);
+
+        // NK pattern: client doesn't send static key
+        let mut initiator = NoiseInitiator::new_nk(&server_public)
+            .expect("test: failed to create NK initiator");
+        let mut responder =
+            NoiseResponder::new_nk(&server_static).expect("test: failed to create NK responder");
+
+        assert!(!initiator.is_handshake_finished());
+        assert!(!responder.is_handshake_finished());
+
+        // -> e, es + HybridPublic
+        let msg1 = initiator
+            .write_message(b"anonymous")
+            .expect("test: failed to write NK message");
+        let (payload1, peer_hybrid) = responder
+            .read_message(&msg1)
+            .expect("test: failed to read NK message");
+        assert_eq!(payload1, b"anonymous");
+
+        // <- e, ee + ServerHybridPublic + ML-KEM CT
+        let (msg2, server_hybrid_secret) = responder
+            .write_message(b"reply", &peer_hybrid)
+            .expect("test: failed to write NK response");
+        let (payload2, client_hybrid_secret) = initiator
+            .read_message(&msg2)
+            .expect("test: failed to read NK response");
+        assert_eq!(payload2, b"reply");
+
+        // Verify hybrid secrets match
+        assert_eq!(server_hybrid_secret.combined, client_hybrid_secret.combined);
+
+        // Verify handshake finished
+        assert!(initiator.is_handshake_finished());
+        assert!(responder.is_handshake_finished());
+
+        // Transport mode
+        let mut client_transport = initiator.into_transport().unwrap();
+        let mut server_transport = responder.into_transport().unwrap();
+
+        // Bidirectional test
+        let ct = client_transport.encrypt(b"client msg").unwrap();
+        let pt = server_transport.decrypt(&ct).unwrap();
+        assert_eq!(pt, b"client msg");
+
+        let ct = server_transport.encrypt(b"server msg").unwrap();
+        let pt = client_transport.decrypt(&ct).unwrap();
+        assert_eq!(pt, b"server msg");
+    }
+
+    #[test]
+    fn test_noise_transport_rekey() {
+        let mut server_static = [0u8; 32];
+        rng::fill(&mut server_static);
+        let server_public =
+            x25519_dalek::x25519(server_static, x25519_dalek::X25519_BASEPOINT_BYTES);
+
+        let mut initiator = NoiseInitiator::new_nk(&server_public).unwrap();
+        let mut responder = NoiseResponder::new_nk(&server_static).unwrap();
+
+        let msg1 = initiator.write_message(b"init").unwrap();
+        let (_, peer_hybrid) = responder.read_message(&msg1).unwrap();
+        let (msg2, _) = responder.write_message(b"resp", &peer_hybrid).unwrap();
+        let _ = initiator.read_message(&msg2).unwrap();
+
+        let mut client_transport = initiator.into_transport().unwrap();
+        let mut server_transport = responder.into_transport().unwrap();
+
+        // Communication before rekey
+        let ct1 = client_transport.encrypt(b"before rekey").unwrap();
+        let pt1 = server_transport.decrypt(&ct1).unwrap();
+        assert_eq!(pt1, b"before rekey");
+
+        // Rekey both sides
+        client_transport.rekey_outgoing();
+        server_transport.rekey_incoming();
+
+        // Communication after rekey
+        let ct2 = client_transport.encrypt(b"after rekey").unwrap();
+        let pt2 = server_transport.decrypt(&ct2).unwrap();
+        assert_eq!(pt2, b"after rekey");
+
+        // Test rekey in opposite direction
+        server_transport.rekey_outgoing();
+        client_transport.rekey_incoming();
+
+        let ct3 = server_transport.encrypt(b"server after rekey").unwrap();
+        let pt3 = client_transport.decrypt(&ct3).unwrap();
+        assert_eq!(pt3, b"server after rekey");
+    }
+
+    #[test]
+    fn test_hybrid_keypair_public_bundle() {
+        let kp = HybridKeypair::generate();
+        let bundle = kp.public_bundle();
+
+        assert_eq!(bundle.x25519, kp.x25519_public);
+        assert_eq!(bundle.mlkem.len(), 1184); // ML-KEM768 public key size
+    }
+
+    #[test]
+    fn test_initiator_hybrid_public() {
+        let mut server_static = [0u8; 32];
+        rng::fill(&mut server_static);
+        let server_public =
+            x25519_dalek::x25519(server_static, x25519_dalek::X25519_BASEPOINT_BYTES);
+
+        let initiator = NoiseInitiator::new_nk(&server_public).unwrap();
+        let hybrid_pub = initiator.hybrid_public();
+
+        assert_eq!(hybrid_pub.x25519.len(), 32);
+        assert_eq!(hybrid_pub.mlkem.len(), 1184);
+    }
+
+    #[test]
+    fn test_decapsulate_invalid_ciphertext() {
+        let kp = HybridKeypair::generate();
+        let peer_x25519 = [0u8; 32];
+        let invalid_ct = vec![0u8; 100]; // Wrong size
+
+        let result = kp.decapsulate(&peer_x25519, &invalid_ct);
+        match result {
+            Ok(_) => panic!("expected error for invalid ciphertext"),
+            Err(e) => assert!(e.to_string().contains("ciphertext")),
+        }
+    }
+
+    #[test]
+    fn test_initiator_read_message_too_short() {
+        let mut server_static = [0u8; 32];
+        rng::fill(&mut server_static);
+        let server_public =
+            x25519_dalek::x25519(server_static, x25519_dalek::X25519_BASEPOINT_BYTES);
+
+        let mut initiator = NoiseInitiator::new_nk(&server_public).unwrap();
+        let _ = initiator.write_message(b"init").unwrap();
+
+        // Try to read message that's too short
+        let short_msg = vec![0u8; 100];
+        let result = initiator.read_message(&short_msg);
+        match result {
+            Ok(_) => panic!("expected error for too short message"),
+            Err(e) => assert!(e.to_string().contains("too short")),
+        }
+    }
+
+    #[test]
+    fn test_responder_read_message_too_short() {
+        let mut server_static = [0u8; 32];
+        rng::fill(&mut server_static);
+
+        let mut responder = NoiseResponder::new_nk(&server_static).unwrap();
+
+        // Try to read message that's too short
+        let short_msg = vec![0u8; 100];
+        let result = responder.read_message(&short_msg);
+        match result {
+            Ok(_) => panic!("expected error for too short message"),
+            Err(e) => assert!(e.to_string().contains("too short")),
+        }
+    }
+
+    #[test]
+    fn test_empty_payload_message() {
+        let mut server_static = [0u8; 32];
+        rng::fill(&mut server_static);
+        let server_public =
+            x25519_dalek::x25519(server_static, x25519_dalek::X25519_BASEPOINT_BYTES);
+
+        let mut initiator = NoiseInitiator::new_nk(&server_public).unwrap();
+        let mut responder = NoiseResponder::new_nk(&server_static).unwrap();
+
+        // Empty payload
+        let msg1 = initiator.write_message(b"").unwrap();
+        let (payload1, peer_hybrid) = responder.read_message(&msg1).unwrap();
+        assert!(payload1.is_empty());
+
+        let (msg2, _) = responder.write_message(b"", &peer_hybrid).unwrap();
+        let (payload2, _) = initiator.read_message(&msg2).unwrap();
+        assert!(payload2.is_empty());
+    }
+
+    #[test]
+    fn test_large_payload_message() {
+        let mut server_static = [0u8; 32];
+        rng::fill(&mut server_static);
+        let server_public =
+            x25519_dalek::x25519(server_static, x25519_dalek::X25519_BASEPOINT_BYTES);
+
+        let mut initiator = NoiseInitiator::new_nk(&server_public).unwrap();
+        let mut responder = NoiseResponder::new_nk(&server_static).unwrap();
+
+        // Large payload (within Noise limits)
+        let large_payload = vec![0xAB; 1000];
+        let msg1 = initiator.write_message(&large_payload).unwrap();
+        let (payload1, peer_hybrid) = responder.read_message(&msg1).unwrap();
+        assert_eq!(payload1, large_payload);
+
+        let (msg2, _) = responder.write_message(&large_payload, &peer_hybrid).unwrap();
+        let (payload2, _) = initiator.read_message(&msg2).unwrap();
+        assert_eq!(payload2, large_payload);
+    }
 }
