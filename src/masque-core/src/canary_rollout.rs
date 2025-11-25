@@ -567,4 +567,241 @@ mod tests {
         assert_eq!(rollout.state(), &CanaryState::NotStarted);
         assert!(rollout.get_metrics("endpoint1").is_none());
     }
+
+    #[test]
+    fn test_canary_rollout_config_debug() {
+        let config = CanaryRolloutConfig::default();
+        let debug_str = format!("{:?}", config);
+        assert!(debug_str.contains("CanaryRolloutConfig"));
+        assert!(debug_str.contains("initial_percent"));
+        assert!(debug_str.contains("10")); // initial_percent default
+    }
+
+    #[test]
+    fn test_health_metrics_debug() {
+        let mut metrics = HealthMetrics::default();
+        metrics.update(true, 42.5);
+        let debug_str = format!("{:?}", metrics);
+        assert!(debug_str.contains("HealthMetrics"));
+        assert!(debug_str.contains("total_requests"));
+    }
+
+    #[test]
+    fn test_canary_state_debug() {
+        let state = CanaryState::NotStarted;
+        assert!(format!("{:?}", state).contains("NotStarted"));
+
+        let state = CanaryState::Completed;
+        assert!(format!("{:?}", state).contains("Completed"));
+
+        let state = CanaryState::RolledBack;
+        assert!(format!("{:?}", state).contains("RolledBack"));
+
+        let state = CanaryState::InProgress {
+            current_percent: 42,
+            start_time: SystemTime::now(),
+        };
+        let debug_str = format!("{:?}", state);
+        assert!(debug_str.contains("InProgress"));
+        assert!(debug_str.contains("42"));
+    }
+
+    #[test]
+    fn test_health_metrics_all_failures() {
+        let config = CanaryRolloutConfig::default();
+        let mut metrics = HealthMetrics::default();
+
+        for _ in 0..10 {
+            metrics.update(false, 100.0);
+        }
+
+        assert_eq!(metrics.total_requests, 10);
+        assert_eq!(metrics.successful_requests, 0);
+        assert_eq!(metrics.failed_requests, 10);
+        assert_eq!(metrics.error_rate, 1.0);
+        assert_eq!(metrics.success_rate, 0.0);
+        assert!(!metrics.is_healthy(&config));
+    }
+
+    #[test]
+    fn test_health_metrics_perfect_success() {
+        let config = CanaryRolloutConfig::default();
+        let mut metrics = HealthMetrics::default();
+
+        for _ in 0..100 {
+            metrics.update(true, 5.0);
+        }
+
+        assert_eq!(metrics.total_requests, 100);
+        assert_eq!(metrics.successful_requests, 100);
+        assert_eq!(metrics.failed_requests, 0);
+        assert_eq!(metrics.error_rate, 0.0);
+        assert_eq!(metrics.success_rate, 1.0);
+        assert!(metrics.is_healthy(&config));
+    }
+
+    #[test]
+    fn test_health_metrics_latency_ema_convergence() {
+        let mut metrics = HealthMetrics::default();
+
+        // Start with 100ms latency
+        metrics.update(true, 100.0);
+        assert_eq!(metrics.avg_latency_ms, 100.0);
+
+        // Add many 50ms latencies - should converge toward 50
+        for _ in 0..50 {
+            metrics.update(true, 50.0);
+        }
+
+        // With EMA of 0.9 * prev + 0.1 * new, should be close to 50
+        assert!(metrics.avg_latency_ms < 60.0);
+        assert!(metrics.avg_latency_ms > 49.0);
+    }
+
+    #[test]
+    fn test_canary_rollout_config_custom() {
+        let config = CanaryRolloutConfig {
+            initial_percent: 5,
+            increment_percent: 5,
+            stage_duration: Duration::from_secs(60),
+            min_observation_duration: Duration::from_secs(30),
+            max_rollout_duration: Duration::from_secs(1800),
+            health_check_interval: Duration::from_secs(5),
+            success_threshold: 0.99,
+            error_threshold: 0.01,
+        };
+
+        assert_eq!(config.initial_percent, 5);
+        assert_eq!(config.success_threshold, 0.99);
+        assert_eq!(config.error_threshold, 0.01);
+    }
+
+    #[test]
+    fn test_canary_state_in_progress_clone() {
+        let state = CanaryState::InProgress {
+            current_percent: 75,
+            start_time: SystemTime::now(),
+        };
+        let cloned = state.clone();
+
+        match (&state, &cloned) {
+            (
+                CanaryState::InProgress {
+                    current_percent: p1,
+                    ..
+                },
+                CanaryState::InProgress {
+                    current_percent: p2,
+                    ..
+                },
+            ) => {
+                assert_eq!(*p1, *p2);
+            }
+            _ => panic!("Expected InProgress states"),
+        }
+    }
+
+    #[test]
+    fn test_canary_rollout_new_initial_state() {
+        let config = CanaryRolloutConfig::default();
+        let rollout = CanaryRollout::new(config);
+
+        assert_eq!(rollout.state(), &CanaryState::NotStarted);
+        assert!(rollout.get_metrics("any").is_none());
+
+        let aggregated = rollout.get_aggregated_metrics();
+        assert_eq!(aggregated.total_requests, 0);
+    }
+
+    #[test]
+    fn test_canary_rollout_start_time() {
+        let config = CanaryRolloutConfig {
+            initial_percent: 25,
+            ..Default::default()
+        };
+        let mut rollout = CanaryRollout::new(config);
+
+        rollout.start();
+
+        match rollout.state() {
+            CanaryState::InProgress {
+                current_percent, ..
+            } => {
+                assert_eq!(*current_percent, 25);
+            }
+            _ => panic!("Expected InProgress state"),
+        }
+    }
+
+    #[test]
+    fn test_health_metrics_boundary_values() {
+        let mut config = CanaryRolloutConfig::default();
+
+        // Edge case: exactly at threshold
+        config.success_threshold = 0.95;
+        config.error_threshold = 0.05;
+
+        let mut metrics = HealthMetrics::default();
+        // 95% success, 5% error
+        for _ in 0..95 {
+            metrics.update(true, 10.0);
+        }
+        for _ in 0..5 {
+            metrics.update(false, 10.0);
+        }
+
+        assert_eq!(metrics.success_rate, 0.95);
+        assert_eq!(metrics.error_rate, 0.05);
+        // At threshold: success_rate >= 0.95 is true, error_rate < 0.05 is false
+        assert!(!metrics.is_healthy(&config));
+    }
+
+    #[test]
+    fn test_canary_rollout_many_endpoints() {
+        let config = CanaryRolloutConfig::default();
+        let mut rollout = CanaryRollout::new(config);
+
+        // Record requests for 100 endpoints
+        for i in 0..100 {
+            let endpoint_id = format!("endpoint_{}", i);
+            rollout.record_request(&endpoint_id, i % 10 != 0, 10.0);
+        }
+
+        let aggregated = rollout.get_aggregated_metrics();
+        assert_eq!(aggregated.total_requests, 100);
+        assert_eq!(aggregated.successful_requests, 90); // 90% success
+        assert_eq!(aggregated.failed_requests, 10);
+    }
+
+    #[test]
+    fn test_canary_rollout_reset_after_start() {
+        let config = CanaryRolloutConfig {
+            initial_percent: 50,
+            ..Default::default()
+        };
+        let mut rollout = CanaryRollout::new(config);
+
+        rollout.start();
+
+        // Verify started
+        match rollout.state() {
+            CanaryState::InProgress { .. } => {}
+            _ => panic!("Expected InProgress state"),
+        }
+
+        // Record some metrics
+        for i in 0..10 {
+            rollout.record_request(&format!("ep{}", i), true, 10.0);
+        }
+
+        // Reset
+        rollout.reset();
+
+        // Verify fully reset
+        assert_eq!(rollout.state(), &CanaryState::NotStarted);
+        for i in 0..10 {
+            assert!(rollout.get_metrics(&format!("ep{}", i)).is_none());
+        }
+        assert_eq!(rollout.get_aggregated_metrics().total_requests, 0);
+    }
 }

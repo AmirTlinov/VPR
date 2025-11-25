@@ -140,4 +140,211 @@ mod tests {
         let parsed = parse_connect_frame(&frame).expect("test: failed to parse frame");
         assert_eq!(req, parsed);
     }
+
+    #[test]
+    fn test_proto_equality() {
+        assert_eq!(Proto::Tcp, Proto::Tcp);
+        assert_eq!(Proto::Udp, Proto::Udp);
+        assert_ne!(Proto::Tcp, Proto::Udp);
+    }
+
+    #[test]
+    fn test_proto_serialization() {
+        let json = serde_json::to_string(&Proto::Tcp).unwrap();
+        assert_eq!(json, "\"Tcp\"");
+        let json = serde_json::to_string(&Proto::Udp).unwrap();
+        assert_eq!(json, "\"Udp\"");
+    }
+
+    #[test]
+    fn test_connect_request_to_target() {
+        let req = ConnectRequest {
+            proto: Proto::Tcp,
+            host: "example.com".into(),
+            port: 8080,
+        };
+        assert_eq!(req.to_target(), "example.com:8080");
+    }
+
+    #[test]
+    fn test_connect_request_clone() {
+        let req = ConnectRequest {
+            proto: Proto::Udp,
+            host: "test.local".into(),
+            port: 53,
+        };
+        let cloned = req.clone();
+        assert_eq!(req, cloned);
+    }
+
+    #[test]
+    fn test_connect_request_debug() {
+        let req = ConnectRequest {
+            proto: Proto::Tcp,
+            host: "debug.test".into(),
+            port: 443,
+        };
+        let debug_str = format!("{:?}", req);
+        assert!(debug_str.contains("ConnectRequest"));
+        assert!(debug_str.contains("debug.test"));
+    }
+
+    #[test]
+    fn test_connect_frame_udp() {
+        let req = ConnectRequest {
+            proto: Proto::Udp,
+            host: "dns.example.com".into(),
+            port: 53,
+        };
+        let frame = build_connect_frame(&req).unwrap();
+        let parsed = parse_connect_frame(&frame).unwrap();
+        assert_eq!(parsed.proto, Proto::Udp);
+        assert_eq!(parsed.host, "dns.example.com");
+        assert_eq!(parsed.port, 53);
+    }
+
+    #[test]
+    fn test_parse_connect_frame_too_short() {
+        let short_frame = &[1, 0, 5]; // version, proto, host_len but no host
+        let result = parse_connect_frame(short_frame);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("too short"));
+    }
+
+    #[test]
+    fn test_parse_connect_frame_wrong_version() {
+        let wrong_version = &[2, 0, 0, 0, 80]; // version 2
+        let result = parse_connect_frame(wrong_version);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("unsupported"));
+    }
+
+    #[test]
+    fn test_parse_connect_frame_unsupported_proto() {
+        // version=1, proto=99 (unsupported), host_len=1, host='a', port
+        let bad_proto = &[1, 99, 1, b'a', 0, 80];
+        let result = parse_connect_frame(bad_proto);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("unsupported proto"));
+    }
+
+    #[test]
+    fn test_parse_connect_frame_malformed() {
+        // version=1, proto=0, host_len=100 but only 5 bytes of host
+        let malformed = &[1, 0, 100, b'a', b'b', b'c', b'd', b'e'];
+        let result = parse_connect_frame(malformed);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("malformed"));
+    }
+
+    #[test]
+    fn test_parse_connect_frame_empty_host() {
+        // version=1, proto=0, host_len=0, port=80
+        let empty_host = &[1, 0, 0, 0, 80];
+        let result = parse_connect_frame(empty_host);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("missing host"));
+    }
+
+    #[test]
+    fn test_parse_connect_frame_zero_port() {
+        // version=1, proto=0, host_len=4, host="test", port=0
+        let zero_port = &[1, 0, 4, b't', b'e', b's', b't', 0, 0];
+        let result = parse_connect_frame(zero_port);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("missing"));
+    }
+
+    #[test]
+    fn test_build_connect_frame_long_hostname() {
+        let long_host = "a".repeat(256);
+        let req = ConnectRequest {
+            proto: Proto::Tcp,
+            host: long_host,
+            port: 443,
+        };
+        let result = build_connect_frame(&req);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("hostname too long"));
+    }
+
+    #[test]
+    fn test_build_connect_frame_zero_port() {
+        let req = ConnectRequest {
+            proto: Proto::Tcp,
+            host: "example.com".into(),
+            port: 0,
+        };
+        let result = build_connect_frame(&req);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("port must be non-zero"));
+    }
+
+    #[tokio::test]
+    async fn test_read_frame_empty() {
+        let (mut client, mut server) = duplex(16);
+        tokio::spawn(async move {
+            // Send zero-length frame
+            write_frame(&mut client, &[]).await.unwrap();
+        });
+        let got = read_frame(&mut server).await.unwrap();
+        assert!(got.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_write_frame_too_large() {
+        let (mut client, _server) = duplex(16);
+        let large_data = vec![0u8; MAX_FRAME + 1];
+        let result = write_frame(&mut client, &large_data).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("too large"));
+    }
+
+    #[tokio::test]
+    async fn test_read_connect_request() {
+        let req = ConnectRequest {
+            proto: Proto::Tcp,
+            host: "connect.test".into(),
+            port: 9443,
+        };
+        let frame = build_connect_frame(&req).unwrap();
+
+        let (mut client, mut server) = duplex(64);
+        tokio::spawn(async move {
+            write_frame(&mut client, &frame).await.unwrap();
+        });
+
+        let parsed = read_connect_request(&mut server).await.unwrap();
+        assert_eq!(parsed.host, "connect.test");
+        assert_eq!(parsed.port, 9443);
+    }
+
+    #[tokio::test]
+    async fn test_read_connect_request_empty_frame() {
+        let (mut client, mut server) = duplex(16);
+        tokio::spawn(async move {
+            write_frame(&mut client, &[]).await.unwrap();
+        });
+
+        let result = read_connect_request(&mut server).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("empty connect frame"));
+    }
+
+    #[test]
+    fn test_max_frame_constant() {
+        assert_eq!(MAX_FRAME, 65535);
+    }
+
+    #[test]
+    fn test_connect_request_serialization() {
+        let req = ConnectRequest {
+            proto: Proto::Tcp,
+            host: "serial.test".into(),
+            port: 8443,
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        let parsed: ConnectRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(req, parsed);
+    }
 }

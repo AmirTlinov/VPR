@@ -447,4 +447,328 @@ mod tests {
         assert_eq!(metrics.messages_processed, 1);
         assert_eq!(metrics.replays_blocked, 1);
     }
+
+    #[tokio::test]
+    async fn nk_handshake_roundtrip() {
+        let server_kp = NoiseKeypair::generate();
+
+        let server = HybridServer::from_secret(&server_kp.secret_bytes());
+        let client = HybridClient::new_nk(&server.public_key());
+
+        let (mut client_stream, mut server_stream) = duplex(8192);
+
+        let server_handle =
+            tokio::spawn(async move { server.handshake_nk(&mut server_stream).await });
+
+        let client_result = client.handshake_nk(&mut client_stream).await;
+        let server_result = server_handle
+            .await
+            .expect("server NK handshake task should complete");
+
+        let (_client_transport, client_hybrid) =
+            client_result.expect("client NK handshake should succeed");
+        let (_server_transport, server_hybrid) =
+            server_result.expect("server NK handshake should succeed");
+
+        // Hybrid secrets should match
+        assert_eq!(client_hybrid.combined, server_hybrid.combined);
+    }
+
+    #[test]
+    fn test_hybrid_server_public_key() {
+        let kp = NoiseKeypair::generate();
+        let server = HybridServer::from_secret(&kp.secret_bytes());
+        let pub_key = server.public_key();
+        assert_eq!(pub_key.len(), 32);
+        assert_eq!(pub_key, kp.public_bytes());
+    }
+
+    #[test]
+    fn test_hybrid_server_secret_bytes() {
+        let secret = [42u8; 32];
+        let server = HybridServer::from_secret(&secret);
+        assert_eq!(server.secret_bytes(), secret);
+    }
+
+    #[test]
+    fn test_hybrid_server_replay_metrics_none() {
+        let kp = NoiseKeypair::generate();
+        let server = HybridServer::from_secret(&kp.secret_bytes());
+        // Without replay protection, metrics should be None
+        assert!(server.replay_metrics().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_read_handshake_msg_empty() {
+        let (mut client, mut server) = duplex(64);
+
+        tokio::spawn(async move {
+            // Write zero length
+            client.write_all(&0u32.to_be_bytes()).await.unwrap();
+            client.flush().await.unwrap();
+        });
+
+        let msg = read_handshake_msg(&mut server).await.unwrap();
+        assert!(msg.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_read_handshake_msg_too_large() {
+        let (mut client, mut server) = duplex(64);
+
+        tokio::spawn(async move {
+            // Write length > 8192 (max allowed)
+            let len: u32 = 10000;
+            client.write_all(&len.to_be_bytes()).await.unwrap();
+            client.flush().await.unwrap();
+        });
+
+        let result = read_handshake_msg(&mut server).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("too large"));
+    }
+
+    #[tokio::test]
+    async fn test_read_handshake_msg_normal() {
+        let (mut client, mut server) = duplex(256);
+
+        let test_data = b"hello handshake";
+        let len = test_data.len() as u32;
+
+        tokio::spawn(async move {
+            client.write_all(&len.to_be_bytes()).await.unwrap();
+            client.write_all(test_data).await.unwrap();
+            client.flush().await.unwrap();
+        });
+
+        let msg = read_handshake_msg(&mut server).await.unwrap();
+        assert_eq!(msg, test_data);
+    }
+
+    #[tokio::test]
+    async fn test_encrypted_stream_rekey() {
+        let server_kp = NoiseKeypair::generate();
+        let client_kp = NoiseKeypair::generate();
+
+        let server = HybridServer::from_secret(&server_kp.secret_bytes());
+        let client = HybridClient::new_ik(&client_kp.secret_bytes(), &server.public_key());
+
+        let (mut client_stream, mut server_stream) = duplex(8192);
+
+        let server_handle = tokio::spawn(async move {
+            let (transport, _) = server.handshake_ik(&mut server_stream).await.unwrap();
+            let mut enc = EncryptedStream::new(server_stream, transport);
+
+            // Read message before rekey
+            let msg1 = enc.read_frame().await.unwrap();
+
+            // Rekey
+            enc.rekey();
+
+            // Read message after rekey
+            let msg2 = enc.read_frame().await.unwrap();
+
+            // Echo back
+            enc.write_frame(&msg2).await.unwrap();
+
+            (msg1, msg2)
+        });
+
+        let (transport, _) = client.handshake_ik(&mut client_stream).await.unwrap();
+        let mut enc = EncryptedStream::new(client_stream, transport);
+
+        // Send before rekey
+        enc.write_frame(b"before rekey").await.unwrap();
+
+        // Rekey on client side too
+        enc.rekey();
+
+        // Send after rekey
+        enc.write_frame(b"after rekey").await.unwrap();
+
+        let echo = enc.read_frame().await.unwrap();
+        assert_eq!(echo, b"after rekey");
+
+        let (msg1, msg2) = server_handle.await.unwrap();
+        assert_eq!(msg1, b"before rekey");
+        assert_eq!(msg2, b"after rekey");
+    }
+
+    #[tokio::test]
+    async fn test_encrypted_stream_inner_mut() {
+        let server_kp = NoiseKeypair::generate();
+        let client_kp = NoiseKeypair::generate();
+
+        let server = HybridServer::from_secret(&server_kp.secret_bytes());
+        let client = HybridClient::new_ik(&client_kp.secret_bytes(), &server.public_key());
+
+        let (mut client_stream, mut server_stream) = duplex(8192);
+
+        let server_handle =
+            tokio::spawn(async move { server.handshake_ik(&mut server_stream).await });
+
+        let (transport, _) = client.handshake_ik(&mut client_stream).await.unwrap();
+        let mut enc = EncryptedStream::new(client_stream, transport);
+
+        // Test inner_mut returns mutable reference
+        let _inner = enc.inner_mut();
+
+        let _ = server_handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_encrypted_stream_into_inner() {
+        let server_kp = NoiseKeypair::generate();
+        let client_kp = NoiseKeypair::generate();
+
+        let server = HybridServer::from_secret(&server_kp.secret_bytes());
+        let client = HybridClient::new_ik(&client_kp.secret_bytes(), &server.public_key());
+
+        let (mut client_stream, mut server_stream) = duplex(8192);
+
+        let server_handle =
+            tokio::spawn(async move { server.handshake_ik(&mut server_stream).await });
+
+        let (transport, _) = client.handshake_ik(&mut client_stream).await.unwrap();
+        let enc = EncryptedStream::new(client_stream, transport);
+
+        // Consume and get inner stream back
+        let _stream = enc.into_inner();
+
+        let _ = server_handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_encrypted_stream_read_empty_frame() {
+        let server_kp = NoiseKeypair::generate();
+        let client_kp = NoiseKeypair::generate();
+
+        let server = HybridServer::from_secret(&server_kp.secret_bytes());
+        let client = HybridClient::new_ik(&client_kp.secret_bytes(), &server.public_key());
+
+        let (mut client_stream, mut server_stream) = duplex(8192);
+
+        let server_handle = tokio::spawn(async move {
+            let (transport, _) = server.handshake_ik(&mut server_stream).await.unwrap();
+            let mut enc = EncryptedStream::new(server_stream, transport);
+
+            // Send empty length (simulating empty frame)
+            let inner = enc.inner_mut();
+            inner.write_all(&0u32.to_be_bytes()).await.unwrap();
+            inner.flush().await.unwrap();
+        });
+
+        let (transport, _) = client.handshake_ik(&mut client_stream).await.unwrap();
+        let mut enc = EncryptedStream::new(client_stream, transport);
+
+        let msg = enc.read_frame().await.unwrap();
+        assert!(msg.is_empty());
+
+        let _ = server_handle.await;
+    }
+
+    #[tokio::test]
+    async fn test_ik_handshake_with_first_message() {
+        let server_kp = NoiseKeypair::generate();
+        let client_kp = NoiseKeypair::generate();
+
+        let server = HybridServer::from_secret(&server_kp.secret_bytes());
+        let client = HybridClient::new_ik(&client_kp.secret_bytes(), &server.public_key());
+
+        let (mut client_stream, mut server_stream) = duplex(8192);
+
+        // Manually perform handshake with pre-read first message
+        let server_handle = tokio::spawn(async move {
+            // Read first message manually
+            let first_msg = read_handshake_msg(&mut server_stream).await.unwrap();
+
+            // Use handshake_ik_with_first
+            server
+                .handshake_ik_with_first(&mut server_stream, first_msg, false)
+                .await
+        });
+
+        let client_result = client.handshake_ik(&mut client_stream).await;
+        let server_result = server_handle.await.unwrap();
+
+        let (_client_transport, client_hybrid) = client_result.unwrap();
+        let (_server_transport, server_hybrid) = server_result.unwrap();
+
+        assert_eq!(client_hybrid.combined, server_hybrid.combined);
+    }
+
+    #[tokio::test]
+    async fn test_nk_handshake_with_first_message() {
+        let server_kp = NoiseKeypair::generate();
+
+        let server = HybridServer::from_secret(&server_kp.secret_bytes());
+        let client = HybridClient::new_nk(&server.public_key());
+
+        let (mut client_stream, mut server_stream) = duplex(8192);
+
+        let server_handle = tokio::spawn(async move {
+            let first_msg = read_handshake_msg(&mut server_stream).await.unwrap();
+            server
+                .handshake_nk_with_first(&mut server_stream, first_msg, true) // replay_prechecked=true
+                .await
+        });
+
+        let client_result = client.handshake_nk(&mut client_stream).await;
+        let server_result = server_handle.await.unwrap();
+
+        let (_client_transport, client_hybrid) = client_result.unwrap();
+        let (_server_transport, server_hybrid) = server_result.unwrap();
+
+        assert_eq!(client_hybrid.combined, server_hybrid.combined);
+    }
+
+    #[tokio::test]
+    async fn test_ik_handshake_with_replay_protection() {
+        let server_kp = NoiseKeypair::generate();
+        let client_kp = NoiseKeypair::generate();
+
+        let replay_cache = Arc::new(NonceCache::new());
+        let server = HybridServer::from_secret(&server_kp.secret_bytes())
+            .with_replay_protection(replay_cache.clone());
+        let client = HybridClient::new_ik(&client_kp.secret_bytes(), &server.public_key());
+
+        let (mut client_stream, mut server_stream) = duplex(8192);
+
+        let server_handle =
+            tokio::spawn(async move { server.handshake_ik(&mut server_stream).await });
+
+        let client_result = client.handshake_ik(&mut client_stream).await;
+        let server_result = server_handle.await.unwrap();
+
+        assert!(client_result.is_ok());
+        assert!(server_result.is_ok());
+
+        // Check that message was recorded in replay cache
+        let snapshot = replay_cache.metrics().snapshot();
+        assert_eq!(snapshot.messages_processed, 1);
+    }
+
+    #[tokio::test]
+    async fn test_nk_handshake_with_replay_protection() {
+        let server_kp = NoiseKeypair::generate();
+
+        let replay_cache = Arc::new(NonceCache::new());
+        let server = HybridServer::from_secret(&server_kp.secret_bytes())
+            .with_replay_protection(replay_cache.clone());
+        let client = HybridClient::new_nk(&server.public_key());
+
+        let (mut client_stream, mut server_stream) = duplex(8192);
+
+        let server_handle =
+            tokio::spawn(async move { server.handshake_nk(&mut server_stream).await });
+
+        let client_result = client.handshake_nk(&mut client_stream).await;
+        let server_result = server_handle.await.unwrap();
+
+        assert!(client_result.is_ok());
+        assert!(server_result.is_ok());
+
+        let snapshot = replay_cache.metrics().snapshot();
+        assert_eq!(snapshot.messages_processed, 1);
+    }
 }
