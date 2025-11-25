@@ -513,6 +513,7 @@ pub mod known_ja3 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::str::FromStr;
 
     #[test]
     fn tls_canary_respects_zero_percent() {
@@ -794,5 +795,361 @@ mod tests {
         assert_eq!(known_ja3::CHROME_120.len(), 32);
         assert_eq!(known_ja3::FIREFOX_121.len(), 32);
         assert_eq!(known_ja3::SAFARI_17.len(), 32);
+    }
+
+    // Additional tests for full coverage
+
+    #[test]
+    fn test_tls_profile_display() {
+        assert_eq!(format!("{}", TlsProfile::Chrome), "Chrome");
+        assert_eq!(format!("{}", TlsProfile::Firefox), "Firefox");
+        assert_eq!(format!("{}", TlsProfile::Safari), "Safari");
+        assert_eq!(format!("{}", TlsProfile::Random), "Random");
+        assert_eq!(format!("{}", TlsProfile::Custom), "Custom");
+    }
+
+    #[test]
+    fn test_tls_profile_from_str() {
+        assert_eq!(TlsProfile::from_str("chrome").unwrap(), TlsProfile::Chrome);
+        assert_eq!(TlsProfile::from_str("CHROME").unwrap(), TlsProfile::Chrome);
+        assert_eq!(TlsProfile::from_str("firefox").unwrap(), TlsProfile::Firefox);
+        assert_eq!(TlsProfile::from_str("safari").unwrap(), TlsProfile::Safari);
+        assert_eq!(TlsProfile::from_str("random").unwrap(), TlsProfile::Random);
+        assert_eq!(TlsProfile::from_str("custom").unwrap(), TlsProfile::Custom);
+    }
+
+    #[test]
+    fn test_tls_profile_from_str_error() {
+        let result = TlsProfile::from_str("unknown");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("unknown TLS profile"));
+    }
+
+    #[test]
+    fn test_ja4_fingerprint_display() {
+        let fp = Ja4Fingerprint::from_profile(&TlsProfile::Chrome);
+        let s = fp.to_string();
+        // Format: "c{tls_version}-s{cipher_count}-e{ext_count}-g{group_count}"
+        assert!(s.contains("c771")); // TLS 1.2 ja3 value
+        assert!(s.contains("-s")); // cipher count prefix
+        assert!(s.contains("-e")); // extension count prefix
+        assert!(s.contains("-g")); // group count prefix
+    }
+
+    #[test]
+    fn test_ja3_fingerprint_debug() {
+        let fp = Ja3Fingerprint::from_profile(&TlsProfile::Chrome);
+        let debug = format!("{:?}", fp);
+        assert!(debug.contains("Ja3Fingerprint"));
+    }
+
+    #[test]
+    fn test_ja3s_fingerprint_debug() {
+        let fp = Ja3sFingerprint::from_profile(&TlsProfile::Chrome, 0x1301);
+        let debug = format!("{:?}", fp);
+        assert!(debug.contains("Ja3sFingerprint"));
+    }
+
+    #[test]
+    fn test_ja4_fingerprint_debug() {
+        let fp = Ja4Fingerprint::from_profile(&TlsProfile::Chrome);
+        let debug = format!("{:?}", fp);
+        assert!(debug.contains("Ja4Fingerprint"));
+    }
+
+    #[test]
+    fn test_ja3_to_ja3_string_format() {
+        let fp = Ja3Fingerprint::from_profile_with_grease(
+            &TlsProfile::Chrome,
+            GreaseMode::Deterministic(1),
+        );
+        let s = fp.to_ja3_string();
+        // Format: "version,ciphers,extensions,curves,formats"
+        let parts: Vec<&str> = s.split(',').collect();
+        assert_eq!(parts.len(), 5);
+        assert_eq!(parts[0], "771"); // TLS version
+    }
+
+    #[test]
+    fn test_ja3s_to_ja3s_string_format() {
+        let fp = Ja3sFingerprint::from_profile_with_grease(
+            &TlsProfile::Chrome,
+            0x1301,
+            GreaseMode::Deterministic(1),
+        );
+        let s = fp.to_ja3s_string();
+        // Format: "version,cipher,extensions"
+        let parts: Vec<&str> = s.split(',').collect();
+        assert_eq!(parts.len(), 3);
+        assert_eq!(parts[0], "771"); // TLS version
+    }
+
+    #[test]
+    fn test_tls_version_debug() {
+        let debug = format!("{:?}", TlsVersion::Tls13);
+        assert!(debug.contains("Tls13"));
+    }
+
+    #[test]
+    fn test_tls_version_clone_copy() {
+        let v1 = TlsVersion::Tls12;
+        let v2 = v1; // Copy
+        assert_eq!(v1, v2);
+    }
+
+    #[test]
+    fn test_grease_mode_debug() {
+        let debug = format!("{:?}", GreaseMode::Random);
+        assert!(debug.contains("Random"));
+
+        let debug = format!("{:?}", GreaseMode::Deterministic(42));
+        assert!(debug.contains("Deterministic"));
+        assert!(debug.contains("42"));
+    }
+
+    #[test]
+    fn test_grease_mode_clone_copy() {
+        let g1 = GreaseMode::Deterministic(123);
+        let g2 = g1; // Copy
+        assert_eq!(g1, g2);
+    }
+
+    #[test]
+    fn test_tls_profile_debug() {
+        let debug = format!("{:?}", TlsProfile::Chrome);
+        assert!(debug.contains("Chrome"));
+    }
+
+    #[test]
+    fn test_tls_profile_clone_copy() {
+        let p1 = TlsProfile::Firefox;
+        let p2 = p1; // Copy
+        assert_eq!(p1, p2);
+    }
+
+    #[test]
+    fn test_tls_profile_bucket_debug() {
+        let debug = format!("{:?}", TlsProfileBucket::Main);
+        assert!(debug.contains("Main"));
+
+        let debug = format!("{:?}", TlsProfileBucket::Canary);
+        assert!(debug.contains("Canary"));
+    }
+
+    #[test]
+    fn test_tls_profile_bucket_clone_copy() {
+        let b1 = TlsProfileBucket::Canary;
+        let b2 = b1; // Copy
+        assert_eq!(b1, b2);
+    }
+
+    #[test]
+    fn test_ja3_fingerprint_clone() {
+        let fp = Ja3Fingerprint::from_profile(&TlsProfile::Chrome);
+        let cloned = fp.clone();
+        // JA3 fingerprint doesn't implement PartialEq, but we can compare hashes
+        assert_eq!(fp.tls_version, cloned.tls_version);
+        assert_eq!(fp.cipher_suites, cloned.cipher_suites);
+    }
+
+    #[test]
+    fn test_ja3s_fingerprint_clone() {
+        let fp = Ja3sFingerprint::from_profile(&TlsProfile::Chrome, 0x1301);
+        let cloned = fp.clone();
+        assert_eq!(fp, cloned);
+    }
+
+    #[test]
+    fn test_ja4_fingerprint_clone() {
+        let fp = Ja4Fingerprint::from_profile(&TlsProfile::Chrome);
+        let cloned = fp.clone();
+        assert_eq!(fp, cloned);
+    }
+
+    #[test]
+    fn test_all_profiles_cipher_suites() {
+        // Ensure all profiles return non-empty cipher suites
+        for profile in [
+            TlsProfile::Chrome,
+            TlsProfile::Firefox,
+            TlsProfile::Safari,
+            TlsProfile::Random,
+            TlsProfile::Custom,
+        ] {
+            let suites = profile.cipher_suites();
+            assert!(!suites.is_empty(), "Profile {:?} has empty cipher suites", profile);
+        }
+    }
+
+    #[test]
+    fn test_all_profiles_extensions() {
+        // Ensure all profiles return non-empty extensions
+        for profile in [
+            TlsProfile::Chrome,
+            TlsProfile::Firefox,
+            TlsProfile::Safari,
+            TlsProfile::Random,
+            TlsProfile::Custom,
+        ] {
+            let exts = profile.extensions();
+            assert!(!exts.is_empty(), "Profile {:?} has empty extensions", profile);
+        }
+    }
+
+    #[test]
+    fn test_all_profiles_elliptic_curves() {
+        // Ensure all profiles return non-empty elliptic curves
+        for profile in [
+            TlsProfile::Chrome,
+            TlsProfile::Firefox,
+            TlsProfile::Safari,
+            TlsProfile::Random,
+            TlsProfile::Custom,
+        ] {
+            let curves = profile.elliptic_curves();
+            assert!(!curves.is_empty(), "Profile {:?} has empty elliptic curves", profile);
+        }
+    }
+
+    #[test]
+    fn test_all_profiles_ec_point_formats() {
+        // Ensure all profiles return at least 1 EC point format
+        for profile in [
+            TlsProfile::Chrome,
+            TlsProfile::Firefox,
+            TlsProfile::Safari,
+            TlsProfile::Random,
+            TlsProfile::Custom,
+        ] {
+            let formats = profile.ec_point_formats();
+            assert!(!formats.is_empty(), "Profile {:?} has empty EC point formats", profile);
+            assert_eq!(formats[0], 0); // Uncompressed is always first
+        }
+    }
+
+    #[test]
+    fn test_map_cipher_suites_all_supported() {
+        // Test all supported cipher suites
+        let all_suites = vec![
+            0x1301, 0x1302, 0x1303, // TLS 1.3
+            0xC02B, 0xC02F, 0xC02C, 0xC030, // ECDHE with AES-GCM
+            0xCCA9, 0xCCA8, // ChaCha20-Poly1305
+        ];
+        let result = map_cipher_suites(all_suites.clone());
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().len(), all_suites.len());
+    }
+
+    #[test]
+    fn test_map_cipher_suites_unknown() {
+        let result = map_cipher_suites(vec![0x1301, 0xFFFF, 0x1302]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Unknown cipher suite ID"));
+    }
+
+    #[test]
+    fn test_map_kx_groups_all_known() {
+        let groups = map_kx_groups(vec![
+            "X25519".to_string(),
+            "SECP256R1".to_string(),
+            "SECP384R1".to_string(),
+        ]);
+        assert_eq!(groups.len(), 3);
+    }
+
+    #[test]
+    fn test_grease_value_in_valid_range() {
+        const GREASE_VALUES: [u16; 16] = [
+            0x0a0a, 0x1a1a, 0x2a2a, 0x3a3a, 0x4a4a, 0x5a5a, 0x6a6a, 0x7a7a, 0x8a8a, 0x9a9a, 0xaaaa,
+            0xbaba, 0xcaca, 0xdada, 0xeaea, 0xfafa,
+        ];
+
+        // Test deterministic mode produces valid GREASE values
+        for seed in 0..100 {
+            let v = grease_value(GreaseMode::Deterministic(seed));
+            assert!(GREASE_VALUES.contains(&v), "Invalid GREASE value: {:04X}", v);
+        }
+    }
+
+    #[test]
+    fn test_select_tls_profile_negative_percentage() {
+        // Negative should be clamped to 0
+        let (profile, bucket) = select_tls_profile(
+            TlsProfile::Chrome,
+            Some(TlsProfile::Safari),
+            -50.0,
+            Some(1),
+        );
+        assert_eq!(profile, TlsProfile::Chrome);
+        assert_eq!(bucket, TlsProfileBucket::Main);
+    }
+
+    #[test]
+    fn test_select_tls_profile_over_hundred_percentage() {
+        // Over 100 should be clamped to 100
+        let (profile, bucket) = select_tls_profile(
+            TlsProfile::Chrome,
+            Some(TlsProfile::Safari),
+            150.0,
+            Some(1),
+        );
+        assert_eq!(profile, TlsProfile::Safari);
+        assert_eq!(bucket, TlsProfileBucket::Canary);
+    }
+
+    #[test]
+    fn test_ja3_fingerprint_default_profile() {
+        // Test Random and Custom profiles
+        let fp_random = Ja3Fingerprint::from_profile(&TlsProfile::Random);
+        let fp_custom = Ja3Fingerprint::from_profile(&TlsProfile::Custom);
+
+        // Both should produce valid hashes
+        assert_eq!(fp_random.to_ja3_hash().len(), 32);
+        assert_eq!(fp_custom.to_ja3_hash().len(), 32);
+    }
+
+    #[test]
+    fn test_ja3s_fingerprint_with_different_ciphers() {
+        let fp1 = Ja3sFingerprint::from_profile(&TlsProfile::Chrome, 0x1301);
+        let fp2 = Ja3sFingerprint::from_profile(&TlsProfile::Chrome, 0x1302);
+
+        // Different selected ciphers should produce different hashes
+        assert_ne!(fp1.to_ja3s_hash(), fp2.to_ja3s_hash());
+    }
+
+    #[test]
+    fn test_ja4_fingerprint_equality() {
+        let fp1 = Ja4Fingerprint::from_profile(&TlsProfile::Chrome);
+        let fp2 = Ja4Fingerprint::from_profile(&TlsProfile::Chrome);
+        assert_eq!(fp1, fp2);
+    }
+
+    #[test]
+    fn test_ja4_fingerprint_inequality() {
+        let fp_chrome = Ja4Fingerprint::from_profile(&TlsProfile::Chrome);
+        let fp_firefox = Ja4Fingerprint::from_profile(&TlsProfile::Firefox);
+        // Chrome and Firefox have different cipher counts
+        assert_ne!(fp_chrome.cipher_count, fp_firefox.cipher_count);
+    }
+
+    #[test]
+    fn test_load_custom_profile_invalid_json() {
+        use std::io::Write;
+        use tempfile::NamedTempFile;
+
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(file, "not valid json {{{{").unwrap();
+        file.flush().unwrap();
+
+        let result = load_custom_profile(file.path());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_load_custom_profile_file_not_found() {
+        use std::path::Path;
+
+        let result = load_custom_profile(Path::new("/nonexistent/path/to/config.json"));
+        assert!(result.is_err());
     }
 }
