@@ -825,6 +825,7 @@ fn ensure_root() -> Result<(), String> {
     #[cfg(unix)]
     {
         // Skip if already elevated or explicitly disabled
+        // SAFETY: libc::geteuid() is always safe - it's a read-only syscall with no side effects
         if unsafe { libc::geteuid() } == 0 || std::env::var("VPR_SKIP_ELEVATE").is_ok() {
             return Ok(());
         }

@@ -222,6 +222,7 @@ impl VpnProcessManager {
         // Требуются root-права для TUN/nftables
         #[cfg(unix)]
         {
+            // SAFETY: libc::geteuid() is always safe - it's a read-only syscall with no side effects
             if unsafe { libc::geteuid() } != 0 {
                 return Err(anyhow::anyhow!(
                     "root privileges required to create TUN and nftables rules"
@@ -263,6 +264,7 @@ impl VpnProcessManager {
         // Построить команду запуска
         // VPN client needs root privileges for TUN device creation
         // Если уже root — запускаем напрямую, иначе через pkexec
+        // SAFETY: libc::geteuid() is always safe - it's a read-only syscall with no side effects
         let is_root = unsafe { libc::geteuid() } == 0;
 
         let mut cmd = if is_root {
