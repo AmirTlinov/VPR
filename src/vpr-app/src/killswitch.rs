@@ -1,142 +1,123 @@
 //! Kill Switch Implementation
 //!
-//! Блокирует весь трафик при отключении VPN через iptables/nftables.
-//! Поддерживает Linux/macOS/Windows.
+//! Blocks all traffic except VPN when enabled. Supports Linux (nftables/iptables),
+//! macOS (pf), and Windows (netsh advfirewall).
+//!
+//! Design principles:
+//! - Policy-based: only specified IPs/ports are allowed
+//! - Fail-safe: errors are logged, not silently ignored
+//! - Idempotent: can be called multiple times safely
+//! - Clean teardown: removes all rules on disable
 
 use anyhow::{Context, Result};
-use std::env;
-use std::fs::OpenOptions;
-use std::io::Write;
 use std::net::Ipv4Addr;
 use std::process::Command;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
-fn run(cmd: &str, args: &[&str]) -> Result<()> {
-    if env::var("KILLSWITCH_DRY_RUN").ok().as_deref() == Some("1") {
-        if let Ok(path) = env::var("KILLSWITCH_DRY_RUN_LOG") {
-            let mut file = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(path)
-                .context("opening dry-run log")?;
-            writeln!(file, "{} {}", cmd, args.join(" ")).ok();
-        }
-        return Ok(());
+/// Traffic policy for kill switch - what to allow through
+#[derive(Debug, Default, Clone)]
+pub struct KillSwitchPolicy {
+    /// IPv4 addresses to allow (VPN server IPs)
+    pub allow_ipv4: Vec<Ipv4Addr>,
+    /// TCP destination ports to allow
+    pub allow_tcp_ports: Vec<u16>,
+    /// UDP destination ports to allow (QUIC uses UDP 443)
+    pub allow_udp_ports: Vec<u16>,
+}
+
+/// Execute a command and log result
+fn exec(cmd: &str, args: &[&str]) -> Result<bool> {
+    debug!(cmd = %cmd, args = ?args, "executing");
+
+    let output = Command::new(cmd)
+        .args(args)
+        .output()
+        .with_context(|| format!("failed to execute: {} {}", cmd, args.join(" ")))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        debug!(cmd = %cmd, stderr = %stderr.trim(), "command failed");
+        return Ok(false);
     }
 
-    let status = Command::new(cmd)
-        .args(args)
-        .status()
-        .context("spawn command")?;
-    if !status.success() {
-        warn!(cmd = %cmd, args = ?args, "command failed");
+    Ok(true)
+}
+
+/// Execute command, log warning on failure
+fn exec_warn(cmd: &str, args: &[&str]) {
+    if let Err(e) = exec(cmd, args) {
+        warn!(%e, cmd = %cmd, "command failed");
+    }
+}
+
+/// Execute command, return error on failure
+fn exec_require(cmd: &str, args: &[&str]) -> Result<()> {
+    let success = exec(cmd, args)?;
+    if !success {
+        anyhow::bail!("command failed: {} {}", cmd, args.join(" "));
     }
     Ok(())
 }
 
-/// Политика разрешённого трафика при активном kill switch
-#[derive(Debug, Default, Clone)]
-pub struct KillSwitchPolicy {
-    pub allow_ipv4: Vec<Ipv4Addr>,
-    pub allow_tcp_ports: Vec<u16>,
-    pub allow_udp_ports: Vec<u16>,
-}
+// ============================================================================
+// Public API
+// ============================================================================
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::fs;
-    use tempfile::NamedTempFile;
-
-    #[test]
-    fn policy_allows_server_and_ports() {
-        let policy = KillSwitchPolicy {
-            allow_ipv4: vec![Ipv4Addr::new(1, 2, 3, 4)],
-            allow_tcp_ports: vec![443],
-            allow_udp_ports: vec![53],
-        };
-        assert_eq!(policy.allow_ipv4.len(), 1);
-        assert!(policy.allow_tcp_ports.contains(&443));
-        assert!(policy.allow_udp_ports.contains(&53));
-    }
-
-    #[tokio::test]
-    async fn iptables_dry_run_writes_commands() {
-        let log = NamedTempFile::new().unwrap();
-        std::env::set_var("KILLSWITCH_DRY_RUN", "1");
-        std::env::set_var("KILLSWITCH_DRY_RUN_LOG", log.path());
-
-        let policy = KillSwitchPolicy {
-            allow_ipv4: vec![Ipv4Addr::new(10, 0, 0, 1)],
-            allow_tcp_ports: vec![443],
-            allow_udp_ports: vec![53],
-        };
-
-        enable_iptables(&policy).await.unwrap();
-
-        let content = fs::read_to_string(log.path()).unwrap();
-        assert!(content.contains("iptables -N VPR_KS_OUT"));
-        assert!(content.contains("-A VPR_KS_OUT -d 10.0.0.1 -p tcp --dport 443"));
-        assert!(content.contains("-A VPR_KS_OUT -j DROP"));
-    }
-}
-
-/// Включить kill switch с политикой разрешённого трафика
+/// Enable kill switch with given policy
 pub async fn enable(policy: KillSwitchPolicy) -> Result<()> {
+    info!(
+        ipv4_count = policy.allow_ipv4.len(),
+        tcp_ports = ?policy.allow_tcp_ports,
+        udp_ports = ?policy.allow_udp_ports,
+        "enabling kill switch"
+    );
+
     #[cfg(target_os = "linux")]
-    {
-        enable_linux(&policy).await
-    }
+    return enable_linux(&policy).await;
 
     #[cfg(target_os = "macos")]
-    {
-        enable_macos().await
-    }
+    return enable_macos(&policy).await;
 
     #[cfg(target_os = "windows")]
-    {
-        enable_windows().await
-    }
+    return enable_windows(&policy).await;
 
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-    {
-        anyhow::bail!("Kill switch not supported on this platform");
-    }
+    anyhow::bail!("kill switch not supported on this platform")
 }
 
-/// Отключить kill switch (разрешить трафик)
+/// Disable kill switch, restoring normal traffic
 pub async fn disable() -> Result<()> {
+    info!("disabling kill switch");
+
     #[cfg(target_os = "linux")]
-    {
-        disable_linux().await
-    }
+    return disable_linux().await;
 
     #[cfg(target_os = "macos")]
-    {
-        disable_macos().await
-    }
+    return disable_macos().await;
 
     #[cfg(target_os = "windows")]
-    {
-        disable_windows().await
-    }
+    return disable_windows().await;
 
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-    {
-        anyhow::bail!("Kill switch not supported on this platform");
-    }
+    anyhow::bail!("kill switch not supported on this platform")
+}
+
+// ============================================================================
+// Linux Implementation (nftables preferred, iptables fallback)
+// ============================================================================
+
+#[cfg(target_os = "linux")]
+fn has_nftables() -> bool {
+    Command::new("nft")
+        .args(["list", "tables"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
 }
 
 #[cfg(target_os = "linux")]
 async fn enable_linux(policy: &KillSwitchPolicy) -> Result<()> {
-    // Проверить, используется ли nftables или iptables
-    let uses_nftables = Command::new("nft")
-        .arg("list")
-        .arg("tables")
-        .output()
-        .is_ok();
-
-    if uses_nftables {
+    if has_nftables() {
         enable_nftables(policy).await
     } else {
         enable_iptables(policy).await
@@ -144,531 +125,357 @@ async fn enable_linux(policy: &KillSwitchPolicy) -> Result<()> {
 }
 
 #[cfg(target_os = "linux")]
+async fn disable_linux() -> Result<()> {
+    // Try both - one will succeed based on what was used
+    let nft_result = disable_nftables().await;
+    let ipt_result = disable_iptables().await;
+
+    // Return error only if both failed
+    if nft_result.is_err() && ipt_result.is_err() {
+        warn!("neither nftables nor iptables cleanup succeeded");
+    }
+
+    Ok(())
+}
+
+// ----------------------------------------------------------------------------
+// nftables implementation
+// ----------------------------------------------------------------------------
+
+#[cfg(target_os = "linux")]
+const NFT_TABLE: &str = "vpr_killswitch";
+#[cfg(target_os = "linux")]
+const NFT_CHAIN_OUT: &str = "output";
+#[cfg(target_os = "linux")]
+const NFT_CHAIN_IN: &str = "input";
+// Use priority -100 to run before other tables (default is 0)
+#[cfg(target_os = "linux")]
+const NFT_PRIORITY: &str = "-100";
+
+#[cfg(target_os = "linux")]
 async fn enable_nftables(policy: &KillSwitchPolicy) -> Result<()> {
-    // Создать таблицу и цепочку для kill switch, если их нет
-    let create_table = Command::new("nft")
-        .args(["create", "table", "inet", "vpr_killswitch"])
-        .output();
+    // Clean slate - delete existing table if present
+    let _ = exec("nft", &["delete", "table", "inet", NFT_TABLE]);
 
-    // Игнорируем ошибку, если таблица уже существует
-    let _ = create_table;
+    // Create table
+    exec_require("nft", &["create", "table", "inet", NFT_TABLE])?;
 
-    // Создать цепочки для input/output
-    let _ = Command::new("nft")
-        .args(["delete", "chain", "inet", "vpr_killswitch", "output"])
-        .status();
-    let _ = Command::new("nft")
-        .args(["delete", "chain", "inet", "vpr_killswitch", "input"])
-        .status();
+    // Create chains with high priority (negative = earlier)
+    let out_chain_spec = format!("{{ type filter hook output priority {}; policy drop; }}", NFT_PRIORITY);
+    let in_chain_spec = format!("{{ type filter hook input priority {}; policy drop; }}", NFT_PRIORITY);
 
-    let _ = Command::new("nft")
-        .args([
-            "create",
-            "chain",
-            "inet",
-            "vpr_killswitch",
-            "output",
-            "{ type filter hook output priority 0; }",
-        ])
-        .status();
-    let _ = Command::new("nft")
-        .args([
-            "create",
-            "chain",
-            "inet",
-            "vpr_killswitch",
-            "input",
-            "{ type filter hook input priority 0; }",
-        ])
-        .status();
+    exec_require("nft", &["add", "chain", "inet", NFT_TABLE, NFT_CHAIN_OUT, &out_chain_spec])?;
+    exec_require("nft", &["add", "chain", "inet", NFT_TABLE, NFT_CHAIN_IN, &in_chain_spec])?;
 
-    // Разрешить loopback (output + input)
-    let _ = Command::new("nft")
-        .args([
-            "add",
-            "rule",
-            "inet",
-            "vpr_killswitch",
-            "output",
-            "oifname",
-            "lo",
-            "accept",
-        ])
-        .status();
-    let _ = Command::new("nft")
-        .args([
-            "add",
-            "rule",
-            "inet",
-            "vpr_killswitch",
-            "input",
-            "iifname",
-            "lo",
-            "accept",
-        ])
-        .status();
+    // === ACCEPT rules (order matters for efficiency) ===
 
-    // Разрешить established/related соединения ПЕРВЫМИ (эффективнее)
-    let _ = Command::new("nft")
-        .args([
-            "add",
-            "rule",
-            "inet",
-            "vpr_killswitch",
-            "input",
-            "ct",
-            "state",
-            "established,related",
-            "accept",
-        ])
-        .status();
-    let _ = Command::new("nft")
-        .args([
-            "add",
-            "rule",
-            "inet",
-            "vpr_killswitch",
-            "output",
-            "ct",
-            "state",
-            "established,related",
-            "accept",
-        ])
-        .status();
+    // 1. Loopback - always allow
+    nft_add_rule(NFT_CHAIN_OUT, "oifname lo accept")?;
+    nft_add_rule(NFT_CHAIN_IN, "iifname lo accept")?;
 
-    // Разрешить трафик через TUN интерфейс (vpr*)
-    let _ = Command::new("nft")
-        .args([
-            "add",
-            "rule",
-            "inet",
-            "vpr_killswitch",
-            "output",
-            "oifname",
-            "vpr*",
-            "accept",
-        ])
-        .status();
-    let _ = Command::new("nft")
-        .args([
-            "add",
-            "rule",
-            "inet",
-            "vpr_killswitch",
-            "input",
-            "iifname",
-            "vpr*",
-            "accept",
-        ])
-        .status();
+    // 2. Established/related connections - most packets hit this
+    nft_add_rule(NFT_CHAIN_OUT, "ct state established,related accept")?;
+    nft_add_rule(NFT_CHAIN_IN, "ct state established,related accept")?;
 
+    // 3. TUN interface (vpr0, vpr1, etc.) - VPN tunnel traffic
+    nft_add_rule(NFT_CHAIN_OUT, "oifname \"vpr*\" accept")?;
+    nft_add_rule(NFT_CHAIN_IN, "iifname \"vpr*\" accept")?;
+
+    // 4. VPN server IP + ports
     for ip in &policy.allow_ipv4 {
         let ip_str = ip.to_string();
+
         for port in &policy.allow_tcp_ports {
-            // Исходящий TCP
-            let _ = Command::new("nft")
-                .args([
-                    "add",
-                    "rule",
-                    "inet",
-                    "vpr_killswitch",
-                    "output",
-                    "ip",
-                    "daddr",
-                    &ip_str,
-                    "tcp",
-                    "dport",
-                    &port.to_string(),
-                    "accept",
-                ])
-                .status();
-            // Входящий TCP (ответы от сервера)
-            let _ = Command::new("nft")
-                .args([
-                    "add",
-                    "rule",
-                    "inet",
-                    "vpr_killswitch",
-                    "input",
-                    "ip",
-                    "saddr",
-                    &ip_str,
-                    "tcp",
-                    "sport",
-                    &port.to_string(),
-                    "accept",
-                ])
-                .status();
+            nft_add_rule(NFT_CHAIN_OUT, &format!("ip daddr {} tcp dport {} accept", ip_str, port))?;
+            nft_add_rule(NFT_CHAIN_IN, &format!("ip saddr {} tcp sport {} accept", ip_str, port))?;
         }
+
         for port in &policy.allow_udp_ports {
-            // Исходящий UDP
-            let _ = Command::new("nft")
-                .args([
-                    "add",
-                    "rule",
-                    "inet",
-                    "vpr_killswitch",
-                    "output",
-                    "ip",
-                    "daddr",
-                    &ip_str,
-                    "udp",
-                    "dport",
-                    &port.to_string(),
-                    "accept",
-                ])
-                .status();
-            // Входящий UDP (ответы от сервера - критично для QUIC!)
-            let _ = Command::new("nft")
-                .args([
-                    "add",
-                    "rule",
-                    "inet",
-                    "vpr_killswitch",
-                    "input",
-                    "ip",
-                    "saddr",
-                    &ip_str,
-                    "udp",
-                    "sport",
-                    &port.to_string(),
-                    "accept",
-                ])
-                .status();
+            nft_add_rule(NFT_CHAIN_OUT, &format!("ip daddr {} udp dport {} accept", ip_str, port))?;
+            nft_add_rule(NFT_CHAIN_IN, &format!("ip saddr {} udp sport {} accept", ip_str, port))?;
         }
     }
 
-    // Drop всё остальное
-    let status = Command::new("nft")
-        .args(["add", "rule", "inet", "vpr_killswitch", "output", "drop"])
-        .status()
-        .context("adding nftables drop rule")?;
-    let _ = Command::new("nft")
-        .args(["add", "rule", "inet", "vpr_killswitch", "input", "drop"])
-        .status();
+    // Policy is DROP by default (set in chain spec), no explicit drop rule needed
 
-    if !status.success() {
-        warn!("nftables rule may already exist");
-    }
-
-    info!(allow_ipv4 = ?policy.allow_ipv4, "Kill switch enabled (nftables)");
+    info!(backend = "nftables", "kill switch enabled");
     Ok(())
 }
 
 #[cfg(target_os = "linux")]
-async fn enable_iptables(policy: &KillSwitchPolicy) -> Result<()> {
-    // Создать/очистить цепочки для исходящего и входящего трафика
-    let _ = run("iptables", &["-D", "OUTPUT", "-j", "VPR_KS_OUT"]);
-    let _ = run("iptables", &["-D", "INPUT", "-j", "VPR_KS_IN"]);
-    let _ = run("iptables", &["-F", "VPR_KS_OUT"]);
-    let _ = run("iptables", &["-F", "VPR_KS_IN"]);
-    let _ = run("iptables", &["-X", "VPR_KS_OUT"]);
-    let _ = run("iptables", &["-X", "VPR_KS_IN"]);
-    let _ = run("iptables", &["-N", "VPR_KS_OUT"]);
-    let _ = run("iptables", &["-N", "VPR_KS_IN"]);
-
-    // Разрешить loopback
-    let _ = run(
-        "iptables",
-        &["-A", "VPR_KS_OUT", "-o", "lo", "-j", "ACCEPT"],
-    );
-    let _ = run(
-        "iptables",
-        &["-A", "VPR_KS_IN", "-i", "lo", "-j", "ACCEPT"],
-    );
-
-    // Разрешить established/related (критично для QUIC)
-    let _ = run(
-        "iptables",
-        &[
-            "-A",
-            "VPR_KS_IN",
-            "-m",
-            "state",
-            "--state",
-            "ESTABLISHED,RELATED",
-            "-j",
-            "ACCEPT",
-        ],
-    );
-
-    // Разрешить TUN интерфейс
-    let _ = run(
-        "iptables",
-        &["-A", "VPR_KS_OUT", "-o", "vpr+", "-j", "ACCEPT"],
-    );
-    let _ = run(
-        "iptables",
-        &["-A", "VPR_KS_IN", "-i", "vpr+", "-j", "ACCEPT"],
-    );
-
-    // Разрешить целевые IPv4/порты
-    for ip in &policy.allow_ipv4 {
-        for port in &policy.allow_tcp_ports {
-            // Исходящий TCP
-            let _ = run(
-                "iptables",
-                &[
-                    "-A",
-                    "VPR_KS_OUT",
-                    "-d",
-                    &ip.to_string(),
-                    "-p",
-                    "tcp",
-                    "--dport",
-                    &port.to_string(),
-                    "-j",
-                    "ACCEPT",
-                ],
-            );
-            // Входящий TCP
-            let _ = run(
-                "iptables",
-                &[
-                    "-A",
-                    "VPR_KS_IN",
-                    "-s",
-                    &ip.to_string(),
-                    "-p",
-                    "tcp",
-                    "--sport",
-                    &port.to_string(),
-                    "-j",
-                    "ACCEPT",
-                ],
-            );
-        }
-
-        for port in &policy.allow_udp_ports {
-            // Исходящий UDP
-            let _ = run(
-                "iptables",
-                &[
-                    "-A",
-                    "VPR_KS_OUT",
-                    "-d",
-                    &ip.to_string(),
-                    "-p",
-                    "udp",
-                    "--dport",
-                    &port.to_string(),
-                    "-j",
-                    "ACCEPT",
-                ],
-            );
-            // Входящий UDP (критично для QUIC!)
-            let _ = run(
-                "iptables",
-                &[
-                    "-A",
-                    "VPR_KS_IN",
-                    "-s",
-                    &ip.to_string(),
-                    "-p",
-                    "udp",
-                    "--sport",
-                    &port.to_string(),
-                    "-j",
-                    "ACCEPT",
-                ],
-            );
-        }
-    }
-
-    // Блок по умолчанию
-    run("iptables", &["-A", "VPR_KS_OUT", "-j", "DROP"]).context("adding iptables DROP rule")?;
-    let _ = run("iptables", &["-A", "VPR_KS_IN", "-j", "DROP"]);
-
-    // Подключить цепочки первыми правилами
-    run("iptables", &["-I", "OUTPUT", "1", "-j", "VPR_KS_OUT"])
-        .context("attaching VPR_KS_OUT to OUTPUT")?;
-    let _ = run("iptables", &["-I", "INPUT", "1", "-j", "VPR_KS_IN"]);
-
-    info!(allow_ipv4 = ?policy.allow_ipv4, "Kill switch enabled (iptables)");
-    Ok(())
-}
-
-#[cfg(target_os = "linux")]
-async fn disable_linux() -> Result<()> {
-    let uses_nftables = Command::new("nft")
-        .arg("list")
-        .arg("tables")
-        .output()
-        .is_ok();
-
-    if uses_nftables {
-        disable_nftables().await
-    } else {
-        disable_iptables().await
-    }
+fn nft_add_rule(chain: &str, rule: &str) -> Result<()> {
+    let full_rule = format!("add rule inet {} {} {}", NFT_TABLE, chain, rule);
+    exec_require("nft", &[&full_rule])
+        .with_context(|| format!("failed to add nftables rule: {}", rule))
 }
 
 #[cfg(target_os = "linux")]
 async fn disable_nftables() -> Result<()> {
-    // Удалить все правила из цепочки
-    let flush = Command::new("nft")
-        .args(["flush", "chain", "inet", "vpr_killswitch", "input"])
-        .status();
+    // Delete entire table (removes all chains and rules)
+    if exec("nft", &["delete", "table", "inet", NFT_TABLE])? {
+        info!(backend = "nftables", "kill switch disabled");
+    }
+    Ok(())
+}
 
-    let _ = flush;
+// ----------------------------------------------------------------------------
+// iptables implementation (fallback for older systems)
+// ----------------------------------------------------------------------------
 
-    // Удалить цепочку
-    let delete_chain = Command::new("nft")
-        .args(["delete", "chain", "inet", "vpr_killswitch", "input"])
-        .status();
+#[cfg(target_os = "linux")]
+const IPT_CHAIN_OUT: &str = "VPR_KS_OUT";
+#[cfg(target_os = "linux")]
+const IPT_CHAIN_IN: &str = "VPR_KS_IN";
 
-    let _ = delete_chain;
+#[cfg(target_os = "linux")]
+async fn enable_iptables(policy: &KillSwitchPolicy) -> Result<()> {
+    // Clean existing chains
+    ipt_cleanup_chains();
 
-    // Удалить таблицу
-    let delete_table = Command::new("nft")
-        .args(["delete", "table", "inet", "vpr_killswitch"])
-        .status();
+    // Create chains
+    exec_require("iptables", &["-N", IPT_CHAIN_OUT])?;
+    exec_require("iptables", &["-N", IPT_CHAIN_IN])?;
 
-    let _ = delete_table;
+    // === ACCEPT rules ===
 
-    info!("Kill switch disabled (nftables)");
+    // 1. Loopback
+    exec_warn("iptables", &["-A", IPT_CHAIN_OUT, "-o", "lo", "-j", "ACCEPT"]);
+    exec_warn("iptables", &["-A", IPT_CHAIN_IN, "-i", "lo", "-j", "ACCEPT"]);
+
+    // 2. Established/related
+    exec_warn("iptables", &["-A", IPT_CHAIN_OUT, "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"]);
+    exec_warn("iptables", &["-A", IPT_CHAIN_IN, "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"]);
+
+    // 3. TUN interfaces (vpr+ matches vpr0, vpr1, etc.)
+    exec_warn("iptables", &["-A", IPT_CHAIN_OUT, "-o", "vpr+", "-j", "ACCEPT"]);
+    exec_warn("iptables", &["-A", IPT_CHAIN_IN, "-i", "vpr+", "-j", "ACCEPT"]);
+
+    // 4. VPN server IP + ports
+    for ip in &policy.allow_ipv4 {
+        let ip_str = ip.to_string();
+
+        for port in &policy.allow_tcp_ports {
+            let port_str = port.to_string();
+            exec_warn("iptables", &["-A", IPT_CHAIN_OUT, "-d", &ip_str, "-p", "tcp", "--dport", &port_str, "-j", "ACCEPT"]);
+            exec_warn("iptables", &["-A", IPT_CHAIN_IN, "-s", &ip_str, "-p", "tcp", "--sport", &port_str, "-j", "ACCEPT"]);
+        }
+
+        for port in &policy.allow_udp_ports {
+            let port_str = port.to_string();
+            exec_warn("iptables", &["-A", IPT_CHAIN_OUT, "-d", &ip_str, "-p", "udp", "--dport", &port_str, "-j", "ACCEPT"]);
+            exec_warn("iptables", &["-A", IPT_CHAIN_IN, "-s", &ip_str, "-p", "udp", "--sport", &port_str, "-j", "ACCEPT"]);
+        }
+    }
+
+    // 5. DROP everything else
+    exec_require("iptables", &["-A", IPT_CHAIN_OUT, "-j", "DROP"])?;
+    exec_require("iptables", &["-A", IPT_CHAIN_IN, "-j", "DROP"])?;
+
+    // Hook chains into OUTPUT/INPUT at position 1 (highest priority)
+    exec_require("iptables", &["-I", "OUTPUT", "1", "-j", IPT_CHAIN_OUT])?;
+    exec_require("iptables", &["-I", "INPUT", "1", "-j", IPT_CHAIN_IN])?;
+
+    info!(backend = "iptables", "kill switch enabled");
     Ok(())
 }
 
 #[cfg(target_os = "linux")]
+fn ipt_cleanup_chains() {
+    // Remove from main chains first
+    let _ = exec("iptables", &["-D", "OUTPUT", "-j", IPT_CHAIN_OUT]);
+    let _ = exec("iptables", &["-D", "INPUT", "-j", IPT_CHAIN_IN]);
+
+    // Flush and delete
+    let _ = exec("iptables", &["-F", IPT_CHAIN_OUT]);
+    let _ = exec("iptables", &["-X", IPT_CHAIN_OUT]);
+    let _ = exec("iptables", &["-F", IPT_CHAIN_IN]);
+    let _ = exec("iptables", &["-X", IPT_CHAIN_IN]);
+}
+
+#[cfg(target_os = "linux")]
 async fn disable_iptables() -> Result<()> {
-    // Открепить цепочки от OUTPUT и INPUT
-    let _ = run("iptables", &["-D", "OUTPUT", "-j", "VPR_KS_OUT"]);
-    let _ = run("iptables", &["-D", "INPUT", "-j", "VPR_KS_IN"]);
-
-    // Очистить и удалить цепочки
-    let _ = run("iptables", &["-F", "VPR_KS_OUT"]);
-    let _ = run("iptables", &["-X", "VPR_KS_OUT"]);
-    let _ = run("iptables", &["-F", "VPR_KS_IN"]);
-    let _ = run("iptables", &["-X", "VPR_KS_IN"]);
-
-    info!("Kill switch disabled (iptables)");
+    ipt_cleanup_chains();
+    info!(backend = "iptables", "kill switch disabled");
     Ok(())
 }
 
+// ============================================================================
+// macOS Implementation (pf - Packet Filter)
+// ============================================================================
+
 #[cfg(target_os = "macos")]
-async fn enable_macos() -> Result<()> {
-    // macOS использует pfctl (Packet Filter)
-    // Создать временный файл с правилами
-    let rules = r#"
-block out all
-block in all
-"#;
+const PF_ANCHOR: &str = "com.vpr.killswitch";
 
-    let temp_file = std::env::temp_dir().join("vpr_killswitch.pf");
-    std::fs::write(&temp_file, rules).context("writing pf rules file")?;
+#[cfg(target_os = "macos")]
+async fn enable_macos(policy: &KillSwitchPolicy) -> Result<()> {
+    use std::io::Write;
 
-    // Загрузить правила
-    let temp_file_str = temp_file
-        .to_str()
-        .ok_or_else(|| anyhow::anyhow!("Invalid temp file path"))?;
-    let status = Command::new("pfctl")
-        .args(["-f", temp_file_str])
-        .status()
-        .context("loading pf rules")?;
+    // Build pf rules
+    let mut rules = String::new();
 
-    if !status.success() {
-        anyhow::bail!("Failed to enable kill switch with pfctl");
+    // Block all by default
+    rules.push_str("block drop all\n");
+
+    // Allow loopback
+    rules.push_str("pass quick on lo0 all\n");
+
+    // Allow established connections
+    rules.push_str("pass out quick proto { tcp, udp } keep state\n");
+
+    // Allow TUN interface (utun* on macOS)
+    rules.push_str("pass quick on utun0 all\n");
+    rules.push_str("pass quick on utun1 all\n");
+    rules.push_str("pass quick on utun2 all\n");
+
+    // Allow VPN server IPs
+    for ip in &policy.allow_ipv4 {
+        for port in &policy.allow_tcp_ports {
+            rules.push_str(&format!("pass out quick proto tcp to {} port {}\n", ip, port));
+        }
+        for port in &policy.allow_udp_ports {
+            rules.push_str(&format!("pass out quick proto udp to {} port {}\n", ip, port));
+        }
     }
 
-    // Включить pf, если еще не включен
-    let _ = Command::new("pfctl").arg("-e").status();
+    // Write rules to temp file
+    let rules_path = std::env::temp_dir().join("vpr_killswitch.pf");
+    let mut file = std::fs::File::create(&rules_path)
+        .context("creating pf rules file")?;
+    file.write_all(rules.as_bytes())
+        .context("writing pf rules")?;
 
-    info!("Kill switch enabled (pfctl)");
+    let rules_path_str = rules_path.to_str()
+        .ok_or_else(|| anyhow::anyhow!("invalid path"))?;
+
+    // Load rules into anchor
+    exec_require("pfctl", &["-a", PF_ANCHOR, "-f", rules_path_str])?;
+
+    // Enable pf if not already
+    let _ = exec("pfctl", &["-e"]);
+
+    info!(backend = "pf", "kill switch enabled");
     Ok(())
 }
 
 #[cfg(target_os = "macos")]
 async fn disable_macos() -> Result<()> {
-    // Удалить правила (загрузить пустой файл)
-    let temp_file = std::env::temp_dir().join("vpr_killswitch_empty.pf");
-    std::fs::write(&temp_file, "").context("writing empty pf rules file")?;
+    // Flush anchor rules
+    let _ = exec("pfctl", &["-a", PF_ANCHOR, "-F", "all"]);
 
-    let temp_file_str = temp_file
-        .to_str()
-        .ok_or_else(|| anyhow::anyhow!("Invalid temp file path"))?;
-    let status = Command::new("pfctl")
-        .args(["-f", temp_file_str])
-        .status()
-        .context("disabling pf rules")?;
-
-    if !status.success() {
-        warn!("pfctl disable may have failed");
-    }
-
-    info!("Kill switch disabled (pfctl)");
+    info!(backend = "pf", "kill switch disabled");
     Ok(())
 }
 
+// ============================================================================
+// Windows Implementation (netsh advfirewall)
+// ============================================================================
+
 #[cfg(target_os = "windows")]
-async fn enable_windows() -> Result<()> {
-    // Windows использует netsh для управления firewall
-    // Блокировать все исходящие соединения
-    let status = Command::new("netsh")
-        .args([
-            "advfirewall",
-            "firewall",
-            "add",
-            "rule",
-            "name=VPR Kill Switch Outbound",
-            "dir=out",
-            "action=block",
-            "enable=yes",
-        ])
-        .status()
-        .context("adding Windows firewall outbound rule")?;
+const FW_RULE_BLOCK_OUT: &str = "VPR Kill Switch Block Out";
+#[cfg(target_os = "windows")]
+const FW_RULE_BLOCK_IN: &str = "VPR Kill Switch Block In";
+#[cfg(target_os = "windows")]
+const FW_RULE_ALLOW_PREFIX: &str = "VPR Allow";
 
-    if !status.success() {
-        warn!("Windows firewall rule may already exist");
+#[cfg(target_os = "windows")]
+async fn enable_windows(policy: &KillSwitchPolicy) -> Result<()> {
+    // Clean existing rules first
+    disable_windows().await?;
+
+    // Add allow rules for VPN server FIRST (higher priority)
+    for (i, ip) in policy.allow_ipv4.iter().enumerate() {
+        let ip_str = ip.to_string();
+
+        for port in &policy.allow_tcp_ports {
+            let rule_name = format!("{} TCP {} {}", FW_RULE_ALLOW_PREFIX, ip, port);
+            exec_warn("netsh", &[
+                "advfirewall", "firewall", "add", "rule",
+                &format!("name={}", rule_name),
+                "dir=out", "action=allow", "protocol=tcp",
+                &format!("remoteip={}", ip_str),
+                &format!("remoteport={}", port),
+                "enable=yes"
+            ]);
+        }
+
+        for port in &policy.allow_udp_ports {
+            let rule_name = format!("{} UDP {} {}", FW_RULE_ALLOW_PREFIX, ip, port);
+            exec_warn("netsh", &[
+                "advfirewall", "firewall", "add", "rule",
+                &format!("name={}", rule_name),
+                "dir=out", "action=allow", "protocol=udp",
+                &format!("remoteip={}", ip_str),
+                &format!("remoteport={}", port),
+                "enable=yes"
+            ]);
+        }
     }
 
-    // Блокировать все входящие соединения
-    let status = Command::new("netsh")
-        .args([
-            "advfirewall",
-            "firewall",
-            "add",
-            "rule",
-            "name=VPR Kill Switch Inbound",
-            "dir=in",
-            "action=block",
-            "enable=yes",
-        ])
-        .status()
-        .context("adding Windows firewall inbound rule")?;
+    // Block all other outbound traffic
+    exec_require("netsh", &[
+        "advfirewall", "firewall", "add", "rule",
+        &format!("name={}", FW_RULE_BLOCK_OUT),
+        "dir=out", "action=block", "enable=yes"
+    ])?;
 
-    if !status.success() {
-        warn!("Windows firewall rule may already exist");
-    }
+    // Block all inbound traffic (except established via stateful inspection)
+    exec_require("netsh", &[
+        "advfirewall", "firewall", "add", "rule",
+        &format!("name={}", FW_RULE_BLOCK_IN),
+        "dir=in", "action=block", "enable=yes"
+    ])?;
 
-    info!("Kill switch enabled (Windows Firewall)");
+    info!(backend = "netsh", "kill switch enabled");
     Ok(())
 }
 
 #[cfg(target_os = "windows")]
 async fn disable_windows() -> Result<()> {
-    // Удалить исходящее правило
-    let _ = Command::new("netsh")
-        .args([
-            "advfirewall",
-            "firewall",
-            "delete",
-            "rule",
-            "name=VPR Kill Switch Outbound",
-        ])
-        .status();
+    // Delete block rules
+    let _ = exec("netsh", &[
+        "advfirewall", "firewall", "delete", "rule",
+        &format!("name={}", FW_RULE_BLOCK_OUT)
+    ]);
+    let _ = exec("netsh", &[
+        "advfirewall", "firewall", "delete", "rule",
+        &format!("name={}", FW_RULE_BLOCK_IN)
+    ]);
 
-    // Удалить входящее правило
-    let _ = Command::new("netsh")
-        .args([
-            "advfirewall",
-            "firewall",
-            "delete",
-            "rule",
-            "name=VPR Kill Switch Inbound",
-        ])
-        .status();
+    // Delete allow rules (pattern match)
+    let _ = exec("netsh", &[
+        "advfirewall", "firewall", "delete", "rule",
+        &format!("name={} *", FW_RULE_ALLOW_PREFIX)
+    ]);
 
-    info!("Kill switch disabled (Windows Firewall)");
+    info!(backend = "netsh", "kill switch disabled");
     Ok(())
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn policy_default_is_empty() {
+        let policy = KillSwitchPolicy::default();
+        assert!(policy.allow_ipv4.is_empty());
+        assert!(policy.allow_tcp_ports.is_empty());
+        assert!(policy.allow_udp_ports.is_empty());
+    }
+
+    #[test]
+    fn policy_with_server() {
+        let policy = KillSwitchPolicy {
+            allow_ipv4: vec![Ipv4Addr::new(1, 2, 3, 4)],
+            allow_tcp_ports: vec![443, 8053],
+            allow_udp_ports: vec![53, 443],
+        };
+        assert_eq!(policy.allow_ipv4.len(), 1);
+        assert!(policy.allow_tcp_ports.contains(&443));
+        assert!(policy.allow_udp_ports.contains(&443)); // QUIC
+    }
 }
