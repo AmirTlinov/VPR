@@ -279,19 +279,18 @@ async fn connect(
         killswitch: config.killswitch,
     };
 
+    // Включить kill switch ПЕРЕД запуском VPN клиента
+    // Правила разрешают UDP/TCP на VPN сервер + входящие ответы
+    if config.killswitch {
+        let policy = build_killswitch_policy(&server, port_num).await;
+        if let Err(e) = state.vpn_manager.enable_killswitch(policy).await {
+            return Err(format!("Failed to enable kill switch: {}", e));
+        }
+    }
+
     // Запустить VPN клиент
     match state.vpn_manager.start(vpn_config).await {
         Ok(()) => {
-            // Включить kill switch после успешного старта
-            if config.killswitch {
-                let policy = build_killswitch_policy(&server, port_num).await;
-                if let Err(e) = state.vpn_manager.enable_killswitch(policy).await {
-                    // Попробуем остановить процесс, чтобы не оставить half-configured state
-                    let _ = state.vpn_manager.stop().await;
-                    return Err(format!("Failed to enable kill switch: {}", e));
-                }
-            }
-
             // Обновить состояние
             let mut vpn_state = state.state.lock().await;
             vpn_state.status = VpnStatus::Connected;

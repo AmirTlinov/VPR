@@ -199,6 +199,7 @@ async fn enable_nftables(policy: &KillSwitchPolicy) -> Result<()> {
     for ip in &policy.allow_ipv4 {
         let ip_str = ip.to_string();
         for port in &policy.allow_tcp_ports {
+            // Исходящий TCP
             let _ = Command::new("nft")
                 .args([
                     "add",
@@ -215,8 +216,26 @@ async fn enable_nftables(policy: &KillSwitchPolicy) -> Result<()> {
                     "accept",
                 ])
                 .status();
+            // Входящий TCP (ответы от сервера)
+            let _ = Command::new("nft")
+                .args([
+                    "add",
+                    "rule",
+                    "inet",
+                    "vpr_killswitch",
+                    "input",
+                    "ip",
+                    "saddr",
+                    &ip_str,
+                    "tcp",
+                    "sport",
+                    &port.to_string(),
+                    "accept",
+                ])
+                .status();
         }
         for port in &policy.allow_udp_ports {
+            // Исходящий UDP
             let _ = Command::new("nft")
                 .args([
                     "add",
@@ -233,14 +252,75 @@ async fn enable_nftables(policy: &KillSwitchPolicy) -> Result<()> {
                     "accept",
                 ])
                 .status();
+            // Входящий UDP (ответы от сервера - критично для QUIC!)
+            let _ = Command::new("nft")
+                .args([
+                    "add",
+                    "rule",
+                    "inet",
+                    "vpr_killswitch",
+                    "input",
+                    "ip",
+                    "saddr",
+                    &ip_str,
+                    "udp",
+                    "sport",
+                    &port.to_string(),
+                    "accept",
+                ])
+                .status();
         }
     }
+
+    // Разрешить established/related соединения (для надёжности)
+    let _ = Command::new("nft")
+        .args([
+            "add",
+            "rule",
+            "inet",
+            "vpr_killswitch",
+            "input",
+            "ct",
+            "state",
+            "established,related",
+            "accept",
+        ])
+        .status();
+
+    // Разрешить трафик через TUN интерфейс (vpr0)
+    let _ = Command::new("nft")
+        .args([
+            "add",
+            "rule",
+            "inet",
+            "vpr_killswitch",
+            "output",
+            "oifname",
+            "vpr*",
+            "accept",
+        ])
+        .status();
+    let _ = Command::new("nft")
+        .args([
+            "add",
+            "rule",
+            "inet",
+            "vpr_killswitch",
+            "input",
+            "iifname",
+            "vpr*",
+            "accept",
+        ])
+        .status();
 
     // Drop всё остальное
     let status = Command::new("nft")
         .args(["add", "rule", "inet", "vpr_killswitch", "output", "drop"])
         .status()
         .context("adding nftables drop rule")?;
+    let _ = Command::new("nft")
+        .args(["add", "rule", "inet", "vpr_killswitch", "input", "drop"])
+        .status();
 
     if !status.success() {
         warn!("nftables rule may already exist");
@@ -252,21 +332,55 @@ async fn enable_nftables(policy: &KillSwitchPolicy) -> Result<()> {
 
 #[cfg(target_os = "linux")]
 async fn enable_iptables(policy: &KillSwitchPolicy) -> Result<()> {
-    // Создать/очистить цепочку для исходящего трафика
+    // Создать/очистить цепочки для исходящего и входящего трафика
     let _ = run("iptables", &["-D", "OUTPUT", "-j", "VPR_KS_OUT"]);
+    let _ = run("iptables", &["-D", "INPUT", "-j", "VPR_KS_IN"]);
     let _ = run("iptables", &["-F", "VPR_KS_OUT"]);
+    let _ = run("iptables", &["-F", "VPR_KS_IN"]);
     let _ = run("iptables", &["-X", "VPR_KS_OUT"]);
+    let _ = run("iptables", &["-X", "VPR_KS_IN"]);
     let _ = run("iptables", &["-N", "VPR_KS_OUT"]);
+    let _ = run("iptables", &["-N", "VPR_KS_IN"]);
 
     // Разрешить loopback
     let _ = run(
         "iptables",
         &["-A", "VPR_KS_OUT", "-o", "lo", "-j", "ACCEPT"],
     );
+    let _ = run(
+        "iptables",
+        &["-A", "VPR_KS_IN", "-i", "lo", "-j", "ACCEPT"],
+    );
+
+    // Разрешить established/related (критично для QUIC)
+    let _ = run(
+        "iptables",
+        &[
+            "-A",
+            "VPR_KS_IN",
+            "-m",
+            "state",
+            "--state",
+            "ESTABLISHED,RELATED",
+            "-j",
+            "ACCEPT",
+        ],
+    );
+
+    // Разрешить TUN интерфейс
+    let _ = run(
+        "iptables",
+        &["-A", "VPR_KS_OUT", "-o", "vpr+", "-j", "ACCEPT"],
+    );
+    let _ = run(
+        "iptables",
+        &["-A", "VPR_KS_IN", "-i", "vpr+", "-j", "ACCEPT"],
+    );
 
     // Разрешить целевые IPv4/порты
     for ip in &policy.allow_ipv4 {
         for port in &policy.allow_tcp_ports {
+            // Исходящий TCP
             let _ = run(
                 "iptables",
                 &[
@@ -282,9 +396,26 @@ async fn enable_iptables(policy: &KillSwitchPolicy) -> Result<()> {
                     "ACCEPT",
                 ],
             );
+            // Входящий TCP
+            let _ = run(
+                "iptables",
+                &[
+                    "-A",
+                    "VPR_KS_IN",
+                    "-s",
+                    &ip.to_string(),
+                    "-p",
+                    "tcp",
+                    "--sport",
+                    &port.to_string(),
+                    "-j",
+                    "ACCEPT",
+                ],
+            );
         }
 
         for port in &policy.allow_udp_ports {
+            // Исходящий UDP
             let _ = run(
                 "iptables",
                 &[
@@ -300,15 +431,33 @@ async fn enable_iptables(policy: &KillSwitchPolicy) -> Result<()> {
                     "ACCEPT",
                 ],
             );
+            // Входящий UDP (критично для QUIC!)
+            let _ = run(
+                "iptables",
+                &[
+                    "-A",
+                    "VPR_KS_IN",
+                    "-s",
+                    &ip.to_string(),
+                    "-p",
+                    "udp",
+                    "--sport",
+                    &port.to_string(),
+                    "-j",
+                    "ACCEPT",
+                ],
+            );
         }
     }
 
     // Блок по умолчанию
     run("iptables", &["-A", "VPR_KS_OUT", "-j", "DROP"]).context("adding iptables DROP rule")?;
+    let _ = run("iptables", &["-A", "VPR_KS_IN", "-j", "DROP"]);
 
-    // Подключить цепочку в OUTPUT первым правилом
+    // Подключить цепочки первыми правилами
     run("iptables", &["-I", "OUTPUT", "1", "-j", "VPR_KS_OUT"])
         .context("attaching VPR_KS_OUT to OUTPUT")?;
+    let _ = run("iptables", &["-I", "INPUT", "1", "-j", "VPR_KS_IN"]);
 
     info!(allow_ipv4 = ?policy.allow_ipv4, "Kill switch enabled (iptables)");
     Ok(())
@@ -358,12 +507,15 @@ async fn disable_nftables() -> Result<()> {
 
 #[cfg(target_os = "linux")]
 async fn disable_iptables() -> Result<()> {
-    // Открепить цепочку от OUTPUT
+    // Открепить цепочки от OUTPUT и INPUT
     let _ = run("iptables", &["-D", "OUTPUT", "-j", "VPR_KS_OUT"]);
+    let _ = run("iptables", &["-D", "INPUT", "-j", "VPR_KS_IN"]);
 
-    // Очистить и удалить цепочку
+    // Очистить и удалить цепочки
     let _ = run("iptables", &["-F", "VPR_KS_OUT"]);
     let _ = run("iptables", &["-X", "VPR_KS_OUT"]);
+    let _ = run("iptables", &["-F", "VPR_KS_IN"]);
+    let _ = run("iptables", &["-X", "VPR_KS_IN"]);
 
     info!("Kill switch disabled (iptables)");
     Ok(())
