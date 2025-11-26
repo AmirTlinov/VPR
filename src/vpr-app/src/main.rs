@@ -801,20 +801,25 @@ fn main() {
                 killswitch: config.killswitch,
             };
 
-            if let Err(e) = manager_for_autoconnect.start(vpn_config.clone()).await {
-                let mut vpn_state = state_for_autoconnect.lock().await;
-                vpn_state.status = VpnStatus::Error;
-                vpn_state.error = Some(e.to_string());
-                return;
-            }
-
+            // Включить killswitch ПЕРЕД запуском VPN (как в connect)
             if config.killswitch {
                 let policy = build_killswitch_policy(&vpn_config.server, vpn_config.port).await;
                 if let Err(e) = manager_for_autoconnect.enable_killswitch(policy).await {
                     let mut vpn_state = state_for_autoconnect.lock().await;
                     vpn_state.status = VpnStatus::Error;
-                    vpn_state.error = Some(e.to_string());
+                    vpn_state.error = Some(format!("Failed to enable kill switch: {}", e));
+                    return;
                 }
+            }
+
+            if let Err(e) = manager_for_autoconnect.start(vpn_config.clone()).await {
+                // Отключить killswitch при ошибке запуска
+                if config.killswitch {
+                    let _ = manager_for_autoconnect.disable_killswitch().await;
+                }
+                let mut vpn_state = state_for_autoconnect.lock().await;
+                vpn_state.status = VpnStatus::Error;
+                vpn_state.error = Some(e.to_string());
             }
         });
     }

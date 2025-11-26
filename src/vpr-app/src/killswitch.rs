@@ -182,7 +182,7 @@ async fn enable_nftables(policy: &KillSwitchPolicy) -> Result<()> {
         ])
         .status();
 
-    // Разрешить loopback
+    // Разрешить loopback (output + input)
     let _ = Command::new("nft")
         .args([
             "add",
@@ -192,6 +192,72 @@ async fn enable_nftables(policy: &KillSwitchPolicy) -> Result<()> {
             "output",
             "oifname",
             "lo",
+            "accept",
+        ])
+        .status();
+    let _ = Command::new("nft")
+        .args([
+            "add",
+            "rule",
+            "inet",
+            "vpr_killswitch",
+            "input",
+            "iifname",
+            "lo",
+            "accept",
+        ])
+        .status();
+
+    // Разрешить established/related соединения ПЕРВЫМИ (эффективнее)
+    let _ = Command::new("nft")
+        .args([
+            "add",
+            "rule",
+            "inet",
+            "vpr_killswitch",
+            "input",
+            "ct",
+            "state",
+            "established,related",
+            "accept",
+        ])
+        .status();
+    let _ = Command::new("nft")
+        .args([
+            "add",
+            "rule",
+            "inet",
+            "vpr_killswitch",
+            "output",
+            "ct",
+            "state",
+            "established,related",
+            "accept",
+        ])
+        .status();
+
+    // Разрешить трафик через TUN интерфейс (vpr*)
+    let _ = Command::new("nft")
+        .args([
+            "add",
+            "rule",
+            "inet",
+            "vpr_killswitch",
+            "output",
+            "oifname",
+            "vpr*",
+            "accept",
+        ])
+        .status();
+    let _ = Command::new("nft")
+        .args([
+            "add",
+            "rule",
+            "inet",
+            "vpr_killswitch",
+            "input",
+            "iifname",
+            "vpr*",
             "accept",
         ])
         .status();
@@ -271,47 +337,6 @@ async fn enable_nftables(policy: &KillSwitchPolicy) -> Result<()> {
                 .status();
         }
     }
-
-    // Разрешить established/related соединения (для надёжности)
-    let _ = Command::new("nft")
-        .args([
-            "add",
-            "rule",
-            "inet",
-            "vpr_killswitch",
-            "input",
-            "ct",
-            "state",
-            "established,related",
-            "accept",
-        ])
-        .status();
-
-    // Разрешить трафик через TUN интерфейс (vpr0)
-    let _ = Command::new("nft")
-        .args([
-            "add",
-            "rule",
-            "inet",
-            "vpr_killswitch",
-            "output",
-            "oifname",
-            "vpr*",
-            "accept",
-        ])
-        .status();
-    let _ = Command::new("nft")
-        .args([
-            "add",
-            "rule",
-            "inet",
-            "vpr_killswitch",
-            "input",
-            "iifname",
-            "vpr*",
-            "accept",
-        ])
-        .status();
 
     // Drop всё остальное
     let status = Command::new("nft")
