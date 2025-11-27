@@ -1,0 +1,145 @@
+# VPR VPN Production Deployment
+#
+# This compose file is for production server deployment.
+# Before running, ensure you have:
+#   1. Generated Noise keys: make keygen
+#   2. Generated TLS certificates: make cert
+#   3. Configured secrets volumes
+#
+# Usage:
+#   docker compose -f docker/docker-compose.prod.yml up -d
+#   docker compose -f docker/docker-compose.prod.yml logs -f vpn-server
+#   docker compose -f docker/docker-compose.prod.yml down
+#
+# Environment variables (set in .env or export):
+#   VPR_BIND          - Server bind address (default: 0.0.0.0:4433)
+#   VPR_TUN_ADDR      - Server TUN IP (default: 10.9.0.1)
+#   VPR_POOL_START    - Client IP pool start (default: 10.9.0.2)
+#   VPR_POOL_END      - Client IP pool end (default: 10.9.0.254)
+#   VPR_MTU           - MTU size (default: 1400)
+#   VPR_IDLE_TIMEOUT  - Idle timeout seconds (default: 300)
+#   RUST_LOG          - Log level (default: info)
+
+services:
+  vpn-server:
+    image: ${VPR_IMAGE:-ghcr.io/amirtlinov/vpr/vpn-server:latest}
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: server
+    container_name: vpr-server
+    hostname: vpr-server
+    restart: unless-stopped
+
+    # TUN device requires these capabilities
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+
+    # Required for TUN device creation
+    devices:
+      - /dev/net/tun:/dev/net/tun
+
+    # Enable host networking if you need direct TUN access
+    # network_mode: host
+
+    # Use bridge network with exposed UDP port
+    ports:
+      - "${VPR_PORT:-4433}:4433/udp"
+
+    environment:
+      RUST_LOG: "${RUST_LOG:-info}"
+      # Server will use these defaults if not overridden by command
+      VPR_BIND: "${VPR_BIND:-0.0.0.0:4433}"
+      VPR_TUN_NAME: "${VPR_TUN_NAME:-vpr0}"
+      VPR_TUN_ADDR: "${VPR_TUN_ADDR:-10.9.0.1}"
+      VPR_POOL_START: "${VPR_POOL_START:-10.9.0.2}"
+      VPR_POOL_END: "${VPR_POOL_END:-10.9.0.254}"
+      VPR_MTU: "${VPR_MTU:-1400}"
+
+    volumes:
+      # Mount your secrets (Noise keys + TLS certs)
+      - ${VPR_SECRETS_DIR:-./secrets}:/app/secrets:ro
+      - ${VPR_CERTS_DIR:-./certs}:/app/certs:ro
+
+    # Override default command if needed
+    command:
+      - vpn-server
+      - --bind
+      - "${VPR_BIND:-0.0.0.0:4433}"
+      - --tun-name
+      - "${VPR_TUN_NAME:-vpr0}"
+      - --tun-addr
+      - "${VPR_TUN_ADDR:-10.9.0.1}"
+      - --pool-start
+      - "${VPR_POOL_START:-10.9.0.2}"
+      - --pool-end
+      - "${VPR_POOL_END:-10.9.0.254}"
+      - --mtu
+      - "${VPR_MTU:-1400}"
+      - --noise-dir
+      - /app/secrets
+      - --noise-name
+      - server
+      - --cert
+      - /app/certs/server.crt
+      - --key
+      - /app/certs/server.key
+      - --enable-forwarding
+      - --idle-timeout
+      - "${VPR_IDLE_TIMEOUT:-300}"
+
+    healthcheck:
+      test: ["CMD", "sh", "-c", "ss -uln | grep -q ':4433'"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+    deploy:
+      resources:
+        limits:
+          cpus: "${VPR_CPU_LIMIT:-2}"
+          memory: "${VPR_MEM_LIMIT:-512M}"
+        reservations:
+          cpus: "0.25"
+          memory: "64M"
+
+    # Security options
+    security_opt:
+      - no-new-privileges:true
+
+    # Read-only root filesystem
+    read_only: true
+
+    # Temp filesystem for runtime needs
+    tmpfs:
+      - /tmp:size=10M
+      - /run:size=10M
+
+    sysctls:
+      # Required for IP forwarding
+      net.ipv4.ip_forward: 1
+      # Optional: increase conntrack table
+      net.netfilter.nf_conntrack_max: 65536
+
+# Named volumes for persistent data
+volumes:
+  secrets:
+    driver: local
+  certs:
+    driver: local
+
+# Network configuration
+networks:
+  default:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24
