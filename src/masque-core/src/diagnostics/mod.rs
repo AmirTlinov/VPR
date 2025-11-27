@@ -11,9 +11,9 @@
 pub mod client;
 pub mod server;
 pub mod cross_checks;
-// pub mod fixes;     // TODO: Uncomment when created
+pub mod fixes;
+pub mod ssh_client;
 // pub mod engine;    // TODO: Uncomment when created
-// pub mod ssh_client;    // TODO: Uncomment when created
 
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
