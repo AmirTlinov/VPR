@@ -8,15 +8,19 @@ tui:
 		echo "Granting CAP_NET_ADMIN,CAP_NET_RAW to vpn-client (needed for TUN)"; \
 		sudo setcap cap_net_admin,cap_net_raw+eip target/debug/vpn-client || true; \
 	fi
+	@if ! getcap target/debug/vpr-app | grep -q cap_net_admin; then \
+		echo "Granting CAP_NET_ADMIN,CAP_NET_RAW to vpr-app (kill switch & helpers)"; \
+		sudo setcap cap_net_admin,cap_net_raw+eip target/debug/vpr-app || true; \
+	fi
 	@if [ -n "$$DISPLAY" ]; then \
 		echo "Using host display $$DISPLAY"; \
 		cd src/vpr-app && \
-			XDG_SESSION_TYPE=$${XDG_SESSION_TYPE:-x11} WINIT_UNIX_BACKEND=x11 GDK_BACKEND=x11 QT_QPA_PLATFORM=xcb VPR_SKIP_ELEVATE=1 \
+			XDG_SESSION_TYPE=$${XDG_SESSION_TYPE:-x11} WINIT_UNIX_BACKEND=x11 GDK_BACKEND=x11 QT_QPA_PLATFORM=xcb \
 			cargo tauri dev; \
 	else \
 		echo "No DISPLAY found, falling back to Xvfb headless display"; \
 		cd src/vpr-app && \
-			XDG_SESSION_TYPE=x11 WAYLAND_DISPLAY= WINIT_UNIX_BACKEND=x11 GDK_BACKEND=x11 QT_QPA_PLATFORM=xcb VPR_SKIP_ELEVATE=1 \
+			XDG_SESSION_TYPE=x11 WAYLAND_DISPLAY= WINIT_UNIX_BACKEND=x11 GDK_BACKEND=x11 QT_QPA_PLATFORM=xcb \
 			dbus-run-session -- xvfb-run -s "-screen 0 1920x1080x24" cargo tauri dev; \
 	fi
 

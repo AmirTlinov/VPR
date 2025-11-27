@@ -18,6 +18,9 @@ use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use tokio::time::Duration;
 
+#[cfg(unix)]
+use caps::{CapSet, Capability};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 enum VpnStatus {
     Disconnected,
@@ -1011,7 +1014,12 @@ fn ensure_privileges() -> Result<(), String> {
         const CAP_NET_RAW_BIT: u64 = 13;
 
         if has_cap(CAP_NET_ADMIN_BIT) && has_cap(CAP_NET_RAW_BIT) {
-            return Ok(());
+            // Keep capabilities across child exec (iptables/nft) via ambient set
+            if let Err(e) = activate_ambient_net_caps() {
+                tracing::warn!(%e, "failed to activate ambient capabilities, falling back to root escalation");
+            } else {
+                return Ok(());
+            }
         }
         ensure_root()
     }
@@ -1034,4 +1042,32 @@ fn has_cap(bit: u64) -> bool {
         }
     }
     false
+}
+
+/// Promote NET_ADMIN/NET_RAW to ambient so child processes (iptables/nft) keep them.
+#[cfg(unix)]
+fn activate_ambient_net_caps() -> Result<(), String> {
+    use caps::errors::CapsError;
+
+    let needed = [Capability::CAP_NET_ADMIN, Capability::CAP_NET_RAW];
+
+    for cap in needed {
+        // Ensure inheritable set includes the capability
+        // Ensure inheritable contains the cap
+        if !caps::has_cap(None, CapSet::Inheritable, cap).unwrap_or(false) {
+            caps::raise(None, CapSet::Inheritable, cap)
+                .map_err(|e: CapsError| format!("raise inheritable {:?}: {}", cap, e))?;
+        }
+
+        // Raise to ambient so exec'd children keep it
+        caps::raise(None, CapSet::Ambient, cap)
+            .map_err(|e: CapsError| format!("raise ambient {:?}: {}", cap, e))?;
+    }
+
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn activate_ambient_net_caps() -> Result<(), String> {
+    Ok(())
 }

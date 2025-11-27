@@ -221,17 +221,6 @@ impl VpnProcessManager {
 
     /// Запустить VPN клиент
     pub async fn start(&self, config: VpnClientConfig) -> Result<()> {
-        // Требуются root-права для TUN/nftables
-        #[cfg(unix)]
-        {
-            // SAFETY: libc::geteuid() is always safe - it's a read-only syscall with no side effects
-            if unsafe { libc::geteuid() } != 0 {
-                return Err(anyhow::anyhow!(
-                    "root privileges required to create TUN and nftables rules"
-                ));
-            }
-        }
-
         let mut status = self.status.write().await;
         if *status != ProcessStatus::Stopped && *status != ProcessStatus::Error {
             return Err(anyhow::anyhow!(
@@ -248,6 +237,18 @@ impl VpnProcessManager {
 
         // Найти бинарник
         let binary_path = Self::find_vpn_client_binary().context("finding vpn-client binary")?;
+
+        // Требуются root-права или cap_net_admin/cap_net_raw на vpn-client
+        #[cfg(unix)]
+        {
+            let has_caps = Self::binary_has_caps(&binary_path)?;
+            // SAFETY: libc::geteuid() is always safe - it's a read-only syscall with no side effects
+            if unsafe { libc::geteuid() } != 0 && !has_caps {
+                return Err(anyhow::anyhow!(
+                    "root privileges or CAP_NET_ADMIN/CAP_NET_RAW on vpn-client required for TUN/nftables"
+                ));
+            }
+        }
 
         // Log all config parameters for debugging
         info!(
