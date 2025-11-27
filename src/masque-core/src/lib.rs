@@ -110,3 +110,5 @@ pub mod vpn_config;
 pub mod vpn_tunnel;
 /// VPN server components (decomposed binary support)
 pub mod server;
+/// VPN client components (decomposed binary support)
+pub mod client;

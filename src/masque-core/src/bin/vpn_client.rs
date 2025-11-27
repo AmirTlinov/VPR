@@ -5,15 +5,10 @@
 
 use anyhow::{bail, Context, Result};
 use clap::Parser;
-use quinn::{ClientConfig as QuinnClientConfig, Endpoint, TransportConfig};
-use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
-use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
-use rustls::{DigitallySignedStruct, SignatureScheme};
-use sha2::Sha256;
+use quinn::Endpoint;
 use std::fs;
 use std::fs::File;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::path::PathBuf;
+use std::net::{IpAddr, SocketAddr};
 use std::process::Command;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -24,13 +19,17 @@ use tracing::{error, info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
 
 use ipnetwork::IpNetwork;
+use masque_core::client::{
+    build_padder_cli, build_padder_from_config, build_quic_config, handle_probe_challenge, Args,
+    VPR_PROTOCOL_VERSION,
+};
 use masque_core::cover_traffic::{CoverTrafficConfig, CoverTrafficGenerator};
 use masque_core::hybrid_handshake::HybridClient;
 use masque_core::key_rotation::{
     rotation_check_task, KeyRotationConfig, KeyRotationManager, SessionKeyLimits, SessionKeyState,
 };
 use masque_core::network_guard::NetworkStateGuard;
-use masque_core::padding::{Padder, PaddingConfig, PaddingStrategy};
+use masque_core::padding::Padder;
 use masque_core::quic_stream::QuicBiStream;
 use masque_core::tls_fingerprint::{
     select_tls_profile, Ja3Fingerprint, Ja3sFingerprint, Ja4Fingerprint, TlsProfile,
@@ -42,214 +41,13 @@ use masque_core::tun::{
     TunDevice,
 };
 use masque_core::vpn_common::{
-    build_cover_config, padding_schedule_bytes, parse_grease_mode, parse_padding_strategy,
-    preferred_tls13_cipher, setup_shutdown_signal,
+    build_cover_config, parse_grease_mode, preferred_tls13_cipher, setup_shutdown_signal,
 };
 use masque_core::vpn_config::{ConfigAck, VpnConfig};
 use masque_core::vpn_tunnel::{
     channel_to_tun, forward_quic_to_tun, forward_tun_to_quic, tun_to_channel, PacketEncapsulator,
 };
 use vpr_crypto::keys::NoiseKeypair;
-
-#[derive(Parser, Debug)]
-#[command(name = "vpn-client", about = "VPR VPN client with TUN tunnel")]
-struct Args {
-    /// Server address (host:port)
-    #[arg(long, default_value = "127.0.0.1:4433")]
-    server: String,
-
-    /// TLS/QUIC server name
-    #[arg(long, default_value = "localhost")]
-    server_name: String,
-
-    /// TUN device name (empty = kernel assigns)
-    #[arg(long, default_value = "vpr0")]
-    tun_name: String,
-
-    /// Local TUN IP address
-    #[arg(long, default_value = "10.9.0.2")]
-    tun_addr: Ipv4Addr,
-
-    /// TUN netmask
-    #[arg(long, default_value = "255.255.255.0")]
-    tun_netmask: Ipv4Addr,
-
-    /// MTU for TUN device (leave room for encapsulation)
-    #[arg(long, default_value = "1400")]
-    mtu: u16,
-
-    /// Gateway IP for routing (server's TUN address)
-    #[arg(long, default_value = "10.9.0.1")]
-    gateway: Ipv4Addr,
-
-    /// Configure default route through VPN
-    #[arg(long)]
-    set_default_route: bool,
-
-    /// Directory containing Noise keys
-    #[arg(long, default_value = ".")]
-    noise_dir: PathBuf,
-
-    /// Noise key name (will load {name}.noise.key)
-    #[arg(long, default_value = "client")]
-    noise_name: String,
-
-    /// Server's public key file
-    #[arg(long)]
-    server_pub: PathBuf,
-
-    /// Path to custom CA certificate file (PEM format)
-    #[arg(long)]
-    ca_cert: Option<PathBuf>,
-
-    /// Skip TLS certificate verification (INSECURE - NEVER use in production!)
-    ///
-    /// WARNING: This flag disables TLS certificate verification, making the connection
-    /// vulnerable to man-in-the-middle attacks. Only use for development/testing.
-    #[arg(long)]
-    insecure: bool,
-
-    /// Idle timeout in seconds
-    #[arg(long, default_value = "30")]
-    idle_timeout: u64,
-
-    /// Session rekey time limit (seconds)
-    #[arg(long, default_value = "60")]
-    session_rekey_seconds: u64,
-
-    /// Session rekey data limit (bytes)
-    #[arg(long, default_value = "1073741824")]
-    session_rekey_bytes: u64,
-
-    /// Enable DNS leak protection (overwrites /etc/resolv.conf)
-    #[arg(long)]
-    dns_protection: bool,
-
-    /// Custom DNS servers to use with DNS protection (IPv4/IPv6, comma-separated)
-    /// If not specified, uses DNS servers from VPN config
-    #[arg(long, value_delimiter = ',')]
-    dns_servers: Vec<IpAddr>,
-
-    /// TLS fingerprint profile to mimic (chrome, firefox, safari, random)
-    #[arg(long, default_value = "chrome")]
-    tls_profile: String,
-
-    /// Canary TLS profile (chrome|firefox|safari|random|custom)
-    #[arg(long, default_value = "safari")]
-    tls_canary_profile: String,
-
-    /// Percent of connections using canary profile
-    #[arg(long, default_value = "5")]
-    tls_canary_percent: f64,
-
-    /// Seed for canary selection (0 = random)
-    #[arg(long, default_value_t = 0)]
-    tls_canary_seed: u64,
-
-    /// Export JA3/JA3S/JA4 metrics to Prometheus text file
-    #[arg(long)]
-    tls_fp_metrics_path: Option<PathBuf>,
-
-    /// Run tls-fp-sync.py on startup (client side validation)
-    #[arg(long)]
-    tls_fp_sync: bool,
-
-    /// Path to tls-fp-sync log file
-    #[arg(long, default_value = "logs/tls-fp-sync.log")]
-    tls_fp_sync_log: PathBuf,
-
-    /// GREASE mode: random|deterministic
-    #[arg(long, default_value = "random")]
-    tls_grease_mode: String,
-
-    /// GREASE seed when deterministic mode is selected
-    #[arg(long, default_value_t = 0)]
-    tls_grease_seed: u64,
-
-    /// Padding strategy: none|bucket|rand-bucket|mtu
-    #[arg(long, default_value = "rand-bucket")]
-    padding_strategy: String,
-
-    /// Maximum jitter for padded sends (microseconds). 0 disables jitter.
-    #[arg(long, default_value = "5000")]
-    padding_max_jitter_us: u64,
-
-    /// Minimum padded packet size (bytes)
-    #[arg(long, default_value = "32")]
-    padding_min_size: usize,
-
-    /// Override MTU for padding (defaults to TUN MTU)
-    #[arg(long)]
-    padding_mtu: Option<u16>,
-
-    /// Cover traffic base rate (pps)
-    #[arg(long, default_value = "8.0")]
-    cover_traffic_rate: f64,
-
-    /// Cover traffic pattern: https|h3|webrtc|idle
-    #[arg(long, default_value = "https")]
-    cover_traffic_pattern: String,
-
-    /// Enable split tunnel mode (only specified routes through VPN)
-    #[arg(long)]
-    split_tunnel: bool,
-
-    /// Add route (CIDR notation, can be specified multiple times)
-    #[arg(long, value_delimiter = ',')]
-    route: Vec<String>,
-
-    /// Enable policy-based routing
-    #[arg(long)]
-    policy_routing: bool,
-
-    /// Enable IPv6 support
-    #[arg(long)]
-    ipv6: bool,
-
-    /// Repair network configuration after crash (restore DNS, routes, cleanup TUN)
-    #[arg(long)]
-    repair: bool,
-
-    /// Skip automatic network repair on startup (enabled by default)
-    #[arg(long)]
-    no_auto_repair: bool,
-
-    /// Run diagnostics before connecting
-    #[arg(long)]
-    diagnose: bool,
-
-    /// Automatically apply fixes
-    #[arg(long)]
-    auto_fix: bool,
-
-    /// Fix consent level (auto/semi-auto/manual)
-    #[arg(long, default_value = "semi-auto")]
-    fix_consent: String,
-
-    /// Dry run (show what would be fixed without applying)
-    #[arg(long)]
-    dry_run: bool,
-
-    /// SSH host for server diagnostics
-    #[arg(long)]
-    ssh_host: Option<String>,
-
-    /// SSH port
-    #[arg(long, default_value = "22")]
-    ssh_port: u16,
-
-    /// SSH user
-    #[arg(long, default_value = "root")]
-    ssh_user: String,
-
-    /// SSH password (DEPRECATED - use SSH keys for security)
-    #[arg(long)]
-    ssh_password: Option<String>,
-
-    /// SSH private key path (recommended over password)
-    #[arg(long)]
-    ssh_key: Option<PathBuf>,
-}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -285,178 +83,158 @@ async fn main() -> Result<()> {
     }
 
     // Auto-repair: silently restore network from previous crash before starting
-    // This ensures clean slate even if user doesn't know about --repair
     if !args.no_auto_repair {
         match NetworkStateGuard::restore_from_crash() {
-            Ok(true) => {
-                info!("Auto-repaired network configuration from previous crash");
-            }
-            Ok(false) => {
-                // No orphaned state - nothing to do
-            }
-            Err(e) => {
-                warn!(%e, "Auto-repair failed - continuing anyway");
-            }
+            Ok(true) => info!("Auto-repaired network configuration from previous crash"),
+            Ok(false) => {}
+            Err(e) => warn!(%e, "Auto-repair failed - continuing anyway"),
         }
     }
 
     // Run diagnostics if requested
     if args.diagnose || args.auto_fix {
-        use masque_core::diagnostics::{
-            engine::DiagnosticEngine, ssh_client::SshConfig, DiagnosticConfig, FixConsentLevel,
-        };
-
-        info!("Running VPN diagnostics");
-
-        // Parse server address for diagnostics
-        let (server_ip, server_port) = args
-            .server
-            .split_once(':')
-            .ok_or_else(|| anyhow::anyhow!("Invalid server address format"))?;
-        let server_ip: std::net::IpAddr = server_ip.parse()?;
-        let server_port: u16 = server_port.parse()?;
-
-        // Build SSH config if provided (using secure key-based auth only)
-        let ssh_config = if let Some(ssh_host) = args.ssh_host.as_ref() {
-            // Security: Password auth is deprecated, use SSH key or agent
-            if args.ssh_password.is_some() {
-                tracing::warn!("SSH password authentication is deprecated for security reasons. Use --ssh-key instead.");
-            }
-            Some(SshConfig::new(
-                ssh_host,
-                args.ssh_port,
-                &args.ssh_user,
-                args.ssh_key.clone(),
-            )?)
-        } else {
-            None
-        };
-
-        // Build diagnostic config
-        let diag_config = DiagnosticConfig {
-            auto_fix: args.auto_fix,
-            timeout_secs: 10,
-            server_addr: Some((server_ip, server_port)),
-            privileged: unsafe { libc::geteuid() } == 0,
-        };
-
-        // Create diagnostic engine
-        let engine = DiagnosticEngine::new(diag_config, ssh_config);
-
-        // Run diagnostics
-        let context = engine
-            .run_full_diagnostics()
-            .await
-            .context("Failed to run diagnostics")?;
-
-        // Print report
-        println!("\n╔═══════════════════════════════════════╗");
-        println!("║     VPN Diagnostic Report             ║");
-        println!("╚═══════════════════════════════════════╝\n");
-
-        if let Some(client_report) = &context.client_report {
-            println!(
-                "📋 Client-Side Checks ({} total):",
-                client_report.results.len()
-            );
-            for result in &client_report.results {
-                let icon = if result.passed { "✅" } else { "❌" };
-                println!("  {} {}: {}", icon, result.check_name, result.message);
-            }
-            println!();
-        }
-
-        if let Some(server_report) = &context.server_report {
-            println!(
-                "🖥️  Server-Side Checks ({} total):",
-                server_report.results.len()
-            );
-            for result in &server_report.results {
-                let icon = if result.passed { "✅" } else { "❌" };
-                println!("  {} {}: {}", icon, result.check_name, result.message);
-            }
-            println!();
-        }
-
-        if !context.cross_checks.is_empty() {
-            println!("🔄 Cross-Checks ({} total):", context.cross_checks.len());
-            for result in &context.cross_checks {
-                let icon = if result.passed { "✅" } else { "❌" };
-                println!("  {} {}: {}", icon, result.check_name, result.message);
-            }
-            println!();
-        }
-
-        println!("📊 Overall Health: {:?}\n", context.overall_health());
-
-        // Check for critical issues
-        if context.has_critical_issues() {
-            error!("Critical issues detected! Connection may fail.");
-
-            if !args.auto_fix {
-                println!("💡 Tip: Run with --auto-fix to automatically resolve these issues\n");
-                return Err(anyhow::anyhow!("Critical diagnostic failures - aborting"));
-            }
-        }
-
-        // Apply auto-fixes if requested
-        if args.auto_fix && !args.dry_run {
-            let consent_level = match args.fix_consent.as_str() {
-                "auto" => FixConsentLevel::Auto,
-                "semi-auto" => FixConsentLevel::SemiAuto,
-                "manual" => FixConsentLevel::Manual,
-                _ => bail!("Invalid fix-consent level: {}", args.fix_consent),
-            };
-
-            let fixable = context.all_auto_fixable_issues();
-            if fixable.is_empty() {
-                info!("No auto-fixable issues found");
-            } else {
-                println!("🔧 Applying {} auto-fixes...\n", fixable.len());
-
-                let fix_results = engine
-                    .apply_auto_fixes(&context, consent_level)
-                    .await
-                    .context("Auto-fix failed")?;
-
-                for result in fix_results {
-                    match result {
-                        masque_core::diagnostics::fixes::FixResult::Success(msg) => {
-                            println!("  ✅ {}", msg);
-                        }
-                        masque_core::diagnostics::fixes::FixResult::Failed(msg) => {
-                            println!("  ❌ {}", msg);
-                        }
-                        masque_core::diagnostics::fixes::FixResult::Skipped(msg) => {
-                            println!("  ⏭️  {}", msg);
-                        }
-                    }
-                }
-                println!();
-            }
-        } else if args.dry_run {
-            println!("🔍 Dry-run mode: No fixes applied\n");
-        }
-
-        // Exit if diagnostics-only mode (not auto-fix)
+        run_diagnostics(&args).await?;
         if !args.auto_fix && args.diagnose {
-            info!("Diagnostics complete - exiting (use --auto-fix to continue with connection)");
+            info!("Diagnostics complete - exiting");
             return Ok(());
         }
-
         info!("Diagnostics complete - continuing with VPN connection");
     }
 
-    // Setup graceful shutdown handler for SIGTERM/SIGINT
-    // This ensures cleanup runs even when killed with Ctrl+C or systemctl stop
+    // Setup graceful shutdown handler
     let shutdown_signal = setup_shutdown_signal();
 
     run_vpn_client(args, shutdown_signal).await
 }
 
+async fn run_diagnostics(args: &Args) -> Result<()> {
+    use masque_core::diagnostics::{
+        engine::DiagnosticEngine, ssh_client::SshConfig, DiagnosticConfig, FixConsentLevel,
+    };
+
+    info!("Running VPN diagnostics");
+
+    // Parse server address for diagnostics
+    let (server_ip, server_port) = args
+        .server
+        .split_once(':')
+        .ok_or_else(|| anyhow::anyhow!("Invalid server address format"))?;
+    let server_ip: std::net::IpAddr = server_ip.parse()?;
+    let server_port: u16 = server_port.parse()?;
+
+    // Build SSH config if provided
+    let ssh_config = if let Some(ssh_host) = args.ssh_host.as_ref() {
+        if args.ssh_password.is_some() {
+            warn!("SSH password authentication is deprecated. Use --ssh-key instead.");
+        }
+        Some(SshConfig::new(
+            ssh_host,
+            args.ssh_port,
+            &args.ssh_user,
+            args.ssh_key.clone(),
+        )?)
+    } else {
+        None
+    };
+
+    let diag_config = DiagnosticConfig {
+        auto_fix: args.auto_fix,
+        timeout_secs: 10,
+        server_addr: Some((server_ip, server_port)),
+        privileged: unsafe { libc::geteuid() } == 0,
+    };
+
+    let engine = DiagnosticEngine::new(diag_config, ssh_config);
+    let context = engine.run_full_diagnostics().await?;
+
+    // Print report
+    println!("\n╔═══════════════════════════════════════╗");
+    println!("║     VPN Diagnostic Report             ║");
+    println!("╚═══════════════════════════════════════╝\n");
+
+    if let Some(client_report) = &context.client_report {
+        println!(
+            "📋 Client-Side Checks ({} total):",
+            client_report.results.len()
+        );
+        for result in &client_report.results {
+            let icon = if result.passed { "✅" } else { "❌" };
+            println!("  {} {}: {}", icon, result.check_name, result.message);
+        }
+        println!();
+    }
+
+    if let Some(server_report) = &context.server_report {
+        println!(
+            "🖥️  Server-Side Checks ({} total):",
+            server_report.results.len()
+        );
+        for result in &server_report.results {
+            let icon = if result.passed { "✅" } else { "❌" };
+            println!("  {} {}: {}", icon, result.check_name, result.message);
+        }
+        println!();
+    }
+
+    if !context.cross_checks.is_empty() {
+        println!("🔄 Cross-Checks ({} total):", context.cross_checks.len());
+        for result in &context.cross_checks {
+            let icon = if result.passed { "✅" } else { "❌" };
+            println!("  {} {}: {}", icon, result.check_name, result.message);
+        }
+        println!();
+    }
+
+    println!("📊 Overall Health: {:?}\n", context.overall_health());
+
+    // Check for critical issues
+    if context.has_critical_issues() {
+        error!("Critical issues detected! Connection may fail.");
+        if !args.auto_fix {
+            println!("💡 Tip: Run with --auto-fix to automatically resolve these issues\n");
+            return Err(anyhow::anyhow!("Critical diagnostic failures - aborting"));
+        }
+    }
+
+    // Apply auto-fixes if requested
+    if args.auto_fix && !args.dry_run {
+        let consent_level = match args.fix_consent.as_str() {
+            "auto" => FixConsentLevel::Auto,
+            "semi-auto" => FixConsentLevel::SemiAuto,
+            "manual" => FixConsentLevel::Manual,
+            _ => bail!("Invalid fix-consent level: {}", args.fix_consent),
+        };
+
+        let fixable = context.all_auto_fixable_issues();
+        if fixable.is_empty() {
+            info!("No auto-fixable issues found");
+        } else {
+            println!("🔧 Applying {} auto-fixes...\n", fixable.len());
+            let fix_results = engine.apply_auto_fixes(&context, consent_level).await?;
+            for result in fix_results {
+                match result {
+                    masque_core::diagnostics::fixes::FixResult::Success(msg) => {
+                        println!("  ✅ {}", msg);
+                    }
+                    masque_core::diagnostics::fixes::FixResult::Failed(msg) => {
+                        println!("  ❌ {}", msg);
+                    }
+                    masque_core::diagnostics::fixes::FixResult::Skipped(msg) => {
+                        println!("  ⏭️  {}", msg);
+                    }
+                }
+            }
+            println!();
+        }
+    } else if args.dry_run {
+        println!("🔍 Dry-run mode: No fixes applied\n");
+    }
+
+    Ok(())
+}
+
 async fn run_vpn_client(args: Args, shutdown_signal: oneshot::Receiver<()>) -> Result<()> {
-    // SECURITY WARNING: --insecure flag disables TLS certificate verification
-    // This should NEVER be used in production as it makes the connection vulnerable to MITM attacks
+    // SECURITY WARNING: --insecure flag
     if args.insecure {
         error!("╔═══════════════════════════════════════════════════════════════════╗");
         error!("║  SECURITY WARNING: TLS CERTIFICATE VERIFICATION IS DISABLED!     ║");
@@ -464,7 +242,6 @@ async fn run_vpn_client(args: Args, shutdown_signal: oneshot::Receiver<()>) -> R
         error!("║  attacks. Your traffic can be intercepted and modified.          ║");
         error!("╚═══════════════════════════════════════════════════════════════════╝");
 
-        // In release builds, require explicit opt-in via environment variable
         #[cfg(not(debug_assertions))]
         {
             let allow_insecure = std::env::var("VPR_ALLOW_INSECURE")
@@ -472,78 +249,39 @@ async fn run_vpn_client(args: Args, shutdown_signal: oneshot::Receiver<()>) -> R
                 .unwrap_or(false);
 
             if !allow_insecure {
-                anyhow::bail!(
+                bail!(
                     "Insecure mode is disabled in release builds for security.\n\
                      If you understand the risks and need this for testing, set:\n\
                      VPR_ALLOW_INSECURE=1"
                 );
             }
-            warn!(
-                "VPR_ALLOW_INSECURE=1 is set. Proceeding with disabled certificate verification."
-            );
+            warn!("VPR_ALLOW_INSECURE=1 is set. Proceeding with disabled certificate verification.");
         }
     }
 
-    info!(
-        server = %args.server,
-        tun_name = %args.tun_name,
-        insecure = args.insecure,
-        "Starting VPR VPN client"
-    );
+    info!(server = %args.server, tun_name = %args.tun_name, insecure = args.insecure, "Starting VPR VPN client");
 
     // Load Noise keys for hybrid PQ handshake
-    let client_keypair = NoiseKeypair::load(&args.noise_dir, &args.noise_name)
-        .context("loading client Noise keypair")?;
-
-    let server_pub = std::fs::read(&args.server_pub)
-        .with_context(|| format!("reading server pubkey {:?}", args.server_pub))?;
-
-    // Parse server address
-    let server_addr: SocketAddr = args
-        .server
-        .parse()
-        .with_context(|| format!("parsing server address: {}", args.server))?;
+    let client_keypair = NoiseKeypair::load(&args.noise_dir, &args.noise_name)?;
+    let server_pub = std::fs::read(&args.server_pub)?;
+    let server_addr: SocketAddr = args.server.parse()?;
 
     // Parse TLS profiles (main + canary)
-    let main_profile: TlsProfile = args.tls_profile.parse().unwrap_or_else(|_| {
-        tracing::warn!(profile = %args.tls_profile, "Unknown TLS profile, using Chrome");
-        TlsProfile::Chrome
-    });
+    let main_profile: TlsProfile = args.tls_profile.parse().unwrap_or(TlsProfile::Chrome);
     let canary_profile = args
         .tls_canary_profile
         .parse()
         .ok()
         .filter(|p: &TlsProfile| !matches!(p, TlsProfile::Custom));
 
+    // Run tls-fp-sync.py if requested
     if args.tls_fp_sync {
-        let log_path = &args.tls_fp_sync_log;
-        let stdout = File::options().append(true).create(true).open(log_path);
-        let stderr = File::options().append(true).create(true).open(log_path);
-        match (stdout, stderr) {
-            (Ok(out), Ok(err)) => {
-                let status = Command::new("python")
-                    .arg("scripts/tls-fp-sync.py")
-                    .arg("--validate-only")
-                    .stdout(out)
-                    .stderr(err)
-                    .status();
-                match status {
-                    Ok(s) if s.success() => {
-                        tracing::info!(?log_path, "tls-fp-sync validate-only succeeded (client)")
-                    }
-                    Ok(s) => {
-                        tracing::warn!(?log_path, code=?s.code(), "tls-fp-sync failed, using existing profiles")
-                    }
-                    Err(e) => tracing::warn!(?e, ?log_path, "Failed to run tls-fp-sync"),
-                }
-            }
-            _ => tracing::warn!(?log_path, "Could not open tls-fp-sync log file"),
-        }
+        run_tls_fp_sync(&args);
     }
+
     let grease_mode = parse_grease_mode(&args.tls_grease_mode, args.tls_grease_seed);
 
-    // Suspicion-aware TLS selection: if server reports suspicion >=35, disable canary
-    // (config obtained later; before handshake default to 0)
+    // Suspicion-aware TLS selection
     let server_suspicion = 0.0;
     let effective_canary = if server_suspicion >= 35.0 {
         0.0
@@ -557,50 +295,8 @@ async fn run_vpn_client(args: Args, shutdown_signal: oneshot::Receiver<()>) -> R
         Some(args.tls_canary_seed).filter(|s| *s != 0),
     );
 
-    // Log JA3/JA3S/JA4 fingerprints for debugging
-    let ja3 = Ja3Fingerprint::from_profile_with_grease(&tls_profile, grease_mode);
-    let ja3s = Ja3sFingerprint::from_profile_with_grease(
-        &tls_profile,
-        preferred_tls13_cipher(&tls_profile),
-        grease_mode,
-    );
-    let ja4 = Ja4Fingerprint::from_profile(&tls_profile);
-    if let Some(path) = &args.tls_fp_metrics_path {
-        let content = format!(
-            "# HELP tls_fp_info TLS fingerprint JA3/JA3S/JA4 (client)\n\
-             # TYPE tls_fp_info gauge\n\
-             tls_fp_info{{role=\"client\",bucket=\"{}\",type=\"ja3\",hash=\"{}\"}} 1\n\
-             tls_fp_info{{role=\"client\",bucket=\"{}\",type=\"ja3s\",hash=\"{}\"}} 1\n\
-             tls_fp_info{{role=\"client\",bucket=\"{}\",type=\"ja4\",hash=\"{}\"}} 1\n",
-            match tls_bucket {
-                TlsProfileBucket::Main => "main",
-                TlsProfileBucket::Canary => "canary",
-            },
-            ja3.to_ja3_hash(),
-            match tls_bucket {
-                TlsProfileBucket::Main => "main",
-                TlsProfileBucket::Canary => "canary",
-            },
-            ja3s.to_ja3s_hash(),
-            match tls_bucket {
-                TlsProfileBucket::Main => "main",
-                TlsProfileBucket::Canary => "canary",
-            },
-            ja4.to_hash()
-        );
-        if let Err(e) = fs::write(path, content.as_bytes()) {
-            tracing::warn!(?e, ?path, "Failed to write client tls_fp metrics");
-        }
-    }
-    info!(
-        profile = %tls_profile,
-        bucket = ?tls_bucket,
-        grease = ?grease_mode,
-        ja3_hash = %ja3.to_ja3_hash(),
-        ja3s_hash = %ja3s.to_ja3s_hash(),
-        ja4 = %ja4.to_string(),
-        "TLS fingerprint configured"
-    );
+    // Log JA3/JA3S/JA4 fingerprints
+    log_tls_fingerprints(&args, &tls_profile, tls_bucket, grease_mode);
 
     // Build QUIC client config
     let quic_config = build_quic_config(
@@ -610,7 +306,7 @@ async fn run_vpn_client(args: Args, shutdown_signal: oneshot::Receiver<()>) -> R
         args.ca_cert.clone(),
     )?;
 
-    // Padding config for probe challenge (uses CLI defaults before server config arrives)
+    // Padding config for probe challenge
     let challenge_padder = Arc::new(build_padder_cli(&args, args.mtu));
 
     // Bind local endpoint
@@ -619,16 +315,12 @@ async fn run_vpn_client(args: Args, shutdown_signal: oneshot::Receiver<()>) -> R
 
     // Connect to server
     info!(server = %server_addr, "Connecting to VPN server...");
-
     let connection = endpoint
         .connect(server_addr, &args.server_name)?
         .await
         .context("QUIC connection failed")?;
 
-    info!(
-        remote = %connection.remote_address(),
-        "QUIC connection established"
-    );
+    info!(remote = %connection.remote_address(), "QUIC connection established");
 
     // Perform hybrid PQ Noise handshake
     let server_pub_bytes: [u8; 32] = server_pub
@@ -639,20 +331,11 @@ async fn run_vpn_client(args: Args, shutdown_signal: oneshot::Receiver<()>) -> R
     let hybrid_client = HybridClient::new_ik(&client_keypair.secret_bytes(), &server_pub_bytes);
 
     // Open bidirectional stream for handshake and config
-    let (send, recv) = connection
-        .open_bi()
-        .await
-        .context("opening bidirectional stream")?;
-
+    let (send, recv) = connection.open_bi().await?;
     let mut stream = QuicBiStream::new(send, recv);
 
-    // QUIC streams require writing before peer is notified of stream opening.
-    // Send protocol version byte to trigger server's accept_bi().
-    const VPR_PROTOCOL_VERSION: u8 = 0x01;
-    stream
-        .write_all(&[VPR_PROTOCOL_VERSION])
-        .await
-        .context("sending protocol init")?;
+    // Send protocol version byte
+    stream.write_all(&[VPR_PROTOCOL_VERSION]).await?;
     stream.flush().await.ok();
 
     // Handle probe challenge before Noise handshake
@@ -669,11 +352,8 @@ async fn run_vpn_client(args: Args, shutdown_signal: oneshot::Receiver<()>) -> R
     );
 
     // Receive VPN configuration from server
-    let vpn_config = VpnConfig::recv(&mut stream)
-        .await
-        .context("receiving VPN config")?;
+    let vpn_config = VpnConfig::recv(&mut stream).await?;
 
-    // Suspicion snapshot from server (used for TLS/padding adaptation)
     if let Some(score) = vpn_config.suspicion_score {
         info!(suspicion = %score, "Received suspicion score from server");
     }
@@ -685,6 +365,7 @@ async fn run_vpn_client(args: Args, shutdown_signal: oneshot::Receiver<()>) -> R
         "Received VPN configuration"
     );
 
+    // Setup key rotation
     let session_limits = SessionKeyLimits {
         time_limit: Duration::from_secs(
             vpn_config
@@ -720,40 +401,170 @@ async fn run_vpn_client(args: Args, shutdown_signal: oneshot::Receiver<()>) -> R
         prefix_len_v6: None,
     };
 
-    let tun = TunDevice::create(tun_config)
-        .await
-        .context("creating TUN device")?;
-
-    info!(
-        name = %tun.name(),
-        addr = %vpn_config.client_ip,
-        "TUN device created with server-assigned IP"
-    );
+    let tun = TunDevice::create(tun_config).await?;
+    info!(name = %tun.name(), addr = %vpn_config.client_ip, "TUN device created with server-assigned IP");
 
     // Send acknowledgment to server
-    ConfigAck::ok()
-        .send(&mut stream)
-        .await
-        .context("sending config ack")?;
-
+    ConfigAck::ok().send(&mut stream).await?;
     info!("Config acknowledged, starting VPN tunnel");
 
-    // Routing state for cleanup
-    let mut routing_state = RoutingState::new();
-
     // Create network state guard for crash recovery
-    // This persists network changes to disk so they can be undone after crash/kill -9
-    let mut network_guard = NetworkStateGuard::new().context("initializing network state guard")?;
+    let mut network_guard = NetworkStateGuard::new()?;
+    network_guard.record_tun_created(tun.name().to_string())?;
 
-    // Record TUN creation
-    network_guard
-        .record_tun_created(tun.name().to_string())
-        .context("recording TUN creation")?;
+    // Setup routing
+    let mut routing_state = RoutingState::new();
+    setup_client_routing(
+        &args,
+        &vpn_config,
+        &tun,
+        server_addr.ip(),
+        &mut routing_state,
+        &mut network_guard,
+    )?;
 
-    // Determine routing policy from config or CLI
+    // Setup DNS protection
+    let mut dns_protection = DnsProtection::new();
+    setup_dns_protection(&args, &vpn_config, &mut dns_protection, &mut network_guard)?;
+
+    let padder = Arc::new(build_padder_from_config(&args, &vpn_config));
+    let cover_config = build_cover_config(
+        args.cover_traffic_rate,
+        &args.cover_traffic_pattern,
+        vpn_config.mtu as usize,
+    );
+
+    // Store info for cleanup
+    let tun_name = tun.name().to_string();
+    let gateway = vpn_config.gateway;
+    let routing_configured = args.set_default_route;
+    let routing_config = vpn_config.routing_config.as_ref();
+    let use_split_tunnel = args.split_tunnel
+        || routing_config
+            .map(|c| c.policy == RoutingPolicy::Split)
+            .unwrap_or(false);
+    let server_ip_for_cleanup = server_addr.ip();
+
+    // Start VPN tunnel with shutdown signal support
+    let result = tokio::select! {
+        result = run_vpn_tunnel(tun, connection, padder, cover_config, session_state.clone()) => result,
+        _ = shutdown_signal => {
+            info!("Shutdown signal received - stopping VPN tunnel");
+            Ok(())
+        }
+    };
+
+    // Cleanup
+    cleanup_routing(
+        use_split_tunnel,
+        routing_configured,
+        &tun_name,
+        gateway,
+        server_ip_for_cleanup,
+        &mut routing_state,
+    );
+
+    if dns_protection.is_active() {
+        if let Err(e) = dns_protection.disable() {
+            error!(%e, "Failed to restore DNS configuration");
+        } else {
+            info!("DNS protection disabled, original config restored");
+        }
+    }
+
+    if let Err(e) = network_guard.cleanup() {
+        error!(%e, "Network cleanup failed - run 'vpn-client --repair' to fix");
+    }
+
+    let _ = rotation_shutdown_tx.send(());
+    let _ = rotation_task.await;
+
+    result
+}
+
+fn run_tls_fp_sync(args: &Args) {
+    let log_path = &args.tls_fp_sync_log;
+    let stdout = File::options().append(true).create(true).open(log_path);
+    let stderr = File::options().append(true).create(true).open(log_path);
+    if let (Ok(out), Ok(err)) = (stdout, stderr) {
+        let status = Command::new("python")
+            .arg("scripts/tls-fp-sync.py")
+            .arg("--validate-only")
+            .stdout(out)
+            .stderr(err)
+            .status();
+        match status {
+            Ok(s) if s.success() => {
+                tracing::info!(?log_path, "tls-fp-sync validate-only succeeded (client)")
+            }
+            Ok(s) => {
+                tracing::warn!(?log_path, code=?s.code(), "tls-fp-sync failed, using existing profiles")
+            }
+            Err(e) => tracing::warn!(?e, ?log_path, "Failed to run tls-fp-sync"),
+        }
+    } else {
+        tracing::warn!(?log_path, "Could not open tls-fp-sync log file");
+    }
+}
+
+fn log_tls_fingerprints(
+    args: &Args,
+    tls_profile: &TlsProfile,
+    tls_bucket: TlsProfileBucket,
+    grease_mode: masque_core::tls_fingerprint::GreaseMode,
+) {
+    let ja3 = Ja3Fingerprint::from_profile_with_grease(tls_profile, grease_mode);
+    let ja3s = Ja3sFingerprint::from_profile_with_grease(
+        tls_profile,
+        preferred_tls13_cipher(tls_profile),
+        grease_mode,
+    );
+    let ja4 = Ja4Fingerprint::from_profile(tls_profile);
+
+    if let Some(path) = &args.tls_fp_metrics_path {
+        let bucket_str = match tls_bucket {
+            TlsProfileBucket::Main => "main",
+            TlsProfileBucket::Canary => "canary",
+        };
+        let content = format!(
+            "# HELP tls_fp_info TLS fingerprint JA3/JA3S/JA4 (client)\n\
+             # TYPE tls_fp_info gauge\n\
+             tls_fp_info{{role=\"client\",bucket=\"{}\",type=\"ja3\",hash=\"{}\"}} 1\n\
+             tls_fp_info{{role=\"client\",bucket=\"{}\",type=\"ja3s\",hash=\"{}\"}} 1\n\
+             tls_fp_info{{role=\"client\",bucket=\"{}\",type=\"ja4\",hash=\"{}\"}} 1\n",
+            bucket_str,
+            ja3.to_ja3_hash(),
+            bucket_str,
+            ja3s.to_ja3s_hash(),
+            bucket_str,
+            ja4.to_hash()
+        );
+        if let Err(e) = fs::write(path, content.as_bytes()) {
+            tracing::warn!(?e, ?path, "Failed to write client tls_fp metrics");
+        }
+    }
+
+    info!(
+        profile = %tls_profile,
+        bucket = ?tls_bucket,
+        grease = ?grease_mode,
+        ja3_hash = %ja3.to_ja3_hash(),
+        ja3s_hash = %ja3s.to_ja3s_hash(),
+        ja4 = %ja4.to_string(),
+        "TLS fingerprint configured"
+    );
+}
+
+fn setup_client_routing(
+    args: &Args,
+    vpn_config: &VpnConfig,
+    tun: &TunDevice,
+    server_ip: IpAddr,
+    routing_state: &mut RoutingState,
+    network_guard: &mut NetworkStateGuard,
+) -> Result<()> {
     let routing_config = vpn_config.routing_config.as_ref();
 
-    // Validate routing config if present
     if let Some(config) = routing_config {
         if let Err(e) = config.validate() {
             warn!(%e, "Invalid routing config from server, using defaults");
@@ -768,152 +579,163 @@ async fn run_vpn_client(args: Args, shutdown_signal: oneshot::Receiver<()>) -> R
         RoutingPolicy::Full
     };
 
-    // Configure routing based on policy
     match policy {
         RoutingPolicy::Full => {
             if args.set_default_route {
-                // Pass server IP to setup_routing to add host route (prevents routing loop)
-                let _original_gateway = setup_routing(tun.name(), vpn_config.gateway, server_addr.ip())
-                    .context("setting up routing")?;
-                // Record default route change for crash recovery
-                network_guard
-                    .record_default_route(tun.name().to_string(), None, None)
-                    .context("recording default route")?;
+                let _original_gateway = setup_routing(tun.name(), vpn_config.gateway, server_ip)?;
+                network_guard.record_default_route(tun.name().to_string(), None, None)?;
             }
         }
         RoutingPolicy::Split => {
-            // Parse routes from CLI or config
-            let routes: Vec<RouteRule> = if !args.route.is_empty() {
-                args.route
-                    .iter()
-                    .filter_map(|r| {
-                        IpNetwork::from_str(r).ok().map(|net| RouteRule {
-                            destination: net,
-                            gateway: Some(IpAddr::V4(vpn_config.gateway)),
-                            metric: 0,
-                            table: None,
-                        })
-                    })
-                    .collect()
-            } else if let Some(config) = routing_config {
-                config.routes.clone()
-            } else {
-                vec![]
-            };
-
+            let routes = parse_routes(args, routing_config, vpn_config.gateway);
             if !routes.is_empty() {
                 setup_split_tunnel(
                     tun.name(),
                     IpAddr::V4(vpn_config.gateway),
                     &routes,
-                    &mut routing_state,
-                )
-                .with_context(|| format!("setting up split tunnel with {} routes", routes.len()))?;
-                // Record split tunnel routes for crash recovery
+                    routing_state,
+                )?;
                 let route_cidrs: Vec<String> =
                     routes.iter().map(|r| r.destination.to_string()).collect();
-                network_guard
-                    .record_split_routes(tun.name().to_string(), route_cidrs)
-                    .context("recording split tunnel routes")?;
+                network_guard.record_split_routes(tun.name().to_string(), route_cidrs)?;
             } else {
-                warn!("Split tunnel enabled but no routes specified - VPN may not route traffic correctly");
+                warn!("Split tunnel enabled but no routes specified");
             }
         }
         RoutingPolicy::Bypass => {
-            // Bypass tunnel - routes bypass VPN (not implemented in this version)
             warn!("Bypass tunnel policy not fully implemented");
         }
     }
 
     // Policy-based routing
     if args.policy_routing {
-        let routes: Vec<RouteRule> = if !args.route.is_empty() {
-            args.route
-                .iter()
-                .filter_map(|r| {
-                    IpNetwork::from_str(r).ok().map(|net| RouteRule {
-                        destination: net,
-                        gateway: Some(IpAddr::V4(vpn_config.gateway)),
-                        metric: 0,
-                        table: Some(100), // Custom table
-                    })
-                })
-                .collect()
-        } else if let Some(config) = routing_config {
-            config.routes.clone()
-        } else {
-            vec![]
-        };
-
+        let routes = parse_routes_with_table(args, routing_config, vpn_config.gateway, 100);
         if !routes.is_empty() {
             setup_policy_routing(
                 tun.name(),
                 IpAddr::V4(vpn_config.gateway),
                 &routes,
-                &mut routing_state,
-            )
-            .with_context(|| format!("setting up policy routing with {} routes", routes.len()))?;
-        } else {
-            warn!("Policy routing enabled but no routes specified");
+                routing_state,
+            )?;
         }
     }
 
     // IPv6 support
     if args.ipv6 || routing_config.map(|c| c.ipv6_enabled).unwrap_or(false) {
-        if let Some(gateway_v6) = vpn_config.routing_config.as_ref().and_then(|c| {
-            // Try to extract IPv6 gateway from routes
-            c.routes.iter().find_map(|r| {
-                if let IpNetwork::V6(_) = r.destination {
-                    r.gateway.and_then(|gw| {
-                        if let IpAddr::V6(gw_v6) = gw {
-                            Some(gw_v6)
-                        } else {
-                            None
-                        }
-                    })
-                } else {
-                    None
-                }
-            })
-        }) {
-            let routes: Vec<RouteRule> = routing_config
-                .map(|c| {
-                    c.routes
-                        .iter()
-                        .filter(|r| matches!(r.destination, IpNetwork::V6(_)))
-                        .cloned()
-                        .collect()
-                })
-                .unwrap_or_default();
-
-            if !routes.is_empty() {
-                setup_ipv6_routing(tun.name(), gateway_v6, &routes, &mut routing_state)
-                    .with_context(|| {
-                        format!(
-                            "setting up IPv6 routing with {} routes, gateway {}",
-                            routes.len(),
-                            gateway_v6
-                        )
-                    })?;
-            } else {
-                warn!("IPv6 enabled but no IPv6 routes configured");
-            }
-        } else {
-            warn!("IPv6 enabled but no IPv6 gateway configured - IPv6 routing will not work");
-        }
+        setup_ipv6_if_available(args, vpn_config, tun, routing_state)?;
     }
 
-    // Enable DNS leak protection
-    // Priority: CLI args > RoutingConfig > VpnConfig
-    let mut dns_protection = DnsProtection::new();
+    Ok(())
+}
+
+fn parse_routes(
+    args: &Args,
+    routing_config: Option<&masque_core::tun::RoutingConfig>,
+    gateway: std::net::Ipv4Addr,
+) -> Vec<RouteRule> {
+    if !args.route.is_empty() {
+        args.route
+            .iter()
+            .filter_map(|r| {
+                IpNetwork::from_str(r).ok().map(|net| RouteRule {
+                    destination: net,
+                    gateway: Some(IpAddr::V4(gateway)),
+                    metric: 0,
+                    table: None,
+                })
+            })
+            .collect()
+    } else if let Some(config) = routing_config {
+        config.routes.clone()
+    } else {
+        vec![]
+    }
+}
+
+fn parse_routes_with_table(
+    args: &Args,
+    routing_config: Option<&masque_core::tun::RoutingConfig>,
+    gateway: std::net::Ipv4Addr,
+    table: u32,
+) -> Vec<RouteRule> {
+    if !args.route.is_empty() {
+        args.route
+            .iter()
+            .filter_map(|r| {
+                IpNetwork::from_str(r).ok().map(|net| RouteRule {
+                    destination: net,
+                    gateway: Some(IpAddr::V4(gateway)),
+                    metric: 0,
+                    table: Some(table),
+                })
+            })
+            .collect()
+    } else if let Some(config) = routing_config {
+        config.routes.clone()
+    } else {
+        vec![]
+    }
+}
+
+fn setup_ipv6_if_available(
+    _args: &Args,
+    vpn_config: &VpnConfig,
+    tun: &TunDevice,
+    routing_state: &mut RoutingState,
+) -> Result<()> {
+    let routing_config = vpn_config.routing_config.as_ref();
+
+    if let Some(gateway_v6) = routing_config.and_then(|c| {
+        c.routes.iter().find_map(|r| {
+            if let IpNetwork::V6(_) = r.destination {
+                r.gateway.and_then(|gw| {
+                    if let IpAddr::V6(gw_v6) = gw {
+                        Some(gw_v6)
+                    } else {
+                        None
+                    }
+                })
+            } else {
+                None
+            }
+        })
+    }) {
+        let routes: Vec<RouteRule> = routing_config
+            .map(|c| {
+                c.routes
+                    .iter()
+                    .filter(|r| matches!(r.destination, IpNetwork::V6(_)))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        if !routes.is_empty() {
+            setup_ipv6_routing(tun.name(), gateway_v6, &routes, routing_state)?;
+        } else {
+            warn!("IPv6 enabled but no IPv6 routes configured");
+        }
+    } else {
+        warn!("IPv6 enabled but no IPv6 gateway configured");
+    }
+
+    Ok(())
+}
+
+fn setup_dns_protection(
+    args: &Args,
+    vpn_config: &VpnConfig,
+    dns_protection: &mut DnsProtection,
+    network_guard: &mut NetworkStateGuard,
+) -> Result<()> {
+    let routing_config = vpn_config.routing_config.as_ref();
+
     let should_enable_dns = args.dns_protection
         || routing_config
-            .as_ref()
             .map(|c| !c.dns_servers.is_empty())
             .unwrap_or(false);
 
     if should_enable_dns {
-        // Determine DNS servers with priority: CLI > RoutingConfig > VpnConfig
         let dns_servers = if !args.dns_servers.is_empty() {
             &args.dns_servers
         } else if let Some(routing_cfg) = routing_config {
@@ -927,104 +749,38 @@ async fn run_vpn_client(args: Args, shutdown_signal: oneshot::Receiver<()>) -> R
         };
 
         if !dns_servers.is_empty() {
-            dns_protection.enable(dns_servers).with_context(|| {
-                format!(
-                    "enabling DNS protection with {} servers: {:?}",
-                    dns_servers.len(),
-                    dns_servers
-                )
-            })?;
-            // Record DNS change for crash recovery
-            network_guard
-                .record_dns_change(masque_core::tun::get_dns_backup_path())
-                .context("recording DNS change")?;
-            info!(
-                dns_count = dns_servers.len(),
-                dns_servers = ?dns_servers,
-                "DNS leak protection enabled"
-            );
+            dns_protection.enable(dns_servers)?;
+            network_guard.record_dns_change(masque_core::tun::get_dns_backup_path())?;
+            info!(dns_count = dns_servers.len(), ?dns_servers, "DNS leak protection enabled");
         } else {
-            warn!("DNS protection requested but no DNS servers available - DNS queries may leak");
+            warn!("DNS protection requested but no DNS servers available");
         }
     }
 
-    let padder = Arc::new(build_padder_from_config(&args, &vpn_config));
+    Ok(())
+}
 
-    let cover_config = build_cover_config(
-        args.cover_traffic_rate,
-        &args.cover_traffic_pattern,
-        vpn_config.mtu as usize,
-    );
-
-    // Сохранить информацию о маршрутизации для восстановления
-    let tun_name = tun.name().to_string();
-    let gateway = vpn_config.gateway;
-    let routing_configured = args.set_default_route;
-    let use_split_tunnel = policy == RoutingPolicy::Split;
-    let server_ip_for_cleanup = server_addr.ip();
-
-    // Start VPN tunnel with shutdown signal support
-    // If signal is received, tunnel exits gracefully allowing cleanup to run
-    let result = tokio::select! {
-        result = run_vpn_tunnel(tun, connection, padder, cover_config, session_state.clone()) => {
-            result
-        }
-        _ = shutdown_signal => {
-            info!("Shutdown signal received - stopping VPN tunnel");
-            Ok(())
-        }
-    };
-
-    // Восстановить маршрутизацию при выходе
+fn cleanup_routing(
+    use_split_tunnel: bool,
+    routing_configured: bool,
+    tun_name: &str,
+    gateway: std::net::Ipv4Addr,
+    server_ip: IpAddr,
+    routing_state: &mut RoutingState,
+) {
     if use_split_tunnel {
-        if let Err(e) = restore_split_tunnel(&mut routing_state) {
-            tracing::error!(
-                %e,
-                route_count = routing_state.route_count(),
-                "Failed to restore split tunnel routes - manual cleanup may be required"
-            );
+        if let Err(e) = restore_split_tunnel(routing_state) {
+            error!(%e, route_count = routing_state.route_count(), "Failed to restore split tunnel routes");
         } else {
             info!("Split tunnel routes restored successfully");
         }
     } else if routing_configured {
-        // Pass server IP to remove the host route as well
-        if let Err(e) = restore_routing(&tun_name, gateway, Some(server_ip_for_cleanup)) {
-            tracing::error!(
-                %e,
-                tun = %tun_name,
-                gateway = %gateway,
-                "Failed to restore routing - manual cleanup may be required"
-            );
+        if let Err(e) = restore_routing(tun_name, gateway, Some(server_ip)) {
+            error!(%e, tun = %tun_name, gateway = %gateway, "Failed to restore routing");
         } else {
             info!(tun = %tun_name, "Routing restored successfully");
         }
     }
-
-    // Explicitly disable DNS protection on exit
-    if dns_protection.is_active() {
-        if let Err(e) = dns_protection.disable() {
-            tracing::error!(
-                %e,
-                "Failed to restore DNS configuration - manual cleanup may be required"
-            );
-        } else {
-            info!("DNS protection disabled, original config restored");
-        }
-    }
-
-    // Cleanup network state (removes state file on success)
-    // This is also called automatically via Drop trait, but explicit is better
-    if let Err(e) = network_guard.cleanup() {
-        tracing::error!(
-            %e,
-            "Network cleanup failed - run 'vpn-client --repair' to fix"
-        );
-    }
-
-    let _ = rotation_shutdown_tx.send(());
-    let _ = rotation_task.await;
-
-    result
 }
 
 async fn run_vpn_tunnel(
@@ -1034,21 +790,14 @@ async fn run_vpn_tunnel(
     cover_config: CoverTrafficConfig,
     session_state: Arc<SessionKeyState>,
 ) -> Result<()> {
-    // Split TUN device into reader and writer
     let (tun_reader, tun_writer) = tun.split();
 
-    // Create channels for packet flow
-    // TUN -> QUIC channel
     let (tun_tx, tun_rx) = mpsc::channel::<bytes::Bytes>(1024);
-    // QUIC -> TUN channel
     let (quic_tx, quic_rx) = mpsc::channel::<bytes::Bytes>(1024);
 
     let encapsulator = Arc::new(PacketEncapsulator::new());
-
-    // Create traffic monitor for tracking real traffic patterns
     let traffic_monitor = Arc::new(masque_core::traffic_monitor::TrafficMonitor::new());
 
-    // Spawn tasks for bidirectional forwarding + cover traffic
     let conn_clone = connection.clone();
     let encap_clone = encapsulator.clone();
     let tracker_tx = session_state.clone();
@@ -1058,7 +807,7 @@ async fn run_vpn_tunnel(
         cover_config,
     )));
 
-    // Spawn task to update cover traffic generator with real traffic rate
+    // Spawn traffic monitor update task
     let traffic_monitor_for_cover = traffic_monitor.clone();
     let cover_gen_for_update = cover_gen.clone();
     tokio::spawn(async move {
@@ -1081,12 +830,9 @@ async fn run_vpn_tunnel(
         }
     });
 
-    // Create DPI feedback controller (optional, for adaptive traffic shaping)
-    // For now, we'll create it but not use suspicion tracking on client side
-    // In the future, this can be updated from server's suspicion score
     let dpi_feedback = Arc::new(masque_core::dpi_feedback::DpiFeedbackController::new());
 
-    // Channel -> QUIC datagrams (real traffic)
+    // Channel -> QUIC datagrams
     let pad_clone = padder.clone();
     let dpi_feedback_clone = dpi_feedback.clone();
     let traffic_monitor_tx = traffic_monitor.clone();
@@ -1131,7 +877,7 @@ async fn run_vpn_tunnel(
         }
     });
 
-    // Cover traffic task (client side) — sends through same QUIC connection
+    // Cover traffic task
     let cover_conn = connection.clone();
     let tracker_cover = session_state.clone();
     let cover_gen_for_task = cover_gen.clone();
@@ -1166,333 +912,37 @@ async fn run_vpn_tunnel(
 
     info!("VPN tunnel running. Press Ctrl+C to stop.");
 
-    // Wait for any task to complete (usually means connection lost)
+    // Wait for any task to complete
     #[cfg(unix)]
     {
         use tokio::signal::unix::{signal, SignalKind};
-        let mut sigterm =
-            signal(SignalKind::terminate()).context("failed to install SIGTERM handler")?;
-        let mut sigint =
-            signal(SignalKind::interrupt()).context("failed to install SIGINT handler")?;
+        let mut sigterm = signal(SignalKind::terminate())?;
+        let mut sigint = signal(SignalKind::interrupt())?;
 
         tokio::select! {
-            result = tun_read_task => {
-                info!("TUN reader stopped: {:?}", result);
-            }
-            result = tun_to_quic_task => {
-                info!("TUN->QUIC forwarder stopped: {:?}", result);
-            }
-            result = quic_to_channel_task => {
-                info!("QUIC->TUN forwarder stopped: {:?}", result);
-            }
-            result = tun_write_task => {
-                info!("TUN writer stopped: {:?}", result);
-            }
-            result = cover_task => {
-                info!("Cover traffic task stopped: {:?}", result);
-            }
-            _ = tokio::signal::ctrl_c() => {
-                info!("Ctrl+C received, shutting down gracefully");
-            }
-            _ = sigterm.recv() => {
-                info!("SIGTERM received, shutting down gracefully");
-            }
-            _ = sigint.recv() => {
-                info!("SIGINT received, shutting down gracefully");
-            }
+            result = tun_read_task => info!("TUN reader stopped: {:?}", result),
+            result = tun_to_quic_task => info!("TUN->QUIC forwarder stopped: {:?}", result),
+            result = quic_to_channel_task => info!("QUIC->TUN forwarder stopped: {:?}", result),
+            result = tun_write_task => info!("TUN writer stopped: {:?}", result),
+            result = cover_task => info!("Cover traffic task stopped: {:?}", result),
+            _ = tokio::signal::ctrl_c() => info!("Ctrl+C received, shutting down gracefully"),
+            _ = sigterm.recv() => info!("SIGTERM received, shutting down gracefully"),
+            _ = sigint.recv() => info!("SIGINT received, shutting down gracefully"),
         }
     }
 
     #[cfg(not(unix))]
     {
         tokio::select! {
-            result = tun_read_task => {
-                info!("TUN reader stopped: {:?}", result);
-            }
-            result = tun_to_quic_task => {
-                info!("TUN->QUIC forwarder stopped: {:?}", result);
-            }
-            result = quic_to_channel_task => {
-                info!("QUIC->TUN forwarder stopped: {:?}", result);
-            }
-            result = tun_write_task => {
-                info!("TUN writer stopped: {:?}", result);
-            }
-            result = cover_task => {
-                info!("Cover traffic task stopped: {:?}", result);
-            }
-            _ = tokio::signal::ctrl_c() => {
-                info!("Ctrl+C received, shutting down gracefully");
-            }
+            result = tun_read_task => info!("TUN reader stopped: {:?}", result),
+            result = tun_to_quic_task => info!("TUN->QUIC forwarder stopped: {:?}", result),
+            result = quic_to_channel_task => info!("QUIC->TUN forwarder stopped: {:?}", result),
+            result = tun_write_task => info!("TUN writer stopped: {:?}", result),
+            result = cover_task => info!("Cover traffic task stopped: {:?}", result),
+            _ = tokio::signal::ctrl_c() => info!("Ctrl+C received, shutting down gracefully"),
         }
     }
 
-    // Задачи уже завершены в select!, просто логируем завершение
     info!("VPN tunnel shutdown complete");
     Ok(())
-}
-
-fn build_quic_config(
-    insecure: bool,
-    idle_timeout: u64,
-    tls_profile: TlsProfile,
-    ca_cert: Option<PathBuf>,
-) -> Result<QuinnClientConfig> {
-    tracing::debug!(profile = %tls_profile, "Building QUIC client config");
-
-    let mut transport_config = TransportConfig::default();
-    transport_config.max_idle_timeout(Some(Duration::from_secs(idle_timeout).try_into()?));
-
-    // Enable QUIC datagrams for VPN traffic
-    transport_config.datagram_receive_buffer_size(Some(65536));
-    transport_config.datagram_send_buffer_size(65536);
-
-    // Configure MTU for VPN traffic - set initial MTU high enough for typical networks
-    // TUN MTU 1400 + QUIC overhead (~60 bytes) requires UDP payload of ~1460
-    // We set initial_mtu to 1500 (standard Ethernet MTU) and enable MTU discovery
-    transport_config.initial_mtu(1500);
-    transport_config.min_mtu(1280); // IPv6 minimum, safe fallback
-    transport_config.mtu_discovery_config(Some(quinn::MtuDiscoveryConfig::default()));
-
-    // Apply TLS profile cipher suites and key exchange groups
-    let cipher_suites = tls_profile.rustls_cipher_suites();
-    let kx_groups = tls_profile.rustls_kx_groups();
-
-    tracing::info!(
-        profile = %tls_profile,
-        cipher_count = cipher_suites.len(),
-        kx_count = kx_groups.len(),
-        "Applying TLS profile cipher suites"
-    );
-
-    // Build custom crypto provider with profile-specific ciphers
-    let provider = rustls::crypto::CryptoProvider {
-        cipher_suites,
-        kx_groups,
-        ..rustls::crypto::ring::default_provider()
-    };
-
-    let mut crypto_config = if insecure {
-        rustls::ClientConfig::builder_with_provider(Arc::new(provider))
-            .with_protocol_versions(&[&rustls::version::TLS13])?
-            .dangerous()
-            .with_custom_certificate_verifier(Arc::new(InsecureVerifier))
-            .with_no_client_auth()
-    } else {
-        let mut roots = rustls::RootCertStore::empty();
-
-        // Load custom CA cert if provided, otherwise use webpki roots
-        if let Some(ca_cert_path) = &ca_cert {
-            let cert_pem = std::fs::read_to_string(ca_cert_path).context(format!(
-                "Failed to read CA certificate from {:?}",
-                ca_cert_path
-            ))?;
-            let certs = rustls_pemfile::certs(&mut cert_pem.as_bytes())
-                .collect::<Result<Vec<_>, _>>()
-                .context("Failed to parse PEM certificate")?;
-
-            for cert in certs {
-                roots
-                    .add(cert)
-                    .context("Failed to add CA certificate to root store")?;
-            }
-        } else {
-            roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-        }
-
-        rustls::ClientConfig::builder_with_provider(Arc::new(provider))
-            .with_protocol_versions(&[&rustls::version::TLS13])?
-            .with_root_certificates(roots)
-            .with_no_client_auth()
-    };
-
-    crypto_config.alpn_protocols = vec![b"h3".to_vec(), b"masque".to_vec()];
-
-    let mut client_config = QuinnClientConfig::new(Arc::new(
-        quinn::crypto::rustls::QuicClientConfig::try_from(crypto_config)?,
-    ));
-    client_config.transport_config(Arc::new(transport_config));
-
-    Ok(client_config)
-}
-
-fn build_padder_cli(args: &Args, fallback_mtu: u16) -> Padder {
-    let strategy = parse_padding_strategy(&args.padding_strategy);
-    let mtu = args.padding_mtu.unwrap_or(fallback_mtu) as usize;
-
-    let config = PaddingConfig {
-        strategy,
-        mtu,
-        jitter_enabled: args.padding_max_jitter_us > 0,
-        max_jitter_us: args.padding_max_jitter_us,
-        min_packet_size: args.padding_min_size,
-        adaptive: true,
-        high_strategy: PaddingStrategy::Mtu,
-        medium_strategy: PaddingStrategy::Bucket,
-        low_strategy: PaddingStrategy::RandomBucket,
-        high_threshold: 60,
-        medium_threshold: 20,
-        hysteresis: 5,
-    };
-
-    Padder::new(config)
-}
-
-fn build_padder_from_config(args: &Args, config: &VpnConfig) -> Padder {
-    // Prefer server-provided padding params to stay in sync
-    let strategy = config
-        .padding_strategy
-        .as_deref()
-        .map(parse_padding_strategy)
-        .unwrap_or_else(|| parse_padding_strategy(&args.padding_strategy));
-
-    let max_jitter_us = config
-        .padding_max_jitter_us
-        .unwrap_or(args.padding_max_jitter_us);
-
-    let min_size = config.padding_min_size.unwrap_or(args.padding_min_size);
-
-    let mtu = config
-        .padding_mtu
-        .unwrap_or_else(|| args.padding_mtu.unwrap_or(config.mtu)) as usize;
-
-    let config = PaddingConfig {
-        strategy,
-        mtu,
-        jitter_enabled: max_jitter_us > 0,
-        max_jitter_us,
-        min_packet_size: min_size,
-        adaptive: true,
-        high_strategy: PaddingStrategy::Mtu,
-        medium_strategy: PaddingStrategy::Bucket,
-        low_strategy: PaddingStrategy::RandomBucket,
-        high_threshold: 60,
-        medium_threshold: 20,
-        hysteresis: 5,
-    };
-
-    Padder::new(config)
-}
-
-fn solve_pow(nonce: &[u8; 32], difficulty: u8) -> [u8; 32] {
-    let mut counter: u64 = 0;
-    let mut candidate = [0u8; 32];
-    loop {
-        candidate[..8].copy_from_slice(&counter.to_be_bytes());
-        let mut hasher = Sha256::new();
-        use sha2::Digest;
-        hasher.update(nonce);
-        hasher.update(candidate);
-        let hash = hasher.finalize();
-        let mut ok = true;
-        for i in 0..difficulty as usize {
-            if hash[i] != 0 {
-                ok = false;
-                break;
-            }
-        }
-        if ok {
-            return candidate;
-        }
-        counter = counter.wrapping_add(1);
-    }
-}
-
-async fn handle_probe_challenge(stream: &mut QuicBiStream, padder: &Padder) -> Result<()> {
-    use tokio::io::AsyncReadExt;
-
-    let mut len_buf = [0u8; 2];
-    stream
-        .read_exact(&mut len_buf)
-        .await
-        .context("reading probe challenge length")?;
-    let len = u16::from_be_bytes(len_buf) as usize;
-    if len != 34 {
-        anyhow::bail!("unexpected probe challenge length: {len}");
-    }
-
-    let mut buf = vec![0u8; len];
-    stream
-        .read_exact(&mut buf)
-        .await
-        .context("reading probe challenge payload")?;
-
-    if buf[0] != 1 {
-        anyhow::bail!("unexpected probe challenge type");
-    }
-
-    let mut nonce = [0u8; 32];
-    nonce.copy_from_slice(&buf[1..33]);
-    let difficulty = buf[33];
-
-    let solution = solve_pow(&nonce, difficulty);
-    let padding_bytes = padding_schedule_bytes(padder);
-
-    let mut resp = Vec::with_capacity(1 + 32 + padding_bytes.len());
-    resp.push(2u8);
-    resp.extend_from_slice(&solution);
-    resp.extend_from_slice(&padding_bytes);
-
-    let len_bytes = (resp.len() as u16).to_be_bytes();
-    stream
-        .write_all(&len_bytes)
-        .await
-        .context("writing probe response length")?;
-    stream
-        .write_all(&resp)
-        .await
-        .context("writing probe response")?;
-    stream.flush().await.ok();
-
-    Ok(())
-}
-
-/// Insecure certificate verifier for testing
-#[derive(Debug)]
-struct InsecureVerifier;
-
-impl ServerCertVerifier for InsecureVerifier {
-    fn verify_server_cert(
-        &self,
-        _end_entity: &CertificateDer<'_>,
-        _intermediates: &[CertificateDer<'_>],
-        _server_name: &ServerName<'_>,
-        _ocsp_response: &[u8],
-        _now: UnixTime,
-    ) -> Result<ServerCertVerified, rustls::Error> {
-        Ok(ServerCertVerified::assertion())
-    }
-
-    fn verify_tls12_signature(
-        &self,
-        _message: &[u8],
-        _cert: &CertificateDer<'_>,
-        _dss: &DigitallySignedStruct,
-    ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        Ok(HandshakeSignatureValid::assertion())
-    }
-
-    fn verify_tls13_signature(
-        &self,
-        _message: &[u8],
-        _cert: &CertificateDer<'_>,
-        _dss: &DigitallySignedStruct,
-    ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        Ok(HandshakeSignatureValid::assertion())
-    }
-
-    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
-        vec![
-            SignatureScheme::RSA_PKCS1_SHA256,
-            SignatureScheme::RSA_PKCS1_SHA384,
-            SignatureScheme::RSA_PKCS1_SHA512,
-            SignatureScheme::ECDSA_NISTP256_SHA256,
-            SignatureScheme::ECDSA_NISTP384_SHA384,
-            SignatureScheme::ECDSA_NISTP521_SHA512,
-            SignatureScheme::ED25519,
-            SignatureScheme::RSA_PSS_SHA256,
-            SignatureScheme::RSA_PSS_SHA384,
-            SignatureScheme::RSA_PSS_SHA512,
-        ]
-    }
 }
