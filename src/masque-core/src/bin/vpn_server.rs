@@ -12,7 +12,7 @@ use rustls_pemfile::{certs, private_key};
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::BufReader;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::PathBuf;
 use std::process::Command;
 use std::str::FromStr;
@@ -289,6 +289,9 @@ struct ClientSession {
     connection: quinn::Connection,
     #[allow(dead_code)]
     allocated_ip: Ipv4Addr,
+    /// IPv6 address derived from IPv4 (ULA fd09::/64 + IPv4 suffix)
+    #[allow(dead_code)]
+    allocated_ip6: Ipv6Addr,
     tx: mpsc::Sender<Bytes>,
     #[allow(dead_code)]
     session_state: Arc<SessionKeyState>,
@@ -357,8 +360,10 @@ const DEFAULT_DNS_SERVERS: [IpAddr; 2] = [
 
 /// Shared server state
 struct ServerState {
-    /// Active client sessions indexed by their allocated IP
+    /// Active client sessions indexed by their allocated IPv4
     clients: HashMap<Ipv4Addr, ClientSession>,
+    /// Active client senders indexed by their allocated IPv6 (for IPv6 packet routing)
+    clients_v6: HashMap<Ipv6Addr, mpsc::Sender<Bytes>>,
     /// Persistent sessions indexed by session_id (for reconnect)
     sessions: HashMap<String, SessionInfo>,
     /// IP address pool
@@ -369,6 +374,7 @@ impl ServerState {
     fn new(pool_start: Ipv4Addr, pool_end: Ipv4Addr) -> Self {
         Self {
             clients: HashMap::new(),
+            clients_v6: HashMap::new(),
             sessions: HashMap::new(),
             ip_pool: IpPool::new(pool_start, pool_end),
         }
@@ -429,6 +435,24 @@ impl ServerState {
             }
         }
     }
+}
+
+/// Convert IPv4 address to IPv6 using ULA prefix fd09::/64
+/// Maps 10.9.0.x -> fd09::10:9:0:x
+fn ipv4_to_ipv6(ipv4: Ipv4Addr) -> Ipv6Addr {
+    let octets = ipv4.octets();
+    // ULA prefix fd09:: with IPv4 embedded in last 64 bits
+    // Format: fd09:0000:0000:0000:00AA:00BB:00CC:00DD
+    Ipv6Addr::new(
+        0xfd09,
+        0,
+        0,
+        0,
+        u16::from(octets[0]),
+        u16::from(octets[1]),
+        u16::from(octets[2]),
+        u16::from(octets[3]),
+    )
 }
 
 /// Generate cryptographically secure session ID
@@ -1056,7 +1080,8 @@ async fn handle_vpn_client_with_config(
     let cover_config = build_cover_config(cover_rate, &cover_pattern, mtu as usize);
     let mut cover_gen = CoverTrafficGenerator::new(cover_config);
 
-    // Register client session
+    // Register client session (IPv4 + IPv6 dual-stack)
+    let client_ip6 = ipv4_to_ipv6(client_ip);
     {
         let mut st = state.write().await;
         st.clients.insert(
@@ -1064,10 +1089,13 @@ async fn handle_vpn_client_with_config(
             ClientSession {
                 connection: connection.clone(),
                 allocated_ip: client_ip,
-                tx: client_tx,
+                allocated_ip6: client_ip6,
+                tx: client_tx.clone(),
                 session_state: session_state.clone(),
             },
         );
+        // Register IPv6 mapping for dual-stack packet routing
+        st.clients_v6.insert(client_ip6, client_tx);
     }
 
     let encapsulator = Arc::new(PacketEncapsulator::new());
@@ -1191,6 +1219,7 @@ async fn handle_vpn_client_with_config(
     {
         let mut st = state.write().await;
         st.clients.remove(&client_ip);
+        st.clients_v6.remove(&client_ip6);
         // Touch session to reset timeout (allows reconnect within SESSION_TIMEOUT)
         st.touch_session(&session_id);
         // Note: IP is NOT released here - session keeps IP reservation for reconnect
@@ -1228,8 +1257,7 @@ async fn tun_reader_task(
         match tun_reader.read_packet().await {
             Ok(packet) => match masque_core::tun::IpPacketInfo::parse(&packet) {
                 Ok(info) => {
-                    // IPv6 packets are passed through but we don't have IPv6 client lookup yet
-                    // TODO: Add IPv6 client address support for full dual-stack
+                    // Dual-stack: route by IPv4 or IPv6 destination
                     if let Some(dst_ipv4) = info.dst_addr.as_ipv4() {
                         let st = state.read().await;
                         if let Some(session) = st.clients.get(&dst_ipv4) {
@@ -1239,13 +1267,21 @@ async fn tun_reader_task(
                         } else {
                             debug!(dst = %dst_ipv4, "No client for destination");
                         }
-                    } else {
-                        // IPv6 packet - log at trace level only (these are common link-local traffic)
-                        trace!(
-                            dst = %info.dst_addr,
-                            protocol = %info.protocol_name(),
-                            "IPv6 packet from TUN (client lookup not yet supported)"
-                        );
+                    } else if let Some(dst_ipv6) = info.dst_addr.as_ipv6() {
+                        // IPv6 packet - lookup in clients_v6
+                        let st = state.read().await;
+                        if let Some(tx) = st.clients_v6.get(&dst_ipv6) {
+                            if tx.send(packet).await.is_err() {
+                                debug!(dst = %dst_ipv6, "Client channel closed (IPv6)");
+                            }
+                        } else {
+                            // Link-local and multicast IPv6 are common, log at trace
+                            trace!(
+                                dst = %dst_ipv6,
+                                protocol = %info.protocol_name(),
+                                "No client for IPv6 destination"
+                            );
+                        }
                     }
                 }
                 Err(e) => {
