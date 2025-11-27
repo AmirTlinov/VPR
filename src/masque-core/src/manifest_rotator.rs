@@ -112,7 +112,7 @@ impl ManifestRotator {
         // Build new manifest payload
         let now = SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .map_err(|_| anyhow::anyhow!("system clock is before UNIX epoch"))?
             .as_secs();
 
         let servers: Vec<ServerEndpoint> = new_endpoints
@@ -159,7 +159,10 @@ impl ManifestRotator {
         // Publish via RSS if configured
         if let Some(ref encoder) = self.rss_encoder {
             let rss_xml = {
-                let mut enc = encoder.lock().unwrap();
+                // Recover from poisoned mutex if previous encode panicked
+                let mut enc = encoder
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
                 enc.encode_manifest(&signed_manifest)?
             };
             let rss_path = self
