@@ -1,3 +1,41 @@
+//! Health History - VPN Health Report Storage and Analysis
+//!
+//! This crate handles storage and analysis of VPN health reports in JSONL format.
+//! Each line in the history file represents a single health check with suspicion
+//! scores and transport-level metrics.
+//!
+//! # Suspicion Scoring
+//!
+//! The suspicion score (0.0-1.0) indicates DPI detection risk:
+//!
+//! | Score | Severity | Meaning |
+//! |-------|----------|---------|
+//! | < 0.35 | OK | Traffic looks normal |
+//! | 0.35-0.75 | Warn | Elevated detection risk |
+//! | ≥ 0.75 | Critical | Likely flagged by DPI |
+//!
+//! # File Format
+//!
+//! Reports are stored as JSON Lines (`.jsonl`):
+//!
+//! ```json
+//! {"suspicion":0.2,"target":"server1","results":[{"transport":"masque","ok":true,"latency_ms":15.3}]}
+//! {"suspicion":0.45,"target":"server1","results":[{"transport":"masque","ok":true,"latency_ms":22.1}]}
+//! ```
+//!
+//! # Example
+//!
+//! ```rust,ignore
+//! use health_history::{load_reports, parse_report, default_path};
+//!
+//! let path = default_path(); // ~/.vpr/health_reports.jsonl
+//! let reports = load_reports(&path)?;
+//! for raw in reports {
+//!     let report = parse_report(&raw.to_string())?;
+//!     println!("{}: {:?}", report.target, report.severity);
+//! }
+//! ```
+
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::{fs::File, io::BufRead, io::BufReader, path::PathBuf};
