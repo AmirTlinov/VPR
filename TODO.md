@@ -18,7 +18,7 @@
 
 ### Documentation
 - [x] Add doc comments to public API (all crate-level docs complete)
-- [ ] Create per-crate README files
+- [x] Create per-crate README files (9/9 complete)
 
 ---
 
