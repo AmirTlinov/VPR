@@ -772,7 +772,9 @@ async fn run_vpn_client(args: Args, shutdown_signal: oneshot::Receiver<()>) -> R
     match policy {
         RoutingPolicy::Full => {
             if args.set_default_route {
-                setup_routing(tun.name(), vpn_config.gateway).context("setting up routing")?;
+                // Pass server IP to setup_routing to add host route (prevents routing loop)
+                let _original_gateway = setup_routing(tun.name(), vpn_config.gateway, server_addr.ip())
+                    .context("setting up routing")?;
                 // Record default route change for crash recovery
                 network_guard
                     .record_default_route(tun.name().to_string(), None, None)
@@ -959,6 +961,7 @@ async fn run_vpn_client(args: Args, shutdown_signal: oneshot::Receiver<()>) -> R
     let gateway = vpn_config.gateway;
     let routing_configured = args.set_default_route;
     let use_split_tunnel = policy == RoutingPolicy::Split;
+    let server_ip_for_cleanup = server_addr.ip();
 
     // Start VPN tunnel with shutdown signal support
     // If signal is received, tunnel exits gracefully allowing cleanup to run
@@ -984,7 +987,8 @@ async fn run_vpn_client(args: Args, shutdown_signal: oneshot::Receiver<()>) -> R
             info!("Split tunnel routes restored successfully");
         }
     } else if routing_configured {
-        if let Err(e) = restore_routing(&tun_name, gateway) {
+        // Pass server IP to remove the host route as well
+        if let Err(e) = restore_routing(&tun_name, gateway, Some(server_ip_for_cleanup)) {
             tracing::error!(
                 %e,
                 tun = %tun_name,
@@ -1242,6 +1246,13 @@ fn build_quic_config(
     // Enable QUIC datagrams for VPN traffic
     transport_config.datagram_receive_buffer_size(Some(65536));
     transport_config.datagram_send_buffer_size(65536);
+
+    // Configure MTU for VPN traffic - set initial MTU high enough for typical networks
+    // TUN MTU 1400 + QUIC overhead (~60 bytes) requires UDP payload of ~1460
+    // We set initial_mtu to 1500 (standard Ethernet MTU) and enable MTU discovery
+    transport_config.initial_mtu(1500);
+    transport_config.min_mtu(1280); // IPv6 minimum, safe fallback
+    transport_config.mtu_discovery_config(Some(quinn::MtuDiscoveryConfig::default()));
 
     // Apply TLS profile cipher suites and key exchange groups
     let cipher_suites = tls_profile.rustls_cipher_suites();

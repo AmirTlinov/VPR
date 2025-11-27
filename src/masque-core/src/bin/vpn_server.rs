@@ -1286,6 +1286,13 @@ fn build_server_config(
     transport_config.datagram_receive_buffer_size(Some(65536));
     transport_config.datagram_send_buffer_size(65536);
 
+    // Configure MTU for VPN traffic - set initial MTU high enough for typical networks
+    // TUN MTU 1400 + QUIC overhead (~60 bytes) requires UDP payload of ~1460
+    // We set initial_mtu to 1500 (standard Ethernet MTU) and enable MTU discovery
+    transport_config.initial_mtu(1500);
+    transport_config.min_mtu(1280); // IPv6 minimum, safe fallback
+    transport_config.mtu_discovery_config(Some(quinn::MtuDiscoveryConfig::default()));
+
     let provider = rustls::crypto::CryptoProvider {
         cipher_suites,
         kx_groups,

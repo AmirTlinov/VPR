@@ -25,13 +25,75 @@ pub use split_tunnel::{
 pub use state::RoutingState;
 
 use anyhow::{Context, Result};
-use std::net::Ipv4Addr;
+use std::net::{IpAddr, Ipv4Addr};
 use std::process::Command;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
-/// Setup routing to send traffic through TUN device
-pub fn setup_routing(tun_name: &str, gateway: Ipv4Addr) -> Result<()> {
-    // Add default route through TUN
+/// Get current default gateway and interface from routing table
+fn get_default_gateway() -> Option<(String, String)> {
+    let output = Command::new("ip")
+        .args(["route", "show", "default"])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Parse: "default via 192.168.1.1 dev eth0 ..."
+    let parts: Vec<&str> = stdout.split_whitespace().collect();
+    let via_idx = parts.iter().position(|&p| p == "via")?;
+    let dev_idx = parts.iter().position(|&p| p == "dev")?;
+    
+    let gateway = parts.get(via_idx + 1)?.to_string();
+    let interface = parts.get(dev_idx + 1)?.to_string();
+    
+    Some((gateway, interface))
+}
+
+/// Setup routing to send traffic through TUN device.
+/// 
+/// IMPORTANT: Adds a host route to the VPN server through the original gateway
+/// to prevent routing loop (VPN traffic going into the tunnel itself).
+pub fn setup_routing(tun_name: &str, gateway: Ipv4Addr, server_ip: IpAddr) -> Result<(Option<String>, Option<String>)> {
+    // Step 1: Get original default gateway BEFORE changing anything
+    let original_gateway = get_default_gateway();
+    
+    if let Some((orig_gw, orig_iface)) = &original_gateway {
+        info!(
+            gateway = %orig_gw,
+            interface = %orig_iface,
+            "Captured original default gateway"
+        );
+        
+        // Step 2: Add host route to VPN server through original gateway
+        // This ensures QUIC traffic to server bypasses the VPN tunnel
+        let server_str = server_ip.to_string();
+        let host_route_status = Command::new("ip")
+            .args([
+                "route",
+                "add",
+                &server_str,
+                "via",
+                orig_gw,
+                "dev",
+                orig_iface,
+            ])
+            .status()
+            .context("adding host route to VPN server")?;
+
+        if host_route_status.success() {
+            info!(server = %server_ip, gateway = %orig_gw, "Host route to VPN server added");
+        } else {
+            // May already exist or route already covers it
+            debug!(server = %server_ip, "Host route addition returned non-zero (may already exist)");
+        }
+    } else {
+        warn!("Could not determine original default gateway - VPN may break connectivity");
+    }
+
+    // Step 3: Add default route through TUN
     let gateway_str = gateway.to_string();
     let status = Command::new("ip")
         .args([
@@ -51,11 +113,14 @@ pub fn setup_routing(tun_name: &str, gateway: Ipv4Addr) -> Result<()> {
     }
 
     info!(tun = %tun_name, gateway = %gateway, "routing configured");
-    Ok(())
+    
+    Ok(original_gateway.map_or((None, None), |(gw, iface)| (Some(gw), Some(iface))))
 }
 
-/// Restore routing after VPN disconnect
-pub fn restore_routing(tun_name: &str, gateway: Ipv4Addr) -> Result<()> {
+/// Restore routing after VPN disconnect.
+/// 
+/// Removes the default route through TUN and the host route to VPN server.
+pub fn restore_routing(tun_name: &str, gateway: Ipv4Addr, server_ip: Option<IpAddr>) -> Result<()> {
     // Remove default route through TUN
     let gateway_str = gateway.to_string();
     let status = Command::new("ip")
@@ -70,15 +135,31 @@ pub fn restore_routing(tun_name: &str, gateway: Ipv4Addr) -> Result<()> {
         ])
         .status();
 
-    // Игнорируем ошибки, так как маршрут может уже не существовать
     if let Ok(s) = status {
         if s.success() {
-            info!(tun = %tun_name, gateway = %gateway, "routing restored");
+            info!(tun = %tun_name, gateway = %gateway, "default route removed");
         } else {
-            warn!("failed to remove default route (may not exist)");
+            debug!("failed to remove default route (may not exist)");
         }
     }
 
+    // Remove host route to VPN server
+    if let Some(server) = server_ip {
+        let server_str = server.to_string();
+        let host_status = Command::new("ip")
+            .args(["route", "del", &server_str])
+            .status();
+
+        if let Ok(s) = host_status {
+            if s.success() {
+                info!(server = %server, "host route to VPN server removed");
+            } else {
+                debug!(server = %server, "failed to remove host route (may not exist)");
+            }
+        }
+    }
+
+    info!(tun = %tun_name, "routing restored");
     Ok(())
 }
 
