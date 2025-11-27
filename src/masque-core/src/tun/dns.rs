@@ -4,12 +4,37 @@
 
 use anyhow::{bail, Context, Result};
 use std::net::IpAddr;
-use tracing::{info, warn};
+use std::path::PathBuf;
+use tracing::{debug, info, warn};
+
+/// Standard backup path for DNS config (survives reboot, unlike /tmp)
+const DNS_BACKUP_FILENAME: &str = "resolv.conf.bak";
+
+/// Get persistent backup path for DNS config
+pub fn get_dns_backup_path() -> PathBuf {
+    // Try XDG_STATE_HOME first (~/.local/state/vpr/)
+    if let Some(state_dir) = dirs::state_dir() {
+        let vpr_state = state_dir.join("vpr");
+        if std::fs::create_dir_all(&vpr_state).is_ok() {
+            return vpr_state.join(DNS_BACKUP_FILENAME);
+        }
+    }
+    // Fallback to config dir (~/.config/vpr/)
+    if let Some(config_dir) = dirs::config_dir() {
+        let vpr_config = config_dir.join("vpr");
+        if std::fs::create_dir_all(&vpr_config).is_ok() {
+            return vpr_config.join(DNS_BACKUP_FILENAME);
+        }
+    }
+    // Last resort: /tmp (but warn)
+    debug!("Using /tmp for DNS backup - may not survive reboot");
+    PathBuf::from("/tmp/vpr-resolv.conf.bak")
+}
 
 /// DNS leak protection configuration
 pub struct DnsProtection {
     /// Original resolv.conf backup
-    backup_path: Option<std::path::PathBuf>,
+    backup_path: Option<PathBuf>,
     /// Whether protection is active
     active: bool,
 }
@@ -30,7 +55,7 @@ impl DnsProtection {
         }
 
         let resolv_path = std::path::Path::new("/etc/resolv.conf");
-        let backup_path = std::path::PathBuf::from("/tmp/vpr-resolv.conf.bak");
+        let backup_path = get_dns_backup_path();
 
         // Check if we have write permissions (typically requires root)
         #[cfg(unix)]

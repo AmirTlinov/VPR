@@ -14,7 +14,7 @@ pub mod state;
 
 // Re-export main types
 pub use device::{TunConfig, TunDevice, TunReader, TunWriter};
-pub use dns::DnsProtection;
+pub use dns::{get_dns_backup_path, DnsProtection};
 pub use ipv6::{setup_ipv6_nat, setup_ipv6_routing};
 pub use nat::{enable_ip_forwarding, setup_nat, setup_nat_with_config, teardown_nat, NatConfig};
 pub use packet::{IpAddress, IpPacketInfo, IpVersion};

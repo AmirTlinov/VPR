@@ -936,7 +936,7 @@ async fn run_vpn_client(args: Args, shutdown_signal: oneshot::Receiver<()>) -> R
             })?;
             // Record DNS change for crash recovery
             network_guard
-                .record_dns_change(std::path::PathBuf::from("/tmp/vpr-resolv.conf.bak"))
+                .record_dns_change(masque_core::tun::get_dns_backup_path())
                 .context("recording DNS change")?;
             info!(
                 dns_count = dns_servers.len(),
