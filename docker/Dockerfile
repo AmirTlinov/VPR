@@ -29,31 +29,51 @@ WORKDIR /build
 
 # Copy manifests first for dependency caching
 COPY Cargo.toml Cargo.lock ./
-COPY src/vpr-crypto/Cargo.toml src/vpr-crypto/
+
+# Copy all workspace member Cargo.toml files
 COPY src/masque-core/Cargo.toml src/masque-core/
-COPY src/vpn-server/Cargo.toml src/vpn-server/
-COPY src/vpn-client/Cargo.toml src/vpn-client/
-COPY src/tauri-app/Cargo.toml src/tauri-app/
+COPY src/vpr-crypto/Cargo.toml src/vpr-crypto/
+COPY src/doh-gateway/Cargo.toml src/doh-gateway/
+COPY src/health-harness/Cargo.toml src/health-harness/
+COPY src/health-history/Cargo.toml src/health-history/
+COPY src/vpr-app/Cargo.toml src/vpr-app/
+COPY src/vpr-tui/Cargo.toml src/vpr-tui/
+COPY src/vpr-ai/Cargo.toml src/vpr-ai/
+COPY src/vpr-e2e/Cargo.toml src/vpr-e2e/
 
 # Create dummy source files for dependency caching
-RUN mkdir -p src/vpr-crypto/src src/masque-core/src src/vpn-server/src src/vpn-client/src src/tauri-app/src && \
-    echo "fn main() {}" > src/vpr-crypto/src/lib.rs && \
-    echo "fn main() {}" > src/masque-core/src/lib.rs && \
-    echo "fn main() {}" > src/vpn-server/src/main.rs && \
-    echo "fn main() {}" > src/vpn-client/src/main.rs && \
-    echo "fn main() {}" > src/tauri-app/src/main.rs
+RUN mkdir -p src/masque-core/src/bin && \
+    mkdir -p src/vpr-crypto/src && \
+    mkdir -p src/doh-gateway/src && \
+    mkdir -p src/health-harness/src && \
+    mkdir -p src/health-history/src && \
+    mkdir -p src/vpr-app/src && \
+    mkdir -p src/vpr-tui/src && \
+    mkdir -p src/vpr-ai/src && \
+    mkdir -p src/vpr-e2e/src && \
+    echo "pub fn dummy() {}" > src/masque-core/src/lib.rs && \
+    echo "fn main() {}" > src/masque-core/src/bin/vpn_server.rs && \
+    echo "fn main() {}" > src/masque-core/src/bin/vpn_client.rs && \
+    echo "pub fn dummy() {}" > src/vpr-crypto/src/lib.rs && \
+    echo "fn main() {}" > src/doh-gateway/src/main.rs && \
+    echo "fn main() {}" > src/health-harness/src/main.rs && \
+    echo "pub fn dummy() {}" > src/health-history/src/lib.rs && \
+    echo "fn main() {}" > src/vpr-app/src/main.rs && \
+    echo "fn main() {}" > src/vpr-tui/src/main.rs && \
+    echo "pub fn dummy() {}" > src/vpr-ai/src/lib.rs && \
+    echo "fn main() {}" > src/vpr-e2e/src/main.rs
 
-# Build dependencies only (cached layer)
-RUN cargo build --release --package vpn-server --package vpn-client 2>/dev/null || true
+# Build dependencies only (cached layer) - ignore errors since dummy code
+RUN cargo build --release --package masque-core --bin vpn-server --bin vpn-client 2>/dev/null || true
 
 # Copy actual source code
 COPY src/ src/
 
 # Touch sources to rebuild with real code
-RUN touch src/*/src/*.rs
+RUN find src -name "*.rs" -exec touch {} \;
 
-# Build release binaries
-RUN cargo build --release --package vpn-server --package vpn-client
+# Build release binaries (vpn-server and vpn-client are in masque-core)
+RUN cargo build --release --package masque-core --bin vpn-server --bin vpn-client
 
 # Strip binaries for smaller size
 RUN strip target/release/vpn-server target/release/vpn-client
@@ -171,7 +191,8 @@ RUN apk add --no-cache \
     iputils \
     bind-tools \
     ca-certificates \
-    jq
+    jq \
+    netcat-openbsd
 
 WORKDIR /test
 
