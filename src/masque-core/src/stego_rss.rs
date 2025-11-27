@@ -15,8 +15,12 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use rand::rngs::StdRng;
 use rand::{rngs::OsRng, Rng, SeedableRng};
 use serde::{Deserialize, Serialize};
+use std::io::{Read as IoRead, Write as IoWrite};
 use std::time::{SystemTime, UNIX_EPOCH};
 use vpr_crypto::manifest::{ManifestPayload, SignedManifest};
+
+/// Zstd compression level (3 is good balance of speed/ratio)
+const ZSTD_COMPRESSION_LEVEL: i32 = 3;
 
 /// Steganographic encoding method
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -125,18 +129,14 @@ impl StegoRssEncoder {
         }
     }
 
-    /// Compress data (for now just return bytes, in production use zstd)
+    /// Compress data using zstd for better steganographic capacity
     fn compress(&self, data: &str) -> Result<Vec<u8>> {
-        // For now, just return bytes directly
-        // In production, could use zstd compression for better capacity
-        Ok(data.as_bytes().to_vec())
-    }
-
-    /// Decompress data (inverse of compress)
-    #[allow(dead_code)] // Используется для будущей поддержки сжатия
-    fn decompress(&self, data: &[u8]) -> Result<String> {
-        // For now, just convert bytes to string
-        String::from_utf8(data.to_vec()).context("failed to convert decompressed data to UTF-8")
+        let mut encoder = zstd::Encoder::new(Vec::new(), ZSTD_COMPRESSION_LEVEL)
+            .context("failed to create zstd encoder")?;
+        encoder
+            .write_all(data.as_bytes())
+            .context("failed to write data to zstd encoder")?;
+        encoder.finish().context("failed to finish zstd compression")
     }
 
     /// Encode using whitespace steganography
@@ -438,10 +438,14 @@ impl StegoRssDecoder {
         Self { config }
     }
 
-    /// Decompress data (inverse of compress)
+    /// Decompress zstd-compressed data
     fn decompress(&self, data: &[u8]) -> Result<String> {
-        // For now, just convert bytes to string
-        String::from_utf8(data.to_vec()).context("failed to convert decompressed data to UTF-8")
+        let mut decoder = zstd::Decoder::new(data).context("failed to create zstd decoder")?;
+        let mut decompressed = Vec::new();
+        decoder
+            .read_to_end(&mut decompressed)
+            .context("failed to decompress zstd data")?;
+        String::from_utf8(decompressed).context("decompressed data is not valid UTF-8")
     }
 
     /// Decode signed manifest from RSS XML
@@ -758,27 +762,25 @@ mod tests {
     }
 
     #[test]
-    fn encoder_compress_returns_bytes() {
+    fn compress_decompress_roundtrip() {
         let config = StegoRssConfig::default();
-        let encoder = StegoRssEncoder::new(config);
-        let data = "test data";
+        let encoder = StegoRssEncoder::new(config.clone());
+        let decoder = StegoRssDecoder::new(config);
+
+        let data = "test data for compression roundtrip";
         let compressed = encoder.compress(data).unwrap();
-        assert_eq!(compressed, data.as_bytes());
+        // zstd adds header, so compressed data starts with magic bytes
+        assert!(compressed.starts_with(&[0x28, 0xB5, 0x2F, 0xFD])); // zstd magic
+
+        let decompressed = decoder.decompress(&compressed).unwrap();
+        assert_eq!(decompressed, data);
     }
 
     #[test]
-    fn decoder_decompress_returns_string() {
+    fn decompress_invalid_zstd_fails() {
         let config = StegoRssConfig::default();
         let decoder = StegoRssDecoder::new(config);
-        let data = b"test data";
-        let decompressed = decoder.decompress(data).unwrap();
-        assert_eq!(decompressed, "test data");
-    }
-
-    #[test]
-    fn decoder_decompress_invalid_utf8_fails() {
-        let config = StegoRssConfig::default();
-        let decoder = StegoRssDecoder::new(config);
+        // Random bytes that aren't valid zstd
         let invalid = vec![0xFF, 0xFE, 0x00, 0x01];
         let result = decoder.decompress(&invalid);
         assert!(result.is_err());
