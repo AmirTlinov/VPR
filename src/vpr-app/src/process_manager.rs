@@ -269,9 +269,12 @@ impl VpnProcessManager {
         // SAFETY: libc::geteuid() is always safe - it's a read-only syscall with no side effects
         let is_root = unsafe { libc::geteuid() } == 0;
 
-        let mut cmd = if is_root {
+        let has_binary_caps = Self::binary_has_caps(&binary_path).unwrap_or(false);
+        let mut cmd = if is_root || has_binary_caps {
+            // Run directly if we are root or vpn-client binary has CAP_NET_ADMIN/RAW
             TokioCommand::new(&binary_path)
         } else {
+            // Fall back to pkexec prompt
             let mut c = TokioCommand::new("pkexec");
             c.arg(&binary_path);
             c
@@ -623,6 +626,16 @@ impl VpnProcessManager {
     /// Отключить kill switch
     pub async fn disable_killswitch(&self) -> Result<()> {
         crate::killswitch::disable().await
+    }
+
+    /// Check if vpn-client binary already carries CAP_NET_ADMIN and CAP_NET_RAW.
+    fn binary_has_caps(path: &std::path::Path) -> anyhow::Result<bool> {
+        let output = std::process::Command::new("getcap").arg(path).output();
+        let out = match output {
+            Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).into_owned(),
+            _ => return Ok(false),
+        };
+        Ok(out.contains("cap_net_admin") && out.contains("cap_net_raw"))
     }
 }
 

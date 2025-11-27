@@ -750,8 +750,8 @@ fn find_secrets_dir() -> PathBuf {
 }
 
 fn main() {
-    // Try to self-elevate for TUN/nftables if not already root (Linux)
-    if let Err(e) = ensure_root() {
+    // Elevate only if we lack required caps (CAP_NET_ADMIN/CAP_NET_RAW) for TUN setup.
+    if let Err(e) = ensure_privileges() {
         eprintln!("Fatal: {}", e);
         std::process::exit(1);
     }
@@ -993,4 +993,39 @@ fn ensure_root() -> Result<(), String> {
     {
         Ok(())
     }
+}
+
+/// Ensure we have privileges needed for TUN + firewall without running entire GUI as root.
+/// 1) If CAP_NET_ADMIN and CAP_NET_RAW are present (via setcap) -> OK.
+/// 2) Otherwise fallback to legacy root escalation (pkexec/sudo).
+fn ensure_privileges() -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        const CAP_NET_ADMIN_BIT: u64 = 12;
+        const CAP_NET_RAW_BIT: u64 = 13;
+
+        if has_cap(CAP_NET_ADMIN_BIT) && has_cap(CAP_NET_RAW_BIT) {
+            return Ok(());
+        }
+        ensure_root()
+    }
+    #[cfg(not(unix))]
+    {
+        Ok(())
+    }
+}
+
+/// Check if effective capabilities include specific bit.
+#[cfg(unix)]
+fn has_cap(bit: u64) -> bool {
+    if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
+        if let Some(line) = status.lines().find(|l| l.starts_with("CapEff:")) {
+            if let Some(hex_str) = line.split_whitespace().nth(1) {
+                if let Ok(val) = u64::from_str_radix(hex_str, 16) {
+                    return val & (1 << bit) != 0;
+                }
+            }
+        }
+    }
+    false
 }

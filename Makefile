@@ -1,8 +1,16 @@
 .PHONY: vpn app dev build clean diag tui
 
-# Run VPR desktop app (hacker style Watch Dogs 2)
+# Run VPR desktop app (Tauri) with headless-safe Xvfb fallback
+# Uses a virtual X server so GTK/WebKit always initialize, even без реального дисплея
 tui:
-	@cd src/vpr-app && cargo tauri dev
+	@cargo build -p masque-core --bin vpn-client
+	@if ! getcap target/debug/vpn-client | grep -q cap_net_admin; then \
+		echo "Granting CAP_NET_ADMIN,CAP_NET_RAW to vpn-client (needed for TUN)"; \
+		sudo setcap cap_net_admin,cap_net_raw+eip target/debug/vpn-client || true; \
+	fi
+	@cd src/vpr-app && \
+		XDG_SESSION_TYPE=x11 WAYLAND_DISPLAY= WINIT_UNIX_BACKEND=x11 GDK_BACKEND=x11 QT_QPA_PLATFORM=xcb VPR_SKIP_ELEVATE=1 \
+		dbus-run-session -- xvfb-run -s "-screen 0 1920x1080x24" cargo tauri dev
 
 # Diagnostics: run after "Online" to verify tunnel and routing
 diag:
