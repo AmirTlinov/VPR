@@ -1,3 +1,33 @@
+//! File Encryption using Age
+//!
+//! Provides [age](https://age-encryption.org/) encryption for secrets management.
+//! Age uses X25519 key agreement with ChaCha20-Poly1305 authenticated encryption.
+//!
+//! # Use Cases
+//!
+//! - Encrypting deployment secrets
+//! - Sealing configuration files for distribution
+//! - Secure key storage
+//!
+//! # Example
+//!
+//! ```no_run
+//! use vpr_crypto::seal::{SealIdentity, seal_file};
+//! use std::path::Path;
+//!
+//! // Generate identity (private key)
+//! let identity = SealIdentity::generate();
+//! identity.save(Path::new("secret.key")).unwrap();
+//!
+//! // Encrypt file for this recipient
+//! let recipient = identity.recipient();
+//! seal_file(
+//!     Path::new("config.toml"),
+//!     Path::new("config.toml.age"),
+//!     &recipient
+//! ).unwrap();
+//! ```
+
 use crate::{CryptoError, Result};
 use age::{
     armor::{ArmoredReader, ArmoredWriter, Format},

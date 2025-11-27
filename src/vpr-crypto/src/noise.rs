@@ -1,3 +1,31 @@
+//! Hybrid Noise Protocol Implementation
+//!
+//! Combines classical X25519 ECDH with post-quantum ML-KEM768 for
+//! quantum-resistant key exchange. Implements Noise IK/NK patterns
+//! with ChaCha20-Poly1305 symmetric encryption.
+//!
+//! # Security Properties
+//!
+//! - **Forward secrecy**: Ephemeral keys for each session
+//! - **Post-quantum resistance**: ML-KEM768 (NIST standard)
+//! - **Identity hiding**: IK pattern hides initiator identity
+//! - **Replay protection**: Via Noise framework nonce handling
+//!
+//! # Protocol Flow
+//!
+//! ```text
+//! Initiator                         Responder
+//!     |                                 |
+//!     |-- e, es, s, ss, mlkem_ct -->    |  (IK message 1)
+//!     |                                 |
+//!     |<-- e, ee, se, mlkem_ct ---      |  (IK message 2)
+//!     |                                 |
+//!     |======= encrypted tunnel =======|
+//! ```
+//!
+//! The hybrid shared secret is derived via HKDF from both
+//! X25519 and ML-KEM shared secrets.
+
 use crate::{rng, CryptoError, Result};
 use hkdf::Hkdf;
 use pqcrypto_mlkem::mlkem768;

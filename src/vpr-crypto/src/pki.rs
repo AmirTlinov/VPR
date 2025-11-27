@@ -1,3 +1,14 @@
+//! Public Key Infrastructure (PKI) for X.509 Certificates
+//!
+//! Generates TLS certificates for the VPR infrastructure using a
+//! three-tier hierarchy: Root CA → Intermediate CA → Service Certs.
+//!
+//! # Security Design
+//!
+//! - **Root CA**: Offline, ECDSA P-384, 10-year validity
+//! - **Intermediate CA**: Online, ECDSA P-384, 1-year validity
+//! - **Service Certs**: Short-lived (90 days), auto-rotatable
+
 use crate::{CryptoError, Result};
 use rcgen::{
     BasicConstraints, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair,

@@ -5,7 +5,29 @@ use std::path::Path;
 use x25519_dalek::{PublicKey as X25519Public, StaticSecret as X25519Secret};
 use zeroize::Zeroize;
 
-/// X25519 keypair for Noise protocol
+/// X25519 keypair for Noise protocol.
+///
+/// Used for Diffie-Hellman key exchange in the Noise handshake.
+/// The secret key is 32 bytes of high-entropy randomness from [`OsRng`].
+///
+/// # Security
+///
+/// - Secret key is never exposed except via [`secret_bytes()`]
+/// - Files are saved with mode 0o600 on Unix
+/// - Use [`SecretBytes`] wrapper for additional zeroizing guarantees
+///
+/// # Example
+///
+/// ```no_run
+/// use vpr_crypto::NoiseKeypair;
+/// use std::path::Path;
+///
+/// let keypair = NoiseKeypair::generate();
+/// keypair.save(Path::new("secrets"), "client").unwrap();
+///
+/// let loaded = NoiseKeypair::load(Path::new("secrets"), "client").unwrap();
+/// assert_eq!(keypair.public_bytes(), loaded.public_bytes());
+/// ```
 #[derive(Clone)]
 pub struct NoiseKeypair {
     pub secret: X25519Secret,
@@ -13,26 +35,47 @@ pub struct NoiseKeypair {
 }
 
 impl NoiseKeypair {
+    /// Generate a new keypair using cryptographically secure randomness.
+    ///
+    /// Uses [`OsRng`] for entropy, suitable for production use.
     pub fn generate() -> Self {
         let secret = X25519Secret::random_from_rng(rng::secure_rng());
         let public = X25519Public::from(&secret);
         Self { secret, public }
     }
 
+    /// Reconstruct keypair from raw secret key bytes.
+    ///
+    /// Derives the public key from the provided secret.
     pub fn from_secret_bytes(bytes: &[u8; 32]) -> Self {
         let secret = X25519Secret::from(*bytes);
         let public = X25519Public::from(&secret);
         Self { secret, public }
     }
 
+    /// Export secret key as raw bytes.
+    ///
+    /// # Security
+    ///
+    /// Handle with care - this exposes the secret key material.
     pub fn secret_bytes(&self) -> [u8; 32] {
         self.secret.to_bytes()
     }
 
+    /// Export public key as raw bytes.
     pub fn public_bytes(&self) -> [u8; 32] {
         self.public.to_bytes()
     }
 
+    /// Save keypair to disk.
+    ///
+    /// Creates two files:
+    /// - `{name}.noise.key` - secret key (mode 0o600 on Unix)
+    /// - `{name}.noise.pub` - public key
+    ///
+    /// # Errors
+    ///
+    /// Returns error if directory creation or file write fails.
     pub fn save(&self, dir: &Path, name: &str) -> Result<()> {
         std::fs::create_dir_all(dir)?;
         let sk_path = dir.join(format!("{name}.noise.key"));
@@ -47,6 +90,13 @@ impl NoiseKeypair {
         Ok(())
     }
 
+    /// Load keypair from disk.
+    ///
+    /// Reads `{name}.noise.key` from the given directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if file doesn't exist or key is not exactly 32 bytes.
     pub fn load(dir: &Path, name: &str) -> Result<Self> {
         let sk_path = dir.join(format!("{name}.noise.key"));
         let sk_bytes = std::fs::read(&sk_path)?;
@@ -58,6 +108,13 @@ impl NoiseKeypair {
         Ok(Self::from_secret_bytes(&arr))
     }
 
+    /// Load only the public key from a file path.
+    ///
+    /// Useful when you only need to verify or encrypt, not sign.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if file doesn't exist or is not exactly 32 bytes.
     pub fn load_public(path: &Path) -> Result<[u8; 32]> {
         let pk_bytes = std::fs::read(path)?;
         if pk_bytes.len() != 32 {
@@ -69,13 +126,39 @@ impl NoiseKeypair {
     }
 }
 
-/// Ed25519 keypair for signing
+/// Ed25519 keypair for digital signatures.
+///
+/// Used for signing manifests, certificates, and other data
+/// requiring authenticity verification. Ed25519 provides
+/// 128-bit security level with fast operations.
+///
+/// # Security
+///
+/// - Secret key generated from [`OsRng`]
+/// - Files saved with mode 0o600 on Unix
+/// - 64-byte signatures are deterministic (no nonce reuse risk)
+///
+/// # Example
+///
+/// ```
+/// use vpr_crypto::SigningKeypair;
+///
+/// let keypair = SigningKeypair::generate();
+/// let message = b"Important data";
+/// let signature = keypair.sign(message);
+///
+/// // Verify signature
+/// keypair.verify(message, &signature).unwrap();
+/// ```
 pub struct SigningKeypair {
     pub signing: SigningKey,
     pub verifying: VerifyingKey,
 }
 
 impl SigningKeypair {
+    /// Generate a new keypair using cryptographically secure randomness.
+    ///
+    /// Uses [`OsRng`] for entropy, suitable for production use.
     pub fn generate() -> Self {
         let mut rng = rng::secure_rng();
         let signing = SigningKey::generate(&mut rng);
@@ -83,25 +166,43 @@ impl SigningKeypair {
         Self { signing, verifying }
     }
 
+    /// Reconstruct keypair from raw secret key bytes.
+    ///
+    /// Derives the public key (verifying key) from the secret.
     pub fn from_secret_bytes(bytes: &[u8; 32]) -> Result<Self> {
         let signing = SigningKey::from_bytes(bytes);
         let verifying = signing.verifying_key();
         Ok(Self { signing, verifying })
     }
 
+    /// Export secret key as raw bytes.
+    ///
+    /// # Security
+    ///
+    /// Handle with care - this exposes the secret key material.
     pub fn secret_bytes(&self) -> [u8; 32] {
         self.signing.to_bytes()
     }
 
+    /// Export public key (verifying key) as raw bytes.
     pub fn public_bytes(&self) -> [u8; 32] {
         self.verifying.to_bytes()
     }
 
+    /// Sign a message, returning a 64-byte Ed25519 signature.
+    ///
+    /// Ed25519 signatures are deterministic - the same message
+    /// always produces the same signature (no nonce issues).
     pub fn sign(&self, message: &[u8]) -> [u8; 64] {
         use ed25519_dalek::Signer;
         self.signing.sign(message).to_bytes()
     }
 
+    /// Verify a signature against a message.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if signature is invalid for this message/key.
     pub fn verify(&self, message: &[u8], signature: &[u8; 64]) -> Result<()> {
         use ed25519_dalek::{Signature, Verifier};
         let sig = Signature::from_bytes(signature);
@@ -110,6 +211,15 @@ impl SigningKeypair {
             .map_err(|_| CryptoError::InvalidKey("signature verification failed".into()))
     }
 
+    /// Save keypair to disk.
+    ///
+    /// Creates two files:
+    /// - `{name}.sign.key` - secret key (mode 0o600 on Unix)
+    /// - `{name}.sign.pub` - public key
+    ///
+    /// # Errors
+    ///
+    /// Returns error if directory creation or file write fails.
     pub fn save(&self, dir: &Path, name: &str) -> Result<()> {
         std::fs::create_dir_all(dir)?;
         let sk_path = dir.join(format!("{name}.sign.key"));
@@ -124,6 +234,13 @@ impl SigningKeypair {
         Ok(())
     }
 
+    /// Load keypair from disk.
+    ///
+    /// Reads `{name}.sign.key` from the given directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if file doesn't exist or key is not exactly 32 bytes.
     pub fn load(dir: &Path, name: &str) -> Result<Self> {
         let sk_path = dir.join(format!("{name}.sign.key"));
         let sk_bytes = std::fs::read(&sk_path)?;
@@ -180,7 +297,18 @@ impl SignatureVerifier {
     }
 }
 
-/// Key metadata stored alongside keys
+/// Metadata stored alongside cryptographic keys.
+///
+/// Provides human-readable information about key purpose, creation time,
+/// and a fingerprint for identification without exposing key material.
+///
+/// # Fields
+///
+/// - `name` - Human-readable identifier
+/// - `role` - Key purpose (CA, service, noise, signing)
+/// - `created_at` - RFC3339 timestamp
+/// - `expires_at` - Optional expiration timestamp
+/// - `fingerprint` - First 16 bytes of SHA256(public_key) as hex
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KeyMetadata {
     pub name: String,
@@ -190,17 +318,28 @@ pub struct KeyMetadata {
     pub fingerprint: String,
 }
 
+/// Role/purpose of a cryptographic key.
+///
+/// Used in [`KeyMetadata`] to indicate what the key is authorized for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum KeyRole {
+    /// Root certificate authority
     RootCa,
+    /// Intermediate certificate authority
     IntermediateCa,
+    /// Service-level key (e.g., TLS server)
     Service,
+    /// Noise protocol key exchange
     Noise,
+    /// Ed25519 signing key
     Signing,
 }
 
 impl KeyMetadata {
+    /// Create new metadata with auto-generated fingerprint and timestamp.
+    ///
+    /// Fingerprint is first 16 bytes of SHA256(public_key) as hex (32 chars).
     pub fn new(name: &str, role: KeyRole, public_key: &[u8]) -> Self {
         use sha2::{Digest, Sha256};
         let hash = Sha256::digest(public_key);
@@ -217,6 +356,7 @@ impl KeyMetadata {
         }
     }
 
+    /// Save metadata to `{name}.meta.json` in the given directory.
     pub fn save(&self, dir: &Path) -> Result<()> {
         let path = dir.join(format!("{}.meta.json", self.name));
         let json = serde_json::to_string_pretty(self)?;
@@ -224,6 +364,7 @@ impl KeyMetadata {
         Ok(())
     }
 
+    /// Load metadata from `{name}.meta.json` in the given directory.
     pub fn load(dir: &Path, name: &str) -> Result<Self> {
         let path = dir.join(format!("{name}.meta.json"));
         let json = std::fs::read_to_string(path)?;
@@ -231,16 +372,22 @@ impl KeyMetadata {
     }
 }
 
-/// Securely zeroize key material on drop
+/// Wrapper for secret data that is zeroized on drop.
+///
+/// Implements the [`Zeroize`] trait to securely clear memory when
+/// the value goes out of scope, preventing secret material from
+/// lingering in memory after use.
 #[derive(Zeroize)]
 #[zeroize(drop)]
 pub struct SecretBytes(pub Vec<u8>);
 
 impl SecretBytes {
+    /// Create a new secret bytes wrapper.
     pub fn new(data: Vec<u8>) -> Self {
         Self(data)
     }
 
+    /// Access the secret data as a slice.
     pub fn as_slice(&self) -> &[u8] {
         &self.0
     }

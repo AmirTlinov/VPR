@@ -1,3 +1,14 @@
+//! Cryptographically Secure Random Number Generation
+//!
+//! Provides access to OS-level entropy via [`OsRng`] with test instrumentation.
+//! All cryptographic operations in this crate must use [`secure_rng()`] or [`fill()`].
+//!
+//! # Security
+//!
+//! - Production: Delegates to operating system CSPRNG (getrandom syscall)
+//! - Never uses deterministic fallbacks
+//! - Tests verify OsRng is actually called
+
 use rand::{rngs::OsRng, CryptoRng, RngCore};
 
 #[cfg(test)]

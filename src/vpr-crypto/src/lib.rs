@@ -1,3 +1,30 @@
+//! # VPR Crypto
+//!
+//! Cryptographic primitives for the VPR VPN protocol.
+//!
+//! ## Features
+//!
+//! - **Post-quantum hybrid encryption**: ML-KEM768 + X25519
+//! - **Noise protocol**: IK/NK pattern with hybrid KEM
+//! - **Key management**: Generation, storage, rotation
+//! - **Constant-time operations**: For timing attack resistance
+//! - **Secret hygiene**: Zeroizing memory on drop
+//!
+//! ## Example
+//!
+//! ```no_run
+//! use vpr_crypto::{NoiseKeypair, SigningKeypair};
+//! use std::path::Path;
+//!
+//! // Generate Noise keypair for VPN tunnel
+//! let noise_keys = NoiseKeypair::generate();
+//! noise_keys.save(Path::new("secrets"), "client").unwrap();
+//!
+//! // Generate signing keypair for manifests
+//! let signing_keys = SigningKeypair::generate();
+//! let signature = signing_keys.sign(b"message");
+//! ```
+
 pub mod constant_time;
 pub mod error;
 pub mod keys;
