@@ -295,8 +295,8 @@ mod tests {
     #[test]
     fn test_profile_clone() {
         let original = TrafficProfile::Netflix;
-        let cloned = original.clone();
-        assert_eq!(original, cloned);
+        let copied = original;
+        assert_eq!(original, copied);
     }
 
     #[test]
@@ -394,8 +394,7 @@ mod tests {
     #[test]
     fn test_result_type_ok() {
         let result: Result<u32> = Ok(42);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), 42);
+        assert!(matches!(result, Ok(42)));
     }
 
     #[test]

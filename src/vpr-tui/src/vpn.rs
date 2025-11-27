@@ -15,14 +15,8 @@ use tokio::sync::{mpsc, Mutex, RwLock};
 pub enum ConnectionState {
     Disconnected,
     Connecting,
-    Connected {
-        server: String,
-        connected_at: u64,
-    },
-    Reconnecting {
-        attempt: u32,
-        max_attempts: u32,
-    },
+    Connected { server: String, connected_at: u64 },
+    Reconnecting { attempt: u32, max_attempts: u32 },
     Error(String),
 }
 
@@ -184,17 +178,21 @@ impl VpnController {
         // Check if already connected or connecting
         {
             let state = self.state.read().await;
-            if matches!(*state, ConnectionState::Connected { .. } | ConnectionState::Connecting) {
+            if matches!(
+                *state,
+                ConnectionState::Connected { .. } | ConnectionState::Connecting
+            ) {
                 anyhow::bail!("Already connected or connecting");
             }
         }
 
         // Update state to connecting
         *self.state.write().await = ConnectionState::Connecting;
-        self.add_log(LogLevel::Info, "Initiating VPN connection...").await;
+        self.add_log(LogLevel::Info, "Initiating VPN connection...")
+            .await;
 
         let config = self.config.read().await.clone();
-        
+
         // Validate configuration
         if config.server.host.is_empty() {
             *self.state.write().await = ConnectionState::Error("Server not configured".into());
@@ -204,11 +202,16 @@ impl VpnController {
         // Build command
         let mut cmd = Command::new(&config.client_binary);
         cmd.args([
-            "--server", &config.server.host,
-            "--port", &config.server.port.to_string(),
-            "--tun-name", &config.tun_name,
-            "--noise-dir", config.secrets_dir.to_str().unwrap_or("."),
-            "--noise-name", "client",
+            "--server",
+            &config.server.host,
+            "--port",
+            &config.server.port.to_string(),
+            "--tun-name",
+            &config.tun_name,
+            "--noise-dir",
+            config.secrets_dir.to_str().unwrap_or("."),
+            "--noise-name",
+            "client",
         ]);
 
         if config.insecure {
@@ -219,8 +222,16 @@ impl VpnController {
             .stderr(Stdio::piped())
             .stdin(Stdio::null());
 
-        self.add_log(LogLevel::Info, &format!("Starting client: {} -> {}:{}", 
-            config.client_binary.display(), config.server.host, config.server.port)).await;
+        self.add_log(
+            LogLevel::Info,
+            &format!(
+                "Starting client: {} -> {}:{}",
+                config.client_binary.display(),
+                config.server.host,
+                config.server.port
+            ),
+        )
+        .await;
 
         // Spawn process
         let mut child = match cmd.spawn() {
@@ -260,7 +271,7 @@ impl VpnController {
             // Parse stdout
             if let Some(stdout) = stdout {
                 let mut reader = BufReader::new(stdout).lines();
-                
+
                 loop {
                     tokio::select! {
                         _ = shutdown_rx.recv() => {
@@ -271,7 +282,7 @@ impl VpnController {
                                 Ok(Some(line)) => {
                                     // Parse log line
                                     let (level, msg) = parse_log_line(&line);
-                                    
+
                                     // Add to logs
                                     {
                                         let mut logs = logs.lock().await;
@@ -297,7 +308,7 @@ impl VpnController {
                                             server: server_host.clone(),
                                             connected_at: chrono::Utc::now().timestamp() as u64,
                                         };
-                                        
+
                                         // Initialize metrics
                                         let mut m = metrics.write().await;
                                         m.server_location = server_location.clone();
@@ -352,7 +363,8 @@ impl VpnController {
             }
         }
 
-        self.add_log(LogLevel::Info, "VPN client started, waiting for tunnel...").await;
+        self.add_log(LogLevel::Info, "VPN client started, waiting for tunnel...")
+            .await;
         Ok(())
     }
 
@@ -401,7 +413,7 @@ impl VpnController {
             .args(["link", "show", &config.tun_name])
             .output()
             .await;
-        
+
         output.map(|o| o.status.success()).unwrap_or(false)
     }
 
@@ -461,25 +473,27 @@ impl VpnController {
         let rx_path = format!("/sys/class/net/{}/statistics/rx_bytes", tun);
         let tx_path = format!("/sys/class/net/{}/statistics/tx_bytes", tun);
 
-        let rx = tokio::fs::read_to_string(&rx_path).await
+        let rx = tokio::fs::read_to_string(&rx_path)
+            .await
             .ok()
             .and_then(|s| s.trim().parse::<u64>().ok())
             .unwrap_or(0);
 
-        let tx = tokio::fs::read_to_string(&tx_path).await
+        let tx = tokio::fs::read_to_string(&tx_path)
+            .await
             .ok()
             .and_then(|s| s.trim().parse::<u64>().ok())
             .unwrap_or(0);
 
         let mut metrics = self.metrics.write().await;
-        
+
         // Calculate speeds (bytes since last update)
         let prev_rx = metrics.bytes_received;
         let prev_tx = metrics.bytes_sent;
-        
+
         metrics.bytes_received = rx;
         metrics.bytes_sent = tx;
-        
+
         // Approximate speed (assuming 1 second between updates)
         if rx > prev_rx {
             metrics.download_speed = rx - prev_rx;
@@ -541,7 +555,7 @@ fn parse_latency(line: &str) -> Option<u32> {
 fn strip_ansi(s: &str) -> String {
     let mut result = String::with_capacity(s.len());
     let mut chars = s.chars().peekable();
-    
+
     while let Some(c) = chars.next() {
         if c == '\x1b' {
             // Skip escape sequence

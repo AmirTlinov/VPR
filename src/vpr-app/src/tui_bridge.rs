@@ -6,11 +6,13 @@ use ratatui::backend::TestBackend;
 use ratatui::Terminal;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use vpr_tui::globe::GlobeRenderer;
-use vpr_tui::render::{draw_main_screen, draw_logs_screen, draw_servers_screen, draw_settings_screen, draw_help_screen};
 use vpr_tui::app::{AppState, Screen};
-use vpr_tui::vpn::{ConnectionState, VpnController};
 use vpr_tui::config::TuiConfig;
+use vpr_tui::globe::GlobeRenderer;
+use vpr_tui::render::{
+    draw_help_screen, draw_logs_screen, draw_main_screen, draw_servers_screen, draw_settings_screen,
+};
+use vpr_tui::vpn::{ConnectionState, VpnController};
 
 /// TUI state managed by Tauri
 pub struct TuiState {
@@ -26,49 +28,51 @@ impl TuiState {
         let vpn = Arc::new(VpnController::new(controller_config));
         let app = Arc::new(RwLock::new(AppState::new(vpn.clone(), config)));
         let globe = GlobeRenderer::new(200, 0.3, 0.2);
-        
+
         Self { app, globe, vpn }
     }
-    
+
     /// Render current frame as ANSI string
     pub async fn render_frame(&self, width: u16, height: u16) -> String {
         let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).unwrap();
-        
+
         let app = self.app.read().await;
-        
-        terminal.draw(|frame| {
-            let area = frame.size();
-            
-            match app.screen {
-                Screen::Main => draw_main_screen(frame, &self.globe, area, &app),
-                Screen::Logs => draw_logs_screen(frame, area, &app, &self.vpn),
-                Screen::Servers => draw_servers_screen(frame, area, &app),
-                Screen::Settings => draw_settings_screen(frame, area, &app),
-                Screen::Help => draw_help_screen(frame, area, &app),
-            }
-        }).ok();
-        
+
+        terminal
+            .draw(|frame| {
+                let area = frame.size();
+
+                match app.screen {
+                    Screen::Main => draw_main_screen(frame, &self.globe, area, &app),
+                    Screen::Logs => draw_logs_screen(frame, area, &app, &self.vpn),
+                    Screen::Servers => draw_servers_screen(frame, area, &app),
+                    Screen::Settings => draw_settings_screen(frame, area, &app),
+                    Screen::Help => draw_help_screen(frame, area, &app),
+                }
+            })
+            .ok();
+
         // Convert TestBackend buffer to ANSI string
         let backend = terminal.backend();
         buffer_to_ansi(backend.buffer())
     }
-    
+
     /// Update animation tick
     pub async fn tick(&self) {
         let mut app = self.app.write().await;
         app.angle = (app.angle + self.globe.angular_step()) % std::f32::consts::TAU;
         app.tick = app.tick.wrapping_add(1);
-        
+
         // Sync connection state from VPN controller
         app.conn_state = self.vpn.state().await;
         app.metrics = self.vpn.metrics().await;
     }
-    
+
     /// Handle key press
     pub async fn handle_key(&self, key: &str) -> bool {
         use crossterm::event::KeyCode;
-        
+
         let key_code = match key {
             "Space" | " " => KeyCode::Char(' '),
             "Enter" => KeyCode::Enter,
@@ -88,9 +92,9 @@ impl TuiState {
             k if k.len() == 1 => KeyCode::Char(k.chars().next().unwrap()),
             _ => return false,
         };
-        
+
         let mut app = self.app.write().await;
-        
+
         // Global keys
         match key_code {
             KeyCode::Char('q') | KeyCode::Esc => {
@@ -107,7 +111,7 @@ impl TuiState {
             }
             _ => {}
         }
-        
+
         // Screen-specific keys
         match app.screen {
             Screen::Main => {
@@ -127,36 +131,34 @@ impl TuiState {
                 app.screen = Screen::Main;
             }
         }
-        
+
         true
     }
-    
+
     async fn handle_main_key(&self, app: &mut AppState, key: crossterm::event::KeyCode) {
         use crossterm::event::KeyCode;
-        
+
         match key {
-            KeyCode::Char(' ') | KeyCode::Enter => {
-                match &app.conn_state {
-                    ConnectionState::Disconnected | ConnectionState::Error(_) => {
-                        app.set_status(">>> INITIALIZING SECURE TUNNEL...");
-                        if let Err(e) = self.vpn.connect().await {
-                            app.set_status(format!("✗ Connection failed: {}", e));
-                        }
-                    }
-                    ConnectionState::Connected { .. } => {
-                        app.set_status(">>> TERMINATING CONNECTION...");
-                        if let Err(e) = self.vpn.disconnect().await {
-                            app.set_status(format!("✗ Disconnect failed: {}", e));
-                        } else {
-                            app.set_status("✓ TUNNEL CLOSED");
-                        }
-                    }
-                    _ => {
-                        app.set_status(">>> ABORTING...");
-                        let _ = self.vpn.disconnect().await;
+            KeyCode::Char(' ') | KeyCode::Enter => match &app.conn_state {
+                ConnectionState::Disconnected | ConnectionState::Error(_) => {
+                    app.set_status(">>> INITIALIZING SECURE TUNNEL...");
+                    if let Err(e) = self.vpn.connect().await {
+                        app.set_status(format!("✗ Connection failed: {}", e));
                     }
                 }
-            }
+                ConnectionState::Connected { .. } => {
+                    app.set_status(">>> TERMINATING CONNECTION...");
+                    if let Err(e) = self.vpn.disconnect().await {
+                        app.set_status(format!("✗ Disconnect failed: {}", e));
+                    } else {
+                        app.set_status("✓ TUNNEL CLOSED");
+                    }
+                }
+                _ => {
+                    app.set_status(">>> ABORTING...");
+                    let _ = self.vpn.disconnect().await;
+                }
+            },
             KeyCode::Char('s') | KeyCode::Char('S') => {
                 app.screen = Screen::Servers;
             }
@@ -186,10 +188,10 @@ impl TuiState {
             _ => {}
         }
     }
-    
+
     async fn handle_servers_key(&self, app: &mut AppState, key: crossterm::event::KeyCode) {
         use crossterm::event::KeyCode;
-        
+
         match key {
             KeyCode::Up | KeyCode::Char('k') => {
                 if app.selected_server > 0 {
@@ -217,7 +219,7 @@ impl TuiState {
 
 fn handle_logs_key(app: &mut AppState, key: crossterm::event::KeyCode) {
     use crossterm::event::KeyCode;
-    
+
     match key {
         KeyCode::Up | KeyCode::Char('k') => {
             app.log_scroll = app.log_scroll.saturating_add(1);
@@ -238,7 +240,7 @@ fn handle_logs_key(app: &mut AppState, key: crossterm::event::KeyCode) {
 fn handle_settings_key(app: &mut AppState, key: crossterm::event::KeyCode) {
     use crossterm::event::KeyCode;
     const MAX_SETTINGS: usize = 7;
-    
+
     match key {
         KeyCode::Up | KeyCode::Char('k') => {
             if app.settings_selection > 0 {
@@ -250,43 +252,39 @@ fn handle_settings_key(app: &mut AppState, key: crossterm::event::KeyCode) {
                 app.settings_selection += 1;
             }
         }
-        KeyCode::Enter | KeyCode::Char(' ') => {
-            match app.settings_selection {
-                0 => app.config.auto_connect = !app.config.auto_connect,
-                1 => app.config.auto_reconnect = !app.config.auto_reconnect,
-                2 => {
-                    app.config.max_reconnect_attempts = match app.config.max_reconnect_attempts {
-                        3 => 5,
-                        5 => 10,
-                        _ => 3,
-                    };
-                }
-                3 => {
-                    app.config.tun_name = match app.config.tun_name.as_str() {
-                        "vpr0" => "vpr1".into(),
-                        "vpr1" => "tun0".into(),
-                        _ => "vpr0".into(),
-                    };
-                }
-                4 => app.config.insecure = !app.config.insecure,
-                5 => {
-                    app.config.theme = match app.config.theme {
-                        vpr_tui::config::Theme::WatchDogs => vpr_tui::config::Theme::Matrix,
-                        vpr_tui::config::Theme::Matrix => vpr_tui::config::Theme::Cyberpunk,
-                        vpr_tui::config::Theme::Cyberpunk => vpr_tui::config::Theme::Minimal,
-                        vpr_tui::config::Theme::Minimal => vpr_tui::config::Theme::WatchDogs,
-                    };
-                }
-                6 => app.config.notifications = !app.config.notifications,
-                _ => {}
+        KeyCode::Enter | KeyCode::Char(' ') => match app.settings_selection {
+            0 => app.config.auto_connect = !app.config.auto_connect,
+            1 => app.config.auto_reconnect = !app.config.auto_reconnect,
+            2 => {
+                app.config.max_reconnect_attempts = match app.config.max_reconnect_attempts {
+                    3 => 5,
+                    5 => 10,
+                    _ => 3,
+                };
             }
-        }
-        KeyCode::Char('s') | KeyCode::Char('S') => {
-            match app.save_config() {
-                Ok(_) => app.set_status("✓ Configuration saved"),
-                Err(e) => app.set_status(format!("✗ Save failed: {}", e)),
+            3 => {
+                app.config.tun_name = match app.config.tun_name.as_str() {
+                    "vpr0" => "vpr1".into(),
+                    "vpr1" => "tun0".into(),
+                    _ => "vpr0".into(),
+                };
             }
-        }
+            4 => app.config.insecure = !app.config.insecure,
+            5 => {
+                app.config.theme = match app.config.theme {
+                    vpr_tui::config::Theme::WatchDogs => vpr_tui::config::Theme::Matrix,
+                    vpr_tui::config::Theme::Matrix => vpr_tui::config::Theme::Cyberpunk,
+                    vpr_tui::config::Theme::Cyberpunk => vpr_tui::config::Theme::Minimal,
+                    vpr_tui::config::Theme::Minimal => vpr_tui::config::Theme::WatchDogs,
+                };
+            }
+            6 => app.config.notifications = !app.config.notifications,
+            _ => {}
+        },
+        KeyCode::Char('s') | KeyCode::Char('S') => match app.save_config() {
+            Ok(_) => app.set_status("✓ Configuration saved"),
+            Err(e) => app.set_status(format!("✗ Save failed: {}", e)),
+        },
         _ => {}
     }
 }
@@ -295,27 +293,28 @@ fn handle_settings_key(app: &mut AppState, key: crossterm::event::KeyCode) {
 fn buffer_to_ansi(buffer: &ratatui::buffer::Buffer) -> String {
     use ratatui::style::{Color, Modifier};
     use std::fmt::Write;
-    
-    let mut output = String::with_capacity(buffer.area.width as usize * buffer.area.height as usize * 20);
-    
+
+    let mut output =
+        String::with_capacity(buffer.area.width as usize * buffer.area.height as usize * 20);
+
     // Clear screen and move cursor home
     output.push_str("\x1b[2J\x1b[H");
-    
+
     let mut prev_fg = Color::Reset;
     let mut prev_bg = Color::Reset;
     let mut prev_mods = Modifier::empty();
-    
+
     for y in 0..buffer.area.height {
         for x in 0..buffer.area.width {
             let cell = buffer.get(x, y);
             let fg = cell.fg;
             let bg = cell.bg;
             let mods = cell.modifier;
-            
+
             // Build escape sequence if style changed
             if fg != prev_fg || bg != prev_bg || mods != prev_mods {
                 output.push_str("\x1b[0m"); // Reset first
-                
+
                 // Set modifiers
                 if mods.contains(Modifier::BOLD) {
                     output.push_str("\x1b[1m");
@@ -329,7 +328,7 @@ fn buffer_to_ansi(buffer: &ratatui::buffer::Buffer) -> String {
                 if mods.contains(Modifier::UNDERLINED) {
                     output.push_str("\x1b[4m");
                 }
-                
+
                 // Set foreground color
                 match fg {
                     Color::Reset => {}
@@ -356,7 +355,7 @@ fn buffer_to_ansi(buffer: &ratatui::buffer::Buffer) -> String {
                         let _ = write!(output, "\x1b[38;5;{}m", i);
                     }
                 }
-                
+
                 // Set background color
                 match bg {
                     Color::Reset => {}
@@ -383,20 +382,20 @@ fn buffer_to_ansi(buffer: &ratatui::buffer::Buffer) -> String {
                         let _ = write!(output, "\x1b[48;5;{}m", i);
                     }
                 }
-                
+
                 prev_fg = fg;
                 prev_bg = bg;
                 prev_mods = mods;
             }
-            
+
             // Output the character
             output.push_str(cell.symbol());
         }
         output.push_str("\r\n");
     }
-    
+
     // Reset at end
     output.push_str("\x1b[0m");
-    
+
     output
 }

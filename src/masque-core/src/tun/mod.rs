@@ -15,15 +15,14 @@ pub mod state;
 // Re-export main types
 pub use device::{TunConfig, TunDevice, TunReader, TunWriter};
 pub use dns::DnsProtection;
+pub use ipv6::{setup_ipv6_nat, setup_ipv6_routing};
 pub use nat::{enable_ip_forwarding, setup_nat, setup_nat_with_config, teardown_nat, NatConfig};
 pub use packet::{IpAddress, IpPacketInfo, IpVersion};
 pub use routing::{RouteRule, RoutingConfig, RoutingPolicy};
 pub use split_tunnel::{
-    add_policy_rule, add_route_rule, restore_split_tunnel, setup_policy_routing,
-    setup_split_tunnel,
+    add_policy_rule, add_route_rule, restore_split_tunnel, setup_policy_routing, setup_split_tunnel,
 };
 pub use state::RoutingState;
-pub use ipv6::{setup_ipv6_nat, setup_ipv6_routing};
 
 use anyhow::{Context, Result};
 use std::net::Ipv4Addr;

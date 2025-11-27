@@ -92,7 +92,10 @@ fn check_time_skew(
             Severity::Info
         },
         message: if passed {
-            format!("Client-server time skew is acceptable ({} seconds)", skew_secs)
+            format!(
+                "Client-server time skew is acceptable ({} seconds)",
+                skew_secs
+            )
         } else {
             format!(
                 "Client-server time skew is TOO LARGE ({} seconds > {} seconds max). This will break Noise protocol nonces!",

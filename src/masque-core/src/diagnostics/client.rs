@@ -1,6 +1,9 @@
 //! Client-side VPN diagnostics
 
-use super::{DiagnosticConfig, DiagnosticReport, DiagnosticResult, Fix, HealthStatus, Protocol, Severity, Side};
+use super::{
+    DiagnosticConfig, DiagnosticReport, DiagnosticResult, Fix, HealthStatus, Protocol, Severity,
+    Side,
+};
 use anyhow::{Context, Result};
 use std::net::IpAddr;
 use std::path::PathBuf;
@@ -115,7 +118,8 @@ fn check_ca_cert_exists(_config: &DiagnosticConfig) -> Result<DiagnosticResult> 
 #[allow(clippy::disallowed_types)] // TcpStream OK for diagnostics
 fn check_server_tcp_reachable(server: IpAddr, port: u16) -> DiagnosticResult {
     let addr = format!("{}:{}", server, port);
-    let reachable = TcpStream::connect_timeout(&addr.parse().unwrap(), Duration::from_secs(5)).is_ok();
+    let reachable =
+        TcpStream::connect_timeout(&addr.parse().unwrap(), Duration::from_secs(5)).is_ok();
 
     DiagnosticResult {
         check_name: "Server TCP Reachability".to_string(),
@@ -124,7 +128,10 @@ fn check_server_tcp_reachable(server: IpAddr, port: u16) -> DiagnosticResult {
         message: if reachable {
             format!("Server {}:{} is reachable via TCP", server, port)
         } else {
-            format!("Server {}:{} is NOT reachable via TCP (firewall/routing issue?)", server, port)
+            format!(
+                "Server {}:{} is NOT reachable via TCP (firewall/routing issue?)",
+                server, port
+            )
         },
         fix: if !reachable {
             Some(Fix::ManualInstruction {
@@ -171,11 +178,7 @@ fn check_dns_resolution() -> DiagnosticResult {
         } else {
             format!("DNS resolution failed for {}", test_host)
         },
-        fix: if !resolved {
-            Some(Fix::FlushDns)
-        } else {
-            None
-        },
+        fix: if !resolved { Some(Fix::FlushDns) } else { None },
         auto_fixable: true,
     }
 }

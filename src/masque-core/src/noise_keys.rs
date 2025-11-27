@@ -82,7 +82,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let key_path = dir.path().join("noise.key");
         let sk = [42u8; 32];
-        std::fs::write(&key_path, &sk).unwrap();
+        std::fs::write(&key_path, sk).unwrap();
 
         let result = load_keypair(&key_path);
         assert!(result.is_ok());
@@ -97,7 +97,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let key_path = dir.path().join("noise.key");
         let short_key = [1u8; 16];
-        std::fs::write(&key_path, &short_key).unwrap();
+        std::fs::write(&key_path, short_key).unwrap();
 
         let result = load_keypair(&key_path);
         assert!(result.is_err());
@@ -116,7 +116,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let pub_path = dir.path().join("noise.pub");
         let pk = [99u8; 32];
-        std::fs::write(&pub_path, &pk).unwrap();
+        std::fs::write(&pub_path, pk).unwrap();
 
         let result = load_public(&pub_path);
         assert!(result.is_ok());
@@ -128,7 +128,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let pub_path = dir.path().join("noise.pub");
         let bad_pk = [1u8; 48];
-        std::fs::write(&pub_path, &bad_pk).unwrap();
+        std::fs::write(&pub_path, bad_pk).unwrap();
 
         let result = load_public(&pub_path);
         assert!(result.is_err());
@@ -146,7 +146,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let key_path = dir.path().join("noise.key");
         let sk = [123u8; 32];
-        std::fs::write(&key_path, &sk).unwrap();
+        std::fs::write(&key_path, sk).unwrap();
 
         let keypair = load_keypair(&key_path).unwrap();
         let expected_pk = x25519_public(&sk).unwrap();

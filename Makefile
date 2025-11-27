@@ -51,3 +51,7 @@ app: build
 # Clean build artifacts
 clean:
 	@cargo clean
+
+# Full debug test sweep (fmt + clippy + workspace tests with verbose output)
+test-debug:
+	@./scripts/test_all_debug.sh

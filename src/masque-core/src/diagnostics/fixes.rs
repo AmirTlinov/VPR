@@ -5,7 +5,7 @@
 //! - All values validated through typed wrappers
 //! - Whitelist approach for services and modules
 
-use super::{Fix, FirewallAction, Protocol, RollbackOperation, SyncDirection, ValidatedModuleName};
+use super::{FirewallAction, Fix, Protocol, RollbackOperation, SyncDirection, ValidatedModuleName};
 use anyhow::{bail, Result};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -94,14 +94,14 @@ impl FixExecutor {
                 self.regenerate_certificate(cn.as_str(), san).await
             }
             // ManualInstruction: Display-only, never executes commands (security)
-            Fix::ManualInstruction { instruction, description } => {
-                Ok(FixResult::Skipped(format!(
-                    "[MANUAL FIX REQUIRED] {}: Run manually: {}",
-                    description, instruction
-                )))
-            }
-            // NOTE: Fix::RunCommand REMOVED - was a critical security vulnerability
-            // All fixes must use typed, validated operations
+            Fix::ManualInstruction {
+                instruction,
+                description,
+            } => Ok(FixResult::Skipped(format!(
+                "[MANUAL FIX REQUIRED] {}: Run manually: {}",
+                description, instruction
+            ))), // NOTE: Fix::RunCommand REMOVED - was a critical security vulnerability
+                 // All fixes must use typed, validated operations
         }
     }
 
@@ -177,7 +177,9 @@ impl FixExecutor {
                     };
                     // Use nft with separate arguments (no shell injection possible)
                     Command::new("nft")
-                        .args(["delete", "rule", "inet", "filter", "input", proto_str, "dport"])
+                        .args([
+                            "delete", "rule", "inet", "filter", "input", proto_str, "dport",
+                        ])
                         .arg(port.to_string())
                         .arg("accept")
                         .status()?;
@@ -215,7 +217,9 @@ impl FixExecutor {
 
     async fn flush_dns(&mut self) -> Result<FixResult> {
         if self.dry_run {
-            return Ok(FixResult::Skipped("[DRY RUN] Would flush DNS cache".to_string()));
+            return Ok(FixResult::Skipped(
+                "[DRY RUN] Would flush DNS cache".to_string(),
+            ));
         }
 
         #[cfg(target_os = "linux")]
@@ -226,7 +230,9 @@ impl FixExecutor {
                 .output()?;
 
             if output.status.success() {
-                return Ok(FixResult::Success("DNS cache flushed (systemd-resolved)".to_string()));
+                return Ok(FixResult::Success(
+                    "DNS cache flushed (systemd-resolved)".to_string(),
+                ));
             }
 
             // Fallback: try nscd
@@ -320,10 +326,8 @@ impl FixExecutor {
 
                     if output.status.success() {
                         // Add rollback (security: using typed operation)
-                        self.rollback_stack.push(RollbackOperation::RemoveFirewallPort {
-                            port,
-                            protocol,
-                        });
+                        self.rollback_stack
+                            .push(RollbackOperation::RemoveFirewallPort { port, protocol });
 
                         return Ok(FixResult::Success(format!(
                             "Opened {}/{} port via UFW",
@@ -334,10 +338,7 @@ impl FixExecutor {
             }
 
             // Fallback: nftables
-            let rule = format!(
-                "inet filter input {} dport {} accept",
-                proto_str, port
-            );
+            let rule = format!("inet filter input {} dport {} accept", proto_str, port);
             let output = Command::new("nft")
                 .args(["add", "rule"])
                 .arg(&rule)
@@ -473,9 +474,7 @@ impl FixExecutor {
             let mut cleaned = Vec::new();
 
             // Check for orphaned nftables rules
-            let output = Command::new("nft")
-                .args(["list", "tables"])
-                .output()?;
+            let output = Command::new("nft").args(["list", "tables"]).output()?;
 
             let tables = String::from_utf8_lossy(&output.stdout);
 
@@ -502,9 +501,7 @@ impl FixExecutor {
             }
 
             // Check for orphaned TUN devices
-            let output = Command::new("ip")
-                .args(["link", "show"])
-                .output()?;
+            let output = Command::new("ip").args(["link", "show"]).output()?;
 
             let links = String::from_utf8_lossy(&output.stdout);
             for line in links.lines() {
@@ -514,9 +511,7 @@ impl FixExecutor {
                         let name = name.trim();
                         tracing::info!("Removing orphaned TUN interface: {}", name);
 
-                        Command::new("ip")
-                            .args(["link", "delete", name])
-                            .output()?;
+                        Command::new("ip").args(["link", "delete", name]).output()?;
 
                         cleaned.push("Removed orphaned TUN device");
                     }
@@ -657,9 +652,11 @@ mod tests {
         executor.set_dry_run(true);
 
         // Simulate fix application with safe typed rollback operation
-        executor.rollback_stack.push(RollbackOperation::UnloadModule {
-            module: ValidatedModuleName::Tun,
-        });
+        executor
+            .rollback_stack
+            .push(RollbackOperation::UnloadModule {
+                module: ValidatedModuleName::Tun,
+            });
 
         // Rollback should clear stack
         executor.rollback_all().await.unwrap();

@@ -44,19 +44,19 @@ pub struct UiStats {
 
 pub fn draw_main_screen(frame: &mut Frame<'_>, globe: &GlobeRenderer, area: Rect, app: &AppState) {
     let has_status = app.get_status().is_some();
-    
+
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),  // Header
+            Constraint::Length(3),                              // Header
             Constraint::Length(if has_status { 1 } else { 0 }), // Status message
-            Constraint::Min(10),    // Content
-            Constraint::Length(2),  // Footer
+            Constraint::Min(10),                                // Content
+            Constraint::Length(2),                              // Footer
         ])
         .split(area);
 
     render_header(frame, layout[0], app);
-    
+
     if has_status {
         render_status_bar(frame, layout[1], app);
     }
@@ -84,18 +84,23 @@ fn render_header(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
         }
         ConnectionState::Disconnected => ("░░░ OFFLINE ░░░".into(), Color::DarkGray),
         ConnectionState::Connecting => (">>> CONNECTING... <<<".into(), Color::Yellow),
-        ConnectionState::Reconnecting { attempt, max_attempts } => {
-            (format!(">>> RECONNECTING {}/{} <<<", attempt, max_attempts), Color::Yellow)
-        }
+        ConnectionState::Reconnecting {
+            attempt,
+            max_attempts,
+        } => (
+            format!(">>> RECONNECTING {}/{} <<<", attempt, max_attempts),
+            Color::Yellow,
+        ),
         ConnectionState::Error(e) => (format!("!!! ERROR: {} !!!", e), Color::Red),
     };
 
     // Глитч эффект для заголовка при подключении
-    let glitched_status = if app.tick % 50 < 3 && matches!(app.conn_state, ConnectionState::Connecting) {
-        glitch_text(&status_text, app.tick, 0.4)
-    } else {
-        status_text
-    };
+    let glitched_status =
+        if app.tick % 50 < 3 && matches!(app.conn_state, ConnectionState::Connecting) {
+            glitch_text(&status_text, app.tick, 0.4)
+        } else {
+            status_text
+        };
 
     let lines = vec![
         Line::from(vec![
@@ -134,12 +139,13 @@ fn render_header(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
                     ConnectionState::Connected { .. } => " [ENCRYPTED:ML-KEM768] ",
                     _ => " [STANDBY] ",
                 },
-                Style::default()
-                    .fg(if matches!(app.conn_state, ConnectionState::Connected { .. }) {
+                Style::default().fg(
+                    if matches!(app.conn_state, ConnectionState::Connected { .. }) {
                         Color::Green
                     } else {
                         Color::DarkGray
-                    }),
+                    },
+                ),
             ),
             Span::styled(
                 get_hacker_message(app.tick),
@@ -201,7 +207,10 @@ fn render_globe(frame: &mut Frame<'_>, area: Rect, globe: &GlobeRenderer, app: &
     };
 
     let title = match &app.conn_state {
-        ConnectionState::Connected { server, connected_at } => {
+        ConnectionState::Connected {
+            server,
+            connected_at,
+        } => {
             let uptime = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
@@ -229,10 +238,10 @@ fn render_stats_panel(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     let blocks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(6),  // Connection Info
-            Constraint::Length(7),  // Network Stats
-            Constraint::Length(8),  // ASCII Art
-            Constraint::Min(4),     // System Tasks
+            Constraint::Length(6), // Connection Info
+            Constraint::Length(7), // Network Stats
+            Constraint::Length(8), // ASCII Art
+            Constraint::Min(4),    // System Tasks
         ])
         .split(area);
 
@@ -244,7 +253,7 @@ fn render_stats_panel(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
 
 fn render_connection_info(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     let metrics = &app.metrics;
-    
+
     let (status_icon, status_color) = match &app.conn_state {
         ConnectionState::Connected { .. } => ("●", Color::Green),
         ConnectionState::Connecting => ("◐", Color::Yellow),
@@ -258,34 +267,51 @@ fn render_connection_info(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
             Span::styled(" STATUS:   ", Style::default().fg(Color::DarkGray)),
             Span::styled(status_icon, Style::default().fg(status_color)),
             Span::styled(
-                format!(" {}", match &app.conn_state {
-                    ConnectionState::Connected { .. } => "CONNECTED",
-                    ConnectionState::Connecting => "CONNECTING",
-                    ConnectionState::Disconnected => "OFFLINE",
-                    ConnectionState::Reconnecting { .. } => "RECONNECTING",
-                    ConnectionState::Error(_) => "ERROR",
-                }),
-                Style::default().fg(status_color).add_modifier(Modifier::BOLD),
+                format!(
+                    " {}",
+                    match &app.conn_state {
+                        ConnectionState::Connected { .. } => "CONNECTED",
+                        ConnectionState::Connecting => "CONNECTING",
+                        ConnectionState::Disconnected => "OFFLINE",
+                        ConnectionState::Reconnecting { .. } => "RECONNECTING",
+                        ConnectionState::Error(_) => "ERROR",
+                    }
+                ),
+                Style::default()
+                    .fg(status_color)
+                    .add_modifier(Modifier::BOLD),
             ),
         ]),
         Line::from(vec![
             Span::styled(" EXT_IP:   ", Style::default().fg(Color::DarkGray)),
             Span::styled(
-                if metrics.external_ip.is_empty() { "---".into() } else { metrics.external_ip.clone() },
+                if metrics.external_ip.is_empty() {
+                    "---".into()
+                } else {
+                    metrics.external_ip.clone()
+                },
                 Style::default().fg(Color::Cyan),
             ),
         ]),
         Line::from(vec![
             Span::styled(" TUNNEL:   ", Style::default().fg(Color::DarkGray)),
             Span::styled(
-                if metrics.tun_interface.is_empty() { "---" } else { &metrics.tun_interface },
+                if metrics.tun_interface.is_empty() {
+                    "---"
+                } else {
+                    &metrics.tun_interface
+                },
                 Style::default().fg(Color::Magenta),
             ),
         ]),
         Line::from(vec![
             Span::styled(" LOCATION: ", Style::default().fg(Color::DarkGray)),
             Span::styled(
-                if metrics.server_location.is_empty() { "Unknown" } else { &metrics.server_location },
+                if metrics.server_location.is_empty() {
+                    "Unknown"
+                } else {
+                    &metrics.server_location
+                },
                 Style::default().fg(Color::Yellow),
             ),
         ]),
@@ -304,7 +330,7 @@ fn render_connection_info(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
 
 fn render_network_stats(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     let metrics = &app.metrics;
-    
+
     // Calculate progress bars based on real metrics
     let upload_mbps = metrics.upload_speed as f32 / 125_000.0; // Convert bytes/s to Mbps
     let download_mbps = metrics.download_speed as f32 / 125_000.0;
@@ -355,7 +381,8 @@ fn render_network_stats(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
         Line::from(vec![
             Span::styled(" ⚡ TRAFFIC: ", Style::default().fg(Color::Magenta)),
             Span::styled(
-                format!("↑{} ↓{}", 
+                format!(
+                    "↑{} ↓{}",
                     format_bytes(metrics.bytes_sent),
                     format_bytes(metrics.bytes_received)
                 ),
@@ -427,7 +454,7 @@ fn render_ascii_art(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
 
 fn render_system_tasks(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     let connected = matches!(app.conn_state, ConnectionState::Connected { .. });
-    
+
     let tasks = if connected {
         vec![
             ("noise_handshake", "COMPLETE", Color::Green),
@@ -495,7 +522,9 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
 
     let action_style = match &app.conn_state {
         ConnectionState::Connected { .. } => Style::default().fg(Color::Red),
-        ConnectionState::Disconnected | ConnectionState::Error(_) => Style::default().fg(Color::Green),
+        ConnectionState::Disconnected | ConnectionState::Error(_) => {
+            Style::default().fg(Color::Green)
+        }
         _ => Style::default().fg(Color::Yellow),
     };
 
@@ -530,7 +559,12 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
 // Logs Screen
 // =============================================================================
 
-pub fn draw_logs_screen(frame: &mut Frame<'_>, area: Rect, app: &AppState, _vpn: &Arc<VpnController>) {
+pub fn draw_logs_screen(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    app: &AppState,
+    _vpn: &Arc<VpnController>,
+) {
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -542,18 +576,18 @@ pub fn draw_logs_screen(frame: &mut Frame<'_>, area: Rect, app: &AppState, _vpn:
 
     // Header
     frame.render_widget(
-        Paragraph::new(vec![
-            Line::from(vec![
-                Span::styled(
-                    " ████ VPR SYSTEM LOGS ████ ",
-                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!(" {} entries ", 1000), // Would need async here
-                    Style::default().fg(Color::DarkGray),
-                ),
-            ]),
-        ])
+        Paragraph::new(vec![Line::from(vec![
+            Span::styled(
+                " ████ VPR SYSTEM LOGS ████ ",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!(" {} entries ", 1000), // Would need async here
+                Style::default().fg(Color::DarkGray),
+            ),
+        ])])
         .block(Block::default().borders(Borders::BOTTOM)),
         layout[0],
     );
@@ -561,22 +595,25 @@ pub fn draw_logs_screen(frame: &mut Frame<'_>, area: Rect, app: &AppState, _vpn:
     // Logs content (placeholder - needs async runtime)
     let log_lines: Vec<ListItem> = (0..20)
         .map(|i| {
-            let level = if i % 5 == 0 { "ERROR" } else if i % 3 == 0 { "WARN" } else { "INFO" };
+            let level = if i % 5 == 0 {
+                "ERROR"
+            } else if i % 3 == 0 {
+                "WARN"
+            } else {
+                "INFO"
+            };
             let color = match level {
                 "ERROR" => Color::Red,
                 "WARN" => Color::Yellow,
                 _ => Color::Green,
             };
-            
+
             ListItem::new(Line::from(vec![
                 Span::styled(
                     format!("[{:05}] ", app.tick.wrapping_sub(i as u64 * 10)),
                     Style::default().fg(Color::DarkGray),
                 ),
-                Span::styled(
-                    format!("{:<5} ", level),
-                    Style::default().fg(color),
-                ),
+                Span::styled(format!("{:<5} ", level), Style::default().fg(color)),
                 Span::styled(
                     get_hacker_message(app.tick + i as u64),
                     Style::default().fg(Color::White),
@@ -586,13 +623,12 @@ pub fn draw_logs_screen(frame: &mut Frame<'_>, area: Rect, app: &AppState, _vpn:
         .collect();
 
     frame.render_widget(
-        List::new(log_lines)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::DarkGray))
-                    .title(" LIVE_LOG_STREAM "),
-            ),
+        List::new(log_lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::DarkGray))
+                .title(" LIVE_LOG_STREAM "),
+        ),
         layout[1],
     );
 
@@ -619,21 +655,23 @@ pub fn draw_servers_screen(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
         .constraints([
             Constraint::Length(3),
             Constraint::Min(10),
-            Constraint::Length(if app.input_mode != InputMode::Normal { 3 } else { 0 }),
+            Constraint::Length(if app.input_mode != InputMode::Normal {
+                3
+            } else {
+                0
+            }),
             Constraint::Length(2),
         ])
         .split(area);
 
     // Header
     frame.render_widget(
-        Paragraph::new(vec![
-            Line::from(vec![
-                Span::styled(
-                    " ████ SERVER SELECTION ████ ",
-                    Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
-                ),
-            ]),
-        ])
+        Paragraph::new(vec![Line::from(vec![Span::styled(
+            " ████ SERVER SELECTION ████ ",
+            Style::default()
+                .fg(Color::Magenta)
+                .add_modifier(Modifier::BOLD),
+        )])])
         .block(Block::default().borders(Borders::BOTTOM)),
         layout[0],
     );
@@ -646,9 +684,11 @@ pub fn draw_servers_screen(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
         .map(|(i, server)| {
             let selected = i == app.selected_server;
             let prefix = if selected { "▶ " } else { "  " };
-            
+
             let style = if selected {
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(Color::White)
             };
@@ -675,13 +715,12 @@ pub fn draw_servers_screen(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
         .collect();
 
     frame.render_widget(
-        List::new(server_items)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::Magenta))
-                    .title(" AVAILABLE_NODES "),
-            ),
+        List::new(server_items).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Magenta))
+                .title(" AVAILABLE_NODES "),
+        ),
         layout[1],
     );
 
@@ -766,7 +805,10 @@ pub fn draw_help_screen(frame: &mut Frame<'_>, area: Rect, _app: &AppState) {
                 Line::from(Span::styled(*s, Style::default().fg(Color::Magenta)))
             } else if s.contains("SPACE") || s.contains("ENTER") {
                 Line::from(Span::styled(*s, Style::default().fg(Color::Green)))
-            } else if s.starts_with("  ") && s.len() > 3 && s.chars().nth(2).map(|c| c.is_uppercase()).unwrap_or(false) {
+            } else if s.starts_with("  ")
+                && s.len() > 3
+                && s.chars().nth(2).map(|c| c.is_uppercase()).unwrap_or(false)
+            {
                 Line::from(Span::styled(*s, Style::default().fg(Color::Cyan)))
             } else {
                 Line::from(Span::styled(*s, Style::default().fg(Color::White)))
@@ -796,22 +838,20 @@ pub fn draw_settings_screen(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),  // Header
-            Constraint::Min(15),    // Settings content
-            Constraint::Length(2),  // Footer
+            Constraint::Length(3), // Header
+            Constraint::Min(15),   // Settings content
+            Constraint::Length(2), // Footer
         ])
         .split(area);
 
     // Header
     frame.render_widget(
-        Paragraph::new(vec![
-            Line::from(vec![
-                Span::styled(
-                    " ████ SYSTEM CONFIGURATION ████ ",
-                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
-                ),
-            ]),
-        ])
+        Paragraph::new(vec![Line::from(vec![Span::styled(
+            " ████ SYSTEM CONFIGURATION ████ ",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )])])
         .block(Block::default().borders(Borders::BOTTOM)),
         layout[0],
     );
@@ -844,31 +884,63 @@ pub fn draw_settings_screen(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
 fn render_connection_settings(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     let config = &app.config;
     let selected = app.settings_selection;
-    
+
     // Pre-compute string values to avoid temporary lifetime issues
     let reconnect_str = config.max_reconnect_attempts.to_string();
     let tun_str = config.tun_name.clone();
-    
+
     let items = vec![
-        setting_item("Auto-connect on start", if config.auto_connect { "ON" } else { "OFF" }, 
-                    if config.auto_connect { Color::Green } else { Color::DarkGray }, selected == 0),
-        setting_item("Auto-reconnect", if config.auto_reconnect { "ON" } else { "OFF" },
-                    if config.auto_reconnect { Color::Green } else { Color::DarkGray }, selected == 1),
-        setting_item("Max reconnect attempts", &reconnect_str, 
-                    Color::Cyan, selected == 2),
-        setting_item("TUN interface name", &tun_str, Color::Magenta, selected == 3),
-        setting_item("Insecure mode (no cert)", if config.insecure { "ON" } else { "OFF" },
-                    if config.insecure { Color::Red } else { Color::Green }, selected == 4),
+        setting_item(
+            "Auto-connect on start",
+            if config.auto_connect { "ON" } else { "OFF" },
+            if config.auto_connect {
+                Color::Green
+            } else {
+                Color::DarkGray
+            },
+            selected == 0,
+        ),
+        setting_item(
+            "Auto-reconnect",
+            if config.auto_reconnect { "ON" } else { "OFF" },
+            if config.auto_reconnect {
+                Color::Green
+            } else {
+                Color::DarkGray
+            },
+            selected == 1,
+        ),
+        setting_item(
+            "Max reconnect attempts",
+            &reconnect_str,
+            Color::Cyan,
+            selected == 2,
+        ),
+        setting_item(
+            "TUN interface name",
+            &tun_str,
+            Color::Magenta,
+            selected == 3,
+        ),
+        setting_item(
+            "Insecure mode (no cert)",
+            if config.insecure { "ON" } else { "OFF" },
+            if config.insecure {
+                Color::Red
+            } else {
+                Color::Green
+            },
+            selected == 4,
+        ),
     ];
 
     frame.render_widget(
-        List::new(items)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::Cyan))
-                    .title(" ◈ CONNECTION ◈ "),
-            ),
+        List::new(items).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Cyan))
+                .title(" ◈ CONNECTION ◈ "),
+        ),
         area,
     );
 }
@@ -876,40 +948,46 @@ fn render_connection_settings(frame: &mut Frame<'_>, area: Rect, app: &AppState)
 fn render_appearance_settings(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     let config = &app.config;
     let selected = app.settings_selection;
-    
+
     let theme_name = match config.theme {
         crate::config::Theme::WatchDogs => "Watch Dogs",
         crate::config::Theme::Matrix => "Matrix",
         crate::config::Theme::Cyberpunk => "Cyberpunk",
         crate::config::Theme::Minimal => "Minimal",
     };
-    
+
     let config_path = format!("{:?}", crate::config::TuiConfig::config_path());
 
     let items: Vec<ListItem> = vec![
         setting_item("Theme", theme_name, Color::Magenta, selected == 5),
-        setting_item("Notifications", if config.notifications { "ON" } else { "OFF" },
-                    if config.notifications { Color::Green } else { Color::DarkGray }, selected == 6),
+        setting_item(
+            "Notifications",
+            if config.notifications { "ON" } else { "OFF" },
+            if config.notifications {
+                Color::Green
+            } else {
+                Color::DarkGray
+            },
+            selected == 6,
+        ),
         ListItem::new(Line::from("")),
-        ListItem::new(Line::from(vec![
-            Span::styled("  Config path: ", Style::default().fg(Color::DarkGray)),
-        ])),
-        ListItem::new(Line::from(vec![
-            Span::styled(
-                format!("  {}", config_path),
-                Style::default().fg(Color::DarkGray),
-            ),
-        ])),
+        ListItem::new(Line::from(vec![Span::styled(
+            "  Config path: ",
+            Style::default().fg(Color::DarkGray),
+        )])),
+        ListItem::new(Line::from(vec![Span::styled(
+            format!("  {}", config_path),
+            Style::default().fg(Color::DarkGray),
+        )])),
     ];
 
     frame.render_widget(
-        List::new(items)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::Yellow))
-                    .title(" ◈ APPEARANCE ◈ "),
-            ),
+        List::new(items).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Yellow))
+                .title(" ◈ APPEARANCE ◈ "),
+        ),
         area,
     );
 }
@@ -921,7 +999,7 @@ fn setting_item(label: &str, value: &str, value_color: Color, selected: bool) ->
     } else {
         Style::default()
     };
-    
+
     ListItem::new(Line::from(vec![
         Span::styled(prefix.to_string(), style.fg(Color::Cyan)),
         Span::styled(format!("{:<24}", label), style.fg(Color::White)),

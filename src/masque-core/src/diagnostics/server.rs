@@ -1,6 +1,9 @@
 //! Server-side VPN diagnostics
 
-use super::{DiagnosticConfig, DiagnosticReport, DiagnosticResult, Fix, HealthStatus, Protocol, Severity, Side};
+use super::{
+    DiagnosticConfig, DiagnosticReport, DiagnosticResult, Fix, HealthStatus, Protocol, Severity,
+    Side,
+};
 use anyhow::{Context, Result};
 use std::path::PathBuf;
 
@@ -138,7 +141,10 @@ fn check_udp_port_listening(port: u16) -> Result<DiagnosticResult> {
             message: if listening {
                 format!("Server is listening on UDP port {}", port)
             } else {
-                format!("Server is NOT listening on UDP port {} (QUIC endpoint not started?)", port)
+                format!(
+                    "Server is NOT listening on UDP port {} (QUIC endpoint not started?)",
+                    port
+                )
             },
             fix: if !listening {
                 Some(Fix::RestartVpnService)
@@ -179,7 +185,10 @@ fn check_tcp_port_listening(port: u16) -> Result<DiagnosticResult> {
             message: if listening {
                 format!("Server is listening on TCP port {}", port)
             } else {
-                format!("Server is NOT listening on TCP port {} (optional fallback)", port)
+                format!(
+                    "Server is NOT listening on TCP port {} (optional fallback)",
+                    port
+                )
             },
             fix: None,
             auto_fixable: false,
@@ -208,7 +217,8 @@ fn check_firewall_allows_vpn_port(port: u16) -> Result<DiagnosticResult> {
         if let Ok(output) = nft_output {
             let rules = String::from_utf8_lossy(&output.stdout);
             let port_str = format!("{}", port);
-            let allows_udp = rules.contains(&port_str) && rules.contains("udp") && rules.contains("accept");
+            let allows_udp =
+                rules.contains(&port_str) && rules.contains("udp") && rules.contains("accept");
 
             return Ok(DiagnosticResult {
                 check_name: "Firewall Allows VPN Port".to_string(),
@@ -217,7 +227,10 @@ fn check_firewall_allows_vpn_port(port: u16) -> Result<DiagnosticResult> {
                 message: if allows_udp {
                     format!("Firewall allows UDP port {}", port)
                 } else {
-                    format!("Firewall may be blocking UDP port {} (no explicit allow rule found)", port)
+                    format!(
+                        "Firewall may be blocking UDP port {} (no explicit allow rule found)",
+                        port
+                    )
                 },
                 fix: if !allows_udp {
                     Some(Fix::OpenFirewallPort {
@@ -232,9 +245,7 @@ fn check_firewall_allows_vpn_port(port: u16) -> Result<DiagnosticResult> {
         }
 
         // Fallback: check UFW if nft failed
-        let ufw_output = std::process::Command::new("ufw")
-            .arg("status")
-            .output();
+        let ufw_output = std::process::Command::new("ufw").arg("status").output();
 
         if let Ok(output) = ufw_output {
             let status = String::from_utf8_lossy(&output.stdout);
@@ -336,7 +347,8 @@ fn check_nat_masquerade_configured() -> Result<DiagnosticResult> {
                 },
                 fix: if !has_masquerade {
                     Some(Fix::ManualInstruction {
-                        instruction: "nft add rule ip nat postrouting oifname eth0 masquerade".to_string(),
+                        instruction: "nft add rule ip nat postrouting oifname eth0 masquerade"
+                            .to_string(),
                         description: "Add NAT masquerade rule".to_string(),
                     })
                 } else {
@@ -415,7 +427,9 @@ fn check_tun_interface_exists() -> Result<DiagnosticResult> {
             .context("Failed to run ip link")?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
-        let has_tun = stdout.lines().any(|line| line.contains("vpr") || line.contains("tun"));
+        let has_tun = stdout
+            .lines()
+            .any(|line| line.contains("vpr") || line.contains("tun"));
 
         Ok(DiagnosticResult {
             check_name: "TUN Interface Exists".to_string(),

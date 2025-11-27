@@ -1,9 +1,7 @@
 //! Tauri commands for VPN diagnostics and auto-fix
 
 use masque_core::diagnostics::{
-    engine::DiagnosticEngine,
-    fixes::FixResult,
-    ssh_client::SshConfig as CoreSshConfig,
+    engine::DiagnosticEngine, fixes::FixResult, ssh_client::SshConfig as CoreSshConfig,
     DiagnosticConfig, DiagnosticContext, DiagnosticResult, FixConsentLevel,
 };
 use serde::{Deserialize, Serialize};
@@ -81,7 +79,11 @@ impl From<DiagnosticContext> for SerializableReport {
             .map(|r| format!("{:?}", r.overall_status))
             .unwrap_or_else(|| "Unknown".to_string());
 
-        let fixable_issues = ctx.all_failures().into_iter().filter(|r| r.fix.is_some()).count();
+        let fixable_issues = ctx
+            .all_failures()
+            .into_iter()
+            .filter(|r| r.fix.is_some())
+            .count();
         let auto_fixable_issues = ctx
             .all_failures()
             .into_iter()
@@ -164,7 +166,9 @@ pub async fn run_diagnostics(
     };
 
     let ssh_cfg = match ssh_config {
-        Some(cfg) => Some(CoreSshConfig::try_from(cfg).map_err(|e| format!("Invalid SSH config: {}", e))?),
+        Some(cfg) => {
+            Some(CoreSshConfig::try_from(cfg).map_err(|e| format!("Invalid SSH config: {}", e))?)
+        }
         None => None,
     };
     let engine = DiagnosticEngine::new(config, ssh_cfg);
@@ -225,9 +229,7 @@ pub async fn apply_auto_fixes(
         if parts.len() != 2 {
             return Err("Invalid server address format".to_string());
         }
-        let ip: IpAddr = parts[0]
-            .parse()
-            .map_err(|e| format!("Invalid IP: {}", e))?;
+        let ip: IpAddr = parts[0].parse().map_err(|e| format!("Invalid IP: {}", e))?;
         let port: u16 = parts[1]
             .parse()
             .map_err(|e| format!("Invalid port: {}", e))?;
@@ -244,7 +246,9 @@ pub async fn apply_auto_fixes(
     };
 
     let ssh_cfg = match ssh_config {
-        Some(cfg) => Some(CoreSshConfig::try_from(cfg).map_err(|e| format!("Invalid SSH config: {}", e))?),
+        Some(cfg) => {
+            Some(CoreSshConfig::try_from(cfg).map_err(|e| format!("Invalid SSH config: {}", e))?)
+        }
         None => None,
     };
     let engine = DiagnosticEngine::new(config, ssh_cfg);

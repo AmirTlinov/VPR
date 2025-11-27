@@ -122,17 +122,29 @@ async fn test_02_server_deployment() {
 
     // Prepare server
     let result = deployer.prepare_server().await;
-    assert!(result.is_ok(), "Failed to prepare server: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Failed to prepare server: {:?}",
+        result.err()
+    );
     println!("✓ Server directory prepared");
 
     // Deploy server binary
     let result = deployer.deploy_server_binary(&server_bin).await;
-    assert!(result.is_ok(), "Failed to deploy server binary: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Failed to deploy server binary: {:?}",
+        result.err()
+    );
     println!("✓ Server binary deployed");
 
     // Deploy keygen binary
     let result = deployer.deploy_keygen_binary(&keygen_bin).await;
-    assert!(result.is_ok(), "Failed to deploy keygen binary: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Failed to deploy keygen binary: {:?}",
+        result.err()
+    );
     println!("✓ Keygen binary deployed");
 
     // Check binary exists
@@ -245,8 +257,14 @@ async fn test_05_full_pipeline() {
 
     // Deploy everything
     deployer.prepare_server().await.expect("prepare_server");
-    deployer.deploy_server_binary(&server_bin).await.expect("deploy_server");
-    deployer.deploy_keygen_binary(&keygen_bin).await.expect("deploy_keygen");
+    deployer
+        .deploy_server_binary(&server_bin)
+        .await
+        .expect("deploy_server");
+    deployer
+        .deploy_keygen_binary(&keygen_bin)
+        .await
+        .expect("deploy_keygen");
     deployer.ensure_server_keys().await.expect("ensure_keys");
     deployer.start_server().await.expect("start_server");
     println!("✓ Server deployed and started");
@@ -254,7 +272,10 @@ async fn test_05_full_pipeline() {
     // Download server public key for client
     let secrets_dir = PathBuf::from("/tmp/vpr-e2e-secrets");
     std::fs::create_dir_all(&secrets_dir).expect("create secrets dir");
-    deployer.download_server_pubkey(&secrets_dir.join("server.noise.pub")).await.expect("download pubkey");
+    deployer
+        .download_server_pubkey(&secrets_dir.join("server.noise.pub"))
+        .await
+        .expect("download pubkey");
     println!("✓ Server public key downloaded");
 
     println!("=== Phase 2: Client Connection ===");
@@ -284,12 +305,18 @@ async fn test_05_full_pipeline() {
     // Start client
     let mut client = Command::new(&client_bin)
         .args([
-            "--server", &config.server.host,
-            "--port", &config.server.vpn_port.to_string(),
-            "--tun-name", &config.client.tun_name,
-            "--noise-dir", secrets_dir.to_str().unwrap(),
-            "--noise-name", "client",
-            "--server-pub", secrets_dir.join("server.noise.pub").to_str().unwrap(),
+            "--server",
+            &config.server.host,
+            "--port",
+            &config.server.vpn_port.to_string(),
+            "--tun-name",
+            &config.client.tun_name,
+            "--noise-dir",
+            secrets_dir.to_str().unwrap(),
+            "--noise-name",
+            "client",
+            "--server-pub",
+            secrets_dir.join("server.noise.pub").to_str().unwrap(),
             "--set-default-route",
             "--insecure",
         ])
@@ -320,7 +347,15 @@ async fn test_05_full_pipeline() {
 
     // Ping VPN gateway
     let ping_result = Command::new("ping")
-        .args(["-c", "3", "-W", "5", "-I", &config.client.tun_name, "10.9.0.1"])
+        .args([
+            "-c",
+            "3",
+            "-W",
+            "5",
+            "-I",
+            &config.client.tun_name,
+            "10.9.0.1",
+        ])
         .output()
         .await;
 
@@ -334,9 +369,12 @@ async fn test_05_full_pipeline() {
     // Test external connectivity through VPN
     let curl_result = Command::new("curl")
         .args([
-            "-s", "--max-time", "10",
-            "--interface", &config.client.tun_name,
-            "https://ifconfig.me"
+            "-s",
+            "--max-time",
+            "10",
+            "--interface",
+            &config.client.tun_name,
+            "https://ifconfig.me",
         ])
         .output()
         .await;
@@ -455,5 +493,8 @@ fn test_report_generation() {
     assert!(md.contains("PASS"), "Markdown should contain PASS");
     assert!(md.contains("FAIL"), "Markdown should contain FAIL");
     // Summary uses "SOME TESTS FAILED" since we have a failing test
-    assert!(md.contains("FAILED"), "Markdown should contain FAILED in summary");
+    assert!(
+        md.contains("FAILED"),
+        "Markdown should contain FAILED in summary"
+    );
 }

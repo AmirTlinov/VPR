@@ -1,3 +1,5 @@
+#![allow(clippy::field_reassign_with_default)]
+
 //! Integration tests for DPI Feedback Controller
 //!
 //! Tests the integration of DPI Feedback with Padder, SuspicionTracker,
@@ -43,7 +45,7 @@ fn test_dpi_feedback_with_padder_adaptation() {
     padder.update_suspicion(dpi_feedback.current_suspicion());
     assert_eq!(padder.suspicion_bucket(), SuspicionBucket::Low);
     // Verify padding behavior: RandomBucket should pad to bucket sizes
-    let small_packet = vec![0u8; 10];
+    let small_packet = [0u8; 10];
     let padded_low = padder.padded_size(small_packet.len());
     assert!(padded_low >= padder.config().min_packet_size);
     assert!(padded_low <= padder.config().mtu);
@@ -330,7 +332,7 @@ fn test_dpi_feedback_thread_safety() {
 
     // Verify final state is valid
     let score = dpi_feedback.current_suspicion();
-    assert!(score >= 0.0 && score <= 100.0);
+    assert!((0.0..=100.0).contains(&score));
     let bucket = dpi_feedback.current_bucket();
     match bucket {
         SuspicionBucket::Low | SuspicionBucket::Medium | SuspicionBucket::High => {}

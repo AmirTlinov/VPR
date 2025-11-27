@@ -158,7 +158,7 @@ mod tests {
         tracker.add(30.0);
         // Should be close to 60 (10 + 20 + 30)
         let current = tracker.current();
-        assert!(current >= 55.0 && current <= 65.0);
+        assert!((55.0..=65.0).contains(&current));
     }
 
     #[test]

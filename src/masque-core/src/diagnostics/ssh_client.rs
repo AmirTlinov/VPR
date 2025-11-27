@@ -31,8 +31,13 @@ impl ValidatedUsername {
         if user.is_empty() || user.len() > 32 {
             return Err("Invalid username length");
         }
-        if !user.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
-            return Err("Invalid username characters (only alphanumeric, underscore, hyphen allowed)");
+        if !user
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        {
+            return Err(
+                "Invalid username characters (only alphanumeric, underscore, hyphen allowed)",
+            );
         }
         if user.starts_with('-') {
             return Err("Username cannot start with hyphen");
@@ -56,9 +61,14 @@ impl ValidatedRemotePath {
             return Err("Invalid path length");
         }
         // Prevent command injection via path
-        if path.contains(';') || path.contains('$') || path.contains('`')
-            || path.contains('|') || path.contains('&') || path.contains('\n')
-            || path.contains('\r') || path.contains('\0')
+        if path.contains(';')
+            || path.contains('$')
+            || path.contains('`')
+            || path.contains('|')
+            || path.contains('&')
+            || path.contains('\n')
+            || path.contains('\r')
+            || path.contains('\0')
         {
             return Err("Invalid path characters (shell metacharacters not allowed)");
         }
@@ -86,10 +96,10 @@ pub struct SshConfig {
 impl SshConfig {
     /// Create SSH config with validation
     pub fn new(host: &str, port: u16, user: &str, ssh_key: Option<PathBuf>) -> Result<Self> {
-        let host = ValidatedHostname::new(host)
-            .map_err(|e| anyhow::anyhow!("Invalid hostname: {}", e))?;
-        let user = ValidatedUsername::new(user)
-            .map_err(|e| anyhow::anyhow!("Invalid username: {}", e))?;
+        let host =
+            ValidatedHostname::new(host).map_err(|e| anyhow::anyhow!("Invalid hostname: {}", e))?;
+        let user =
+            ValidatedUsername::new(user).map_err(|e| anyhow::anyhow!("Invalid username: {}", e))?;
 
         Ok(Self {
             host,
@@ -124,25 +134,25 @@ impl SshOperation {
         match self {
             SshOperation::GetFileMd5 { path } => {
                 // Use printf to safely pass the path, avoiding shell interpretation
-                format!("md5sum '{}' 2>/dev/null | cut -d' ' -f1",
-                    path.as_str().replace('\'', "'\"'\"'"))
+                format!(
+                    "md5sum '{}' 2>/dev/null | cut -d' ' -f1",
+                    path.as_str().replace('\'', "'\"'\"'")
+                )
             }
             SshOperation::FileExists { path } => {
-                format!("test -f '{}' && echo 'exists' || echo 'not_found'",
-                    path.as_str().replace('\'', "'\"'\"'"))
+                format!(
+                    "test -f '{}' && echo 'exists' || echo 'not_found'",
+                    path.as_str().replace('\'', "'\"'\"'")
+                )
             }
-            SshOperation::GetSystemTime => {
-                "date +%s".to_string()
-            }
+            SshOperation::GetSystemTime => "date +%s".to_string(),
             SshOperation::CheckVpnService => {
                 "systemctl is-active vpr-server 2>/dev/null || echo 'inactive'".to_string()
             }
             SshOperation::GetFirewallRules => {
                 "nft list ruleset 2>/dev/null || iptables -L -n 2>/dev/null".to_string()
             }
-            SshOperation::CheckIpForwarding => {
-                "cat /proc/sys/net/ipv4/ip_forward".to_string()
-            }
+            SshOperation::CheckIpForwarding => "cat /proc/sys/net/ipv4/ip_forward".to_string(),
         }
     }
 }
@@ -233,7 +243,12 @@ impl SshClientImpl {
     }
 
     /// Execute SCP command with validated paths
-    fn exec_scp(&self, local_path: &Path, remote_path: &ValidatedRemotePath, upload: bool) -> Result<CommandOutput> {
+    fn exec_scp(
+        &self,
+        local_path: &Path,
+        remote_path: &ValidatedRemotePath,
+        upload: bool,
+    ) -> Result<CommandOutput> {
         let local_str = local_path.to_str().context("Invalid local path")?;
         let remote_str = format!("{}:{}", self.connection_string(), remote_path.as_str());
 
@@ -283,7 +298,11 @@ impl SshClientImpl {
     }
 
     /// Download file with validated remote path
-    pub fn download_file_validated(&self, remote: &ValidatedRemotePath, local: &Path) -> Result<()> {
+    pub fn download_file_validated(
+        &self,
+        remote: &ValidatedRemotePath,
+        local: &Path,
+    ) -> Result<()> {
         let output = self.exec_scp(local, remote, false)?;
 
         if !output.success {
@@ -315,16 +334,21 @@ impl SshClientTrait for SshClientImpl {
             "iptables -L -n",
         ];
 
-        let is_allowed = allowed_commands.iter().any(|allowed| {
-            cmd.starts_with(allowed) || cmd == *allowed
-        });
+        let is_allowed = allowed_commands
+            .iter()
+            .any(|allowed| cmd.starts_with(allowed) || cmd == *allowed);
 
         // Also allow md5sum and test commands on validated paths
-        let is_md5sum = cmd.starts_with("md5sum '") && cmd.ends_with("' 2>/dev/null | cut -d' ' -f1");
-        let is_test = cmd.starts_with("test -f '") && (cmd.ends_with("' && echo 'exists' || echo 'not_found'"));
+        let is_md5sum =
+            cmd.starts_with("md5sum '") && cmd.ends_with("' 2>/dev/null | cut -d' ' -f1");
+        let is_test = cmd.starts_with("test -f '")
+            && (cmd.ends_with("' && echo 'exists' || echo 'not_found'"));
 
         if !is_allowed && !is_md5sum && !is_test {
-            bail!("Command not in whitelist: {}. Use execute_operation() with SshOperation enum.", cmd);
+            bail!(
+                "Command not in whitelist: {}. Use execute_operation() with SshOperation enum.",
+                cmd
+            );
         }
 
         self.exec_ssh_internal(cmd)
@@ -427,7 +451,8 @@ mod tests {
             let is_allowed = cmd.starts_with("date +%s")
                 || cmd.starts_with("cat /proc/sys/net/ipv4/ip_forward")
                 || (cmd.starts_with("md5sum '") && cmd.ends_with("' 2>/dev/null | cut -d' ' -f1"))
-                || (cmd.starts_with("test -f '") && cmd.ends_with("' && echo 'exists' || echo 'not_found'"));
+                || (cmd.starts_with("test -f '")
+                    && cmd.ends_with("' && echo 'exists' || echo 'not_found'"));
             assert!(is_allowed, "Command should be allowed: {}", cmd);
         }
 
@@ -435,7 +460,8 @@ mod tests {
             let is_allowed = cmd.starts_with("date +%s")
                 || cmd.starts_with("cat /proc/sys/net/ipv4/ip_forward")
                 || (cmd.starts_with("md5sum '") && cmd.ends_with("' 2>/dev/null | cut -d' ' -f1"))
-                || (cmd.starts_with("test -f '") && cmd.ends_with("' && echo 'exists' || echo 'not_found'"));
+                || (cmd.starts_with("test -f '")
+                    && cmd.ends_with("' && echo 'exists' || echo 'not_found'"));
             assert!(!is_allowed, "Command should be rejected: {}", cmd);
         }
     }

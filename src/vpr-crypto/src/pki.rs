@@ -413,7 +413,7 @@ mod tests {
         .unwrap();
 
         // Chain should contain the intermediate cert PEM
-        assert!(service.chain_pem.contains(&intermediate.cert_pem.trim()));
+        assert!(service.chain_pem.contains(intermediate.cert_pem.trim()));
     }
 
     #[test]

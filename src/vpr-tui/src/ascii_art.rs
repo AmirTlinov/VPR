@@ -197,6 +197,8 @@ pub fn pulse(tick: u64) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::const_is_empty, clippy::len_zero)]
+
     use super::*;
 
     #[test]

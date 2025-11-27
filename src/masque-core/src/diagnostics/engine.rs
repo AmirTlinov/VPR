@@ -1,10 +1,11 @@
 //! Diagnostic engine orchestrator
 
-use super::{
-    client, cross_checks, fixes::{FixExecutor, FixResult, SshClient}, DiagnosticConfig,
-    DiagnosticContext, DiagnosticReport, DiagnosticResult, FixConsentLevel
-};
 use super::ssh_client::{SshClientImpl, SshConfig};
+use super::{
+    client, cross_checks,
+    fixes::{FixExecutor, FixResult, SshClient},
+    DiagnosticConfig, DiagnosticContext, DiagnosticReport, DiagnosticResult, FixConsentLevel,
+};
 use anyhow::{bail, Context, Result};
 
 /// Diagnostic engine that orchestrates full diagnostic workflow
@@ -87,7 +88,10 @@ impl DiagnosticEngine {
         context: &DiagnosticContext,
         consent_level: FixConsentLevel,
     ) -> Result<Vec<FixResult>> {
-        tracing::info!("Applying auto-fixes with consent level: {:?}", consent_level);
+        tracing::info!(
+            "Applying auto-fixes with consent level: {:?}",
+            consent_level
+        );
 
         // Create SSH client if available
         let ssh_client: Option<Box<dyn SshClient>> = if let Some(ssh_config) = &self.ssh_config {
@@ -203,9 +207,7 @@ impl DiagnosticEngine {
 fn is_auto_safe(fix: &super::Fix) -> bool {
     matches!(
         fix,
-        super::Fix::FlushDns
-            | super::Fix::LoadTunModule
-            | super::Fix::CleanOrphanedState
+        super::Fix::FlushDns | super::Fix::LoadTunModule | super::Fix::CleanOrphanedState
     )
 }
 

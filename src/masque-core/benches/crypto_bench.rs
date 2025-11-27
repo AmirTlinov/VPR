@@ -6,12 +6,13 @@
 //! - Cover traffic generation
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use masque_core::cover_traffic::{CoverTrafficConfig, CoverTrafficGenerator, TrafficPattern};
 use masque_core::padding::{Padder, PaddingConfig, PaddingStrategy};
 use masque_core::replay_protection::NonceCache;
-use masque_core::cover_traffic::{CoverTrafficConfig, CoverTrafficGenerator, TrafficPattern};
 use std::time::Duration;
 
 /// Benchmark padding strategies
+#[allow(clippy::unnecessary_mut_passed)]
 fn bench_padding(c: &mut Criterion) {
     let mut group = c.benchmark_group("padding");
 
@@ -44,16 +45,12 @@ fn bench_padding(c: &mut Criterion) {
         for &size in &packet_sizes {
             let data = vec![0u8; size];
             group.throughput(Throughput::Bytes(size as u64));
-            group.bench_with_input(
-                BenchmarkId::new(*name, size),
-                &data,
-                |b, data| {
-                    b.iter(|| {
-                        let mut buf = data.clone();
-                        padder.pad(black_box(&mut buf))
-                    })
-                },
-            );
+            group.bench_with_input(BenchmarkId::new(*name, size), &data, |b, data| {
+                b.iter(|| {
+                    let mut buf = data.clone();
+                    padder.pad(black_box(&mut buf))
+                })
+            });
         }
     }
 
@@ -114,11 +111,7 @@ fn bench_cover_traffic(c: &mut Criterion) {
         };
         let mut generator = CoverTrafficGenerator::new(config);
 
-        group.bench_function(*name, |b| {
-            b.iter(|| {
-                generator.generate_packet()
-            })
-        });
+        group.bench_function(*name, |b| b.iter(|| generator.generate_packet()));
     }
 
     group.finish();

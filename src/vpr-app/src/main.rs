@@ -276,10 +276,9 @@ async fn connect(
                 .unwrap_or(false);
 
             if !allow_insecure {
-                return Err(
-                    "Insecure mode is disabled in release builds. \
-                     Set VPR_ALLOW_INSECURE=1 environment variable to override.".into()
-                );
+                return Err("Insecure mode is disabled in release builds. \
+                     Set VPR_ALLOW_INSECURE=1 environment variable to override."
+                    .into());
             }
             tracing::warn!("VPR_ALLOW_INSECURE=1 set - TLS verification disabled");
         }
@@ -548,10 +547,11 @@ fn get_vps_config() -> deployer::VpsConfig {
 /// Test SSH connection to VPS
 #[tauri::command]
 async fn test_vps_connection(vps: deployer::VpsConfig) -> Result<(), String> {
-    let deployer = deployer::Deployer::new(&vps)
-        .map_err(|e| format!("Invalid VPS config: {}", e))?;
+    let deployer =
+        deployer::Deployer::new(&vps).map_err(|e| format!("Invalid VPS config: {}", e))?;
 
-    deployer.test_connection()
+    deployer
+        .test_connection()
         .await
         .map_err(|e| format!("Connection failed: {}", e))
 }
@@ -559,18 +559,15 @@ async fn test_vps_connection(vps: deployer::VpsConfig) -> Result<(), String> {
 /// Check VPS server status
 #[tauri::command]
 async fn check_vps_status(vps: deployer::VpsConfig) -> Result<deployer::ServerStatus, String> {
-    let deployer = deployer::Deployer::new(&vps)
-        .map_err(|e| format!("Invalid VPS config: {}", e))?;
+    let deployer =
+        deployer::Deployer::new(&vps).map_err(|e| format!("Invalid VPS config: {}", e))?;
 
     Ok(deployer.check_status().await)
 }
 
 /// Deploy VPN server to VPS
 #[tauri::command]
-async fn deploy_server(
-    vps: deployer::VpsConfig,
-    app: AppHandle,
-) -> Result<(), String> {
+async fn deploy_server(vps: deployer::VpsConfig, app: AppHandle) -> Result<(), String> {
     // Validate VPS configuration before deployment
     if !vps.is_configured() {
         return Err("VPS not configured: host and authentication required".into());
@@ -581,14 +578,15 @@ async fn deploy_server(
         .with_app_handle(app);
 
     // Find server and keygen binaries
-    let (server_binary, keygen_binary) = find_server_binaries()
-        .map_err(|e| format!("Failed to find server binaries: {}", e))?;
+    let (server_binary, keygen_binary) =
+        find_server_binaries().map_err(|e| format!("Failed to find server binaries: {}", e))?;
 
     // Find or create secrets directory
     let secrets_dir = find_secrets_dir();
 
     // Run deployment
-    deployer.deploy(&server_binary, &keygen_binary, &secrets_dir)
+    deployer
+        .deploy(&server_binary, &keygen_binary, &secrets_dir)
         .await
         .map_err(|e| format!("Deployment failed: {}", e))?;
 
@@ -605,10 +603,11 @@ async fn deploy_server(
 /// Stop VPN server on VPS
 #[tauri::command]
 async fn stop_vps_server(vps: deployer::VpsConfig) -> Result<(), String> {
-    let deployer = deployer::Deployer::new(&vps)
-        .map_err(|e| format!("Invalid VPS config: {}", e))?;
+    let deployer =
+        deployer::Deployer::new(&vps).map_err(|e| format!("Invalid VPS config: {}", e))?;
 
-    deployer.stop_server()
+    deployer
+        .stop_server()
         .await
         .map_err(|e| format!("Failed to stop server: {}", e))
 }
@@ -616,10 +615,11 @@ async fn stop_vps_server(vps: deployer::VpsConfig) -> Result<(), String> {
 /// Start VPN server on VPS (must be deployed first)
 #[tauri::command]
 async fn start_vps_server(vps: deployer::VpsConfig) -> Result<(), String> {
-    let deployer = deployer::Deployer::new(&vps)
-        .map_err(|e| format!("Invalid VPS config: {}", e))?;
+    let deployer =
+        deployer::Deployer::new(&vps).map_err(|e| format!("Invalid VPS config: {}", e))?;
 
-    deployer.start_server()
+    deployer
+        .start_server()
         .await
         .map_err(|e| format!("Failed to start server: {}", e))
 }
@@ -627,10 +627,11 @@ async fn start_vps_server(vps: deployer::VpsConfig) -> Result<(), String> {
 /// Uninstall VPN server from VPS
 #[tauri::command]
 async fn uninstall_server(vps: deployer::VpsConfig) -> Result<(), String> {
-    let deployer = deployer::Deployer::new(&vps)
-        .map_err(|e| format!("Invalid VPS config: {}", e))?;
+    let deployer =
+        deployer::Deployer::new(&vps).map_err(|e| format!("Invalid VPS config: {}", e))?;
 
-    deployer.uninstall()
+    deployer
+        .uninstall()
         .await
         .map_err(|e| format!("Uninstall failed: {}", e))?;
 
@@ -645,10 +646,11 @@ async fn uninstall_server(vps: deployer::VpsConfig) -> Result<(), String> {
 /// Get VPS server logs
 #[tauri::command]
 async fn get_vps_logs(vps: deployer::VpsConfig, lines: u32) -> Result<String, String> {
-    let deployer = deployer::Deployer::new(&vps)
-        .map_err(|e| format!("Invalid VPS config: {}", e))?;
+    let deployer =
+        deployer::Deployer::new(&vps).map_err(|e| format!("Invalid VPS config: {}", e))?;
 
-    deployer.get_logs(lines)
+    deployer
+        .get_logs(lines)
         .await
         .map_err(|e| format!("Failed to get logs: {}", e))
 }
@@ -659,20 +661,13 @@ async fn get_vps_logs(vps: deployer::VpsConfig, lines: u32) -> Result<String, St
 
 /// Render TUI frame as ANSI string for xterm.js
 #[tauri::command]
-async fn tui_render(
-    width: u16,
-    height: u16,
-    state: State<'_, AppState>,
-) -> Result<String, String> {
+async fn tui_render(width: u16, height: u16, state: State<'_, AppState>) -> Result<String, String> {
     Ok(state.tui.render_frame(width, height).await)
 }
 
 /// Handle keyboard input for TUI
 #[tauri::command]
-async fn tui_key(
-    key: String,
-    state: State<'_, AppState>,
-) -> Result<bool, String> {
+async fn tui_key(key: String, state: State<'_, AppState>) -> Result<bool, String> {
     Ok(state.tui.handle_key(&key).await)
 }
 
@@ -853,7 +848,8 @@ fn main() {
                         vpn_state.status = VpnStatus::Error;
                         vpn_state.error = Some(
                             "Insecure mode is disabled in release builds. \
-                             Set VPR_ALLOW_INSECURE=1 to override.".into()
+                             Set VPR_ALLOW_INSECURE=1 to override."
+                                .into(),
                         );
                         return;
                     }

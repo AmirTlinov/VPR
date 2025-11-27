@@ -56,9 +56,15 @@ impl ValidatedHost {
         }
 
         // Prevent shell metacharacters that might slip through
-        if host.contains(';') || host.contains('$') || host.contains('`')
-            || host.contains('|') || host.contains('&') || host.contains('\'')
-            || host.contains('"') || host.contains('\\') || host.contains('\n')
+        if host.contains(';')
+            || host.contains('$')
+            || host.contains('`')
+            || host.contains('|')
+            || host.contains('&')
+            || host.contains('\'')
+            || host.contains('"')
+            || host.contains('\\')
+            || host.contains('\n')
         {
             return Err("Shell metacharacters not allowed in hostname");
         }
@@ -80,7 +86,10 @@ impl ValidatedUser {
         if user.is_empty() || user.len() > 32 {
             return Err("Invalid username length");
         }
-        if !user.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+        if !user
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        {
             return Err("Invalid username characters");
         }
         if user.starts_with('-') {
@@ -110,9 +119,14 @@ impl ValidatedRemotePath {
         }
 
         // Prevent injection
-        if path.contains(';') || path.contains('$') || path.contains('`')
-            || path.contains('|') || path.contains('&') || path.contains('\n')
-            || path.contains('\r') || path.contains('\0')
+        if path.contains(';')
+            || path.contains('$')
+            || path.contains('`')
+            || path.contains('|')
+            || path.contains('&')
+            || path.contains('\n')
+            || path.contains('\r')
+            || path.contains('\0')
         {
             return Err("Shell metacharacters not allowed in path");
         }
@@ -182,7 +196,10 @@ impl SshOperation {
 
             SshOperation::FileExists { path } => {
                 // Path is validated to be within REMOTE_DIR
-                format!("test -f '{}' && echo yes", path.as_str().replace('\'', "'\"'\"'"))
+                format!(
+                    "test -f '{}' && echo yes",
+                    path.as_str().replace('\'', "'\"'\"'")
+                )
             }
 
             SshOperation::GenerateNoiseKeys => {
@@ -201,9 +218,7 @@ impl SshOperation {
                 )
             }
 
-            SshOperation::EnableIpForwarding => {
-                "sysctl -w net.ipv4.ip_forward=1".to_string()
-            }
+            SshOperation::EnableIpForwarding => "sysctl -w net.ipv4.ip_forward=1".to_string(),
 
             SshOperation::OpenFirewallPort => {
                 // VPN_PORT is hardcoded constant, safe
@@ -215,9 +230,7 @@ impl SshOperation {
                 )
             }
 
-            SshOperation::StopServer => {
-                "pkill -9 -f vpn-server 2>/dev/null || true".to_string()
-            }
+            SshOperation::StopServer => "pkill -9 -f vpn-server 2>/dev/null || true".to_string(),
 
             SshOperation::DeleteTunInterface => {
                 "ip link del vpr-srv 2>/dev/null || true".to_string()
@@ -244,9 +257,7 @@ impl SshOperation {
                 )
             }
 
-            SshOperation::CheckServerRunning => {
-                "pgrep -f vpn-server".to_string()
-            }
+            SshOperation::CheckServerRunning => "pgrep -f vpn-server".to_string(),
 
             SshOperation::GetLogs { lines } => {
                 // lines is u32, safe to interpolate
@@ -321,8 +332,12 @@ pub struct VpsConfig {
     pub deployed: bool,
 }
 
-fn default_ssh_port() -> u16 { 22 }
-fn default_ssh_user() -> String { "root".into() }
+fn default_ssh_port() -> u16 {
+    22
+}
+fn default_ssh_user() -> String {
+    "root".into()
+}
 
 impl Default for VpsConfig {
     fn default() -> Self {
@@ -363,8 +378,8 @@ impl Deployer {
         }
 
         // Validate host
-        let host = ValidatedHost::new(&config.host)
-            .map_err(|e| anyhow::anyhow!("Invalid host: {}", e))?;
+        let host =
+            ValidatedHost::new(&config.host).map_err(|e| anyhow::anyhow!("Invalid host: {}", e))?;
 
         // Validate user
         let user = ValidatedUser::new(&config.ssh_user)
@@ -375,7 +390,9 @@ impl Deployer {
             if !std::path::Path::new(key_path).exists() {
                 bail!("SSH key file not found: {}", key_path);
             }
-            SshAuth::Key { path: key_path.clone() }
+            SshAuth::Key {
+                path: key_path.clone(),
+            }
         } else if std::env::var("SSH_AUTH_SOCK").is_ok() {
             SshAuth::Agent
         } else {
@@ -440,23 +457,34 @@ impl Deployer {
 
     /// Execute predefined SSH operation (type-safe)
     async fn execute(&self, operation: SshOperation) -> Result<String> {
-        self.execute_with_timeout(operation, Duration::from_secs(SSH_TIMEOUT_SECS)).await
+        self.execute_with_timeout(operation, Duration::from_secs(SSH_TIMEOUT_SECS))
+            .await
     }
 
     /// Execute SSH operation with custom timeout
-    async fn execute_with_timeout(&self, operation: SshOperation, timeout: Duration) -> Result<String> {
+    async fn execute_with_timeout(
+        &self,
+        operation: SshOperation,
+        timeout: Duration,
+    ) -> Result<String> {
         let cmd = operation.to_command();
 
         let mut command = match &self.auth {
             SshAuth::Key { path } => {
                 let mut c = Command::new("ssh");
                 c.args([
-                    "-o", "StrictHostKeyChecking=accept-new",
-                    "-o", "BatchMode=yes",
-                    "-o", "LogLevel=ERROR",
-                    "-o", "ConnectTimeout=30",
-                    "-i", path,
-                    "-p", &self.ssh_port.to_string(),
+                    "-o",
+                    "StrictHostKeyChecking=accept-new",
+                    "-o",
+                    "BatchMode=yes",
+                    "-o",
+                    "LogLevel=ERROR",
+                    "-o",
+                    "ConnectTimeout=30",
+                    "-i",
+                    path,
+                    "-p",
+                    &self.ssh_port.to_string(),
                     &self.connection_string(),
                     &cmd,
                 ]);
@@ -465,11 +493,16 @@ impl Deployer {
             SshAuth::Agent => {
                 let mut c = Command::new("ssh");
                 c.args([
-                    "-o", "StrictHostKeyChecking=accept-new",
-                    "-o", "BatchMode=yes",
-                    "-o", "LogLevel=ERROR",
-                    "-o", "ConnectTimeout=30",
-                    "-p", &self.ssh_port.to_string(),
+                    "-o",
+                    "StrictHostKeyChecking=accept-new",
+                    "-o",
+                    "BatchMode=yes",
+                    "-o",
+                    "LogLevel=ERROR",
+                    "-o",
+                    "ConnectTimeout=30",
+                    "-p",
+                    &self.ssh_port.to_string(),
                     &self.connection_string(),
                     &cmd,
                 ]);
@@ -502,11 +535,16 @@ impl Deployer {
             SshAuth::Key { path } => {
                 let mut c = Command::new("scp");
                 c.args([
-                    "-o", "StrictHostKeyChecking=accept-new",
-                    "-o", "BatchMode=yes",
-                    "-o", "LogLevel=ERROR",
-                    "-i", path,
-                    "-P", &self.ssh_port.to_string(),
+                    "-o",
+                    "StrictHostKeyChecking=accept-new",
+                    "-o",
+                    "BatchMode=yes",
+                    "-o",
+                    "LogLevel=ERROR",
+                    "-i",
+                    path,
+                    "-P",
+                    &self.ssh_port.to_string(),
                     local_str,
                     &remote_str,
                 ]);
@@ -515,10 +553,14 @@ impl Deployer {
             SshAuth::Agent => {
                 let mut c = Command::new("scp");
                 c.args([
-                    "-o", "StrictHostKeyChecking=accept-new",
-                    "-o", "BatchMode=yes",
-                    "-o", "LogLevel=ERROR",
-                    "-P", &self.ssh_port.to_string(),
+                    "-o",
+                    "StrictHostKeyChecking=accept-new",
+                    "-o",
+                    "BatchMode=yes",
+                    "-o",
+                    "LogLevel=ERROR",
+                    "-P",
+                    &self.ssh_port.to_string(),
                     local_str,
                     &remote_str,
                 ]);
@@ -547,11 +589,16 @@ impl Deployer {
             SshAuth::Key { path } => {
                 let mut c = Command::new("scp");
                 c.args([
-                    "-o", "StrictHostKeyChecking=accept-new",
-                    "-o", "BatchMode=yes",
-                    "-o", "LogLevel=ERROR",
-                    "-i", path,
-                    "-P", &self.ssh_port.to_string(),
+                    "-o",
+                    "StrictHostKeyChecking=accept-new",
+                    "-o",
+                    "BatchMode=yes",
+                    "-o",
+                    "LogLevel=ERROR",
+                    "-i",
+                    path,
+                    "-P",
+                    &self.ssh_port.to_string(),
                     &remote_str,
                     local_str,
                 ]);
@@ -560,10 +607,14 @@ impl Deployer {
             SshAuth::Agent => {
                 let mut c = Command::new("scp");
                 c.args([
-                    "-o", "StrictHostKeyChecking=accept-new",
-                    "-o", "BatchMode=yes",
-                    "-o", "LogLevel=ERROR",
-                    "-P", &self.ssh_port.to_string(),
+                    "-o",
+                    "StrictHostKeyChecking=accept-new",
+                    "-o",
+                    "BatchMode=yes",
+                    "-o",
+                    "LogLevel=ERROR",
+                    "-P",
+                    &self.ssh_port.to_string(),
                     &remote_str,
                     local_str,
                 ]);
@@ -595,14 +646,16 @@ impl Deployer {
 
     /// Check server status
     pub async fn check_status(&self) -> ServerStatus {
-        let running = self.execute(SshOperation::CheckServerRunning)
+        let running = self
+            .execute(SshOperation::CheckServerRunning)
             .await
             .map(|s| !s.trim().is_empty())
             .unwrap_or(false);
 
         let server_path = ValidatedRemotePath::new(&format!("{REMOTE_DIR}/bin/vpn-server"))
             .expect("hardcoded path");
-        let deployed = self.execute(SshOperation::FileExists { path: server_path })
+        let deployed = self
+            .execute(SshOperation::FileExists { path: server_path })
             .await
             .map(|s| s.trim() == "yes")
             .unwrap_or(false);
@@ -617,7 +670,12 @@ impl Deployer {
     }
 
     /// Full deployment pipeline
-    pub async fn deploy(&self, server_binary: &Path, keygen_binary: &Path, secrets_dir: &Path) -> Result<()> {
+    pub async fn deploy(
+        &self,
+        server_binary: &Path,
+        keygen_binary: &Path,
+        secrets_dir: &Path,
+    ) -> Result<()> {
         // Stage 1: Connect
         self.emit_progress(DeployStage::Connecting, "Connecting to VPS...", 5);
         if let Err(e) = self.test_connection().await {
@@ -626,14 +684,22 @@ impl Deployer {
         }
 
         // Stage 2: Prepare server directory
-        self.emit_progress(DeployStage::PreparingServer, "Creating directories on VPS...", 15);
+        self.emit_progress(
+            DeployStage::PreparingServer,
+            "Creating directories on VPS...",
+            15,
+        );
         if let Err(e) = self.execute(SshOperation::CreateDirectories).await {
             self.emit_error(DeployStage::PreparingServer, &e.to_string());
             return Err(e);
         }
 
         // Stage 3: Upload binaries
-        self.emit_progress(DeployStage::UploadingBinaries, "Uploading VPN server binary...", 25);
+        self.emit_progress(
+            DeployStage::UploadingBinaries,
+            "Uploading VPN server binary...",
+            25,
+        );
         let server_remote = ValidatedRemotePath::new(&format!("{REMOTE_DIR}/bin/vpn-server"))
             .expect("hardcoded path is valid");
         if let Err(e) = self.upload_file(server_binary, &server_remote).await {
@@ -641,7 +707,11 @@ impl Deployer {
             return Err(e);
         }
 
-        self.emit_progress(DeployStage::UploadingBinaries, "Uploading keygen binary...", 35);
+        self.emit_progress(
+            DeployStage::UploadingBinaries,
+            "Uploading keygen binary...",
+            35,
+        );
         let keygen_remote = ValidatedRemotePath::new(&format!("{REMOTE_DIR}/bin/vpr-keygen"))
             .expect("hardcoded path is valid");
         if let Err(e) = self.upload_file(keygen_binary, &keygen_remote).await {
@@ -656,12 +726,20 @@ impl Deployer {
         }
 
         // Stage 4: Generate keys
-        self.emit_progress(DeployStage::GeneratingKeys, "Generating cryptographic keys...", 50);
+        self.emit_progress(
+            DeployStage::GeneratingKeys,
+            "Generating cryptographic keys...",
+            50,
+        );
 
         // Check if Noise keys exist
-        let noise_key_path = ValidatedRemotePath::new(&format!("{REMOTE_DIR}/secrets/server.noise.key"))
-            .expect("hardcoded path");
-        let keys_exist = self.execute(SshOperation::FileExists { path: noise_key_path })
+        let noise_key_path =
+            ValidatedRemotePath::new(&format!("{REMOTE_DIR}/secrets/server.noise.key"))
+                .expect("hardcoded path");
+        let keys_exist = self
+            .execute(SshOperation::FileExists {
+                path: noise_key_path,
+            })
             .await
             .map(|s| s.trim() == "yes")
             .unwrap_or(false);
@@ -676,23 +754,35 @@ impl Deployer {
         // Check if TLS cert exists
         let cert_path = ValidatedRemotePath::new(&format!("{REMOTE_DIR}/secrets/server.crt"))
             .expect("hardcoded path");
-        let cert_exists = self.execute(SshOperation::FileExists { path: cert_path })
+        let cert_exists = self
+            .execute(SshOperation::FileExists { path: cert_path })
             .await
             .map(|s| s.trim() == "yes")
             .unwrap_or(false);
 
         if !cert_exists {
-            self.emit_progress(DeployStage::GeneratingKeys, "Generating TLS certificate...", 55);
-            if let Err(e) = self.execute(SshOperation::GenerateTlsCert {
-                host: self.host.clone()
-            }).await {
+            self.emit_progress(
+                DeployStage::GeneratingKeys,
+                "Generating TLS certificate...",
+                55,
+            );
+            if let Err(e) = self
+                .execute(SshOperation::GenerateTlsCert {
+                    host: self.host.clone(),
+                })
+                .await
+            {
                 self.emit_error(DeployStage::GeneratingKeys, &e.to_string());
                 return Err(e);
             }
         }
 
         // Stage 5: Configure firewall
-        self.emit_progress(DeployStage::ConfiguringFirewall, "Configuring firewall...", 65);
+        self.emit_progress(
+            DeployStage::ConfiguringFirewall,
+            "Configuring firewall...",
+            65,
+        );
         let _ = self.execute(SshOperation::EnableIpForwarding).await;
         let _ = self.execute(SshOperation::OpenFirewallPort).await;
 
@@ -712,13 +802,15 @@ impl Deployer {
 
         // Verify server started
         tokio::time::sleep(Duration::from_secs(3)).await;
-        let running = self.execute(SshOperation::CheckServerRunning)
+        let running = self
+            .execute(SshOperation::CheckServerRunning)
             .await
             .map(|s| !s.trim().is_empty())
             .unwrap_or(false);
 
         if !running {
-            let logs = self.execute(SshOperation::GetLogs { lines: 30 })
+            let logs = self
+                .execute(SshOperation::GetLogs { lines: 30 })
                 .await
                 .unwrap_or_else(|_| "No logs available".into());
             let err = format!("Server failed to start. Logs:\n{}", logs);
@@ -727,19 +819,31 @@ impl Deployer {
         }
 
         // Stage 7: Download keys for client
-        self.emit_progress(DeployStage::DownloadingKeys, "Downloading server public key...", 90);
+        self.emit_progress(
+            DeployStage::DownloadingKeys,
+            "Downloading server public key...",
+            90,
+        );
 
         std::fs::create_dir_all(secrets_dir).context("Failed to create secrets directory")?;
 
-        let server_pub_remote = ValidatedRemotePath::new(&format!("{REMOTE_DIR}/secrets/server.noise.pub"))
-            .expect("hardcoded path");
-        if let Err(e) = self.download_file(&server_pub_remote, &secrets_dir.join("server.noise.pub")).await {
+        let server_pub_remote =
+            ValidatedRemotePath::new(&format!("{REMOTE_DIR}/secrets/server.noise.pub"))
+                .expect("hardcoded path");
+        if let Err(e) = self
+            .download_file(&server_pub_remote, &secrets_dir.join("server.noise.pub"))
+            .await
+        {
             self.emit_error(DeployStage::DownloadingKeys, &e.to_string());
             return Err(e);
         }
 
         // Stage 8: Complete
-        self.emit_progress(DeployStage::Completed, "Deployment completed successfully!", 100);
+        self.emit_progress(
+            DeployStage::Completed,
+            "Deployment completed successfully!",
+            100,
+        );
 
         Ok(())
     }
@@ -766,13 +870,15 @@ impl Deployer {
 
         // Verify
         tokio::time::sleep(Duration::from_secs(3)).await;
-        let running = self.execute(SshOperation::CheckServerRunning)
+        let running = self
+            .execute(SshOperation::CheckServerRunning)
             .await
             .map(|s| !s.trim().is_empty())
             .unwrap_or(false);
 
         if !running {
-            let logs = self.execute(SshOperation::GetLogs { lines: 30 })
+            let logs = self
+                .execute(SshOperation::GetLogs { lines: 30 })
                 .await
                 .unwrap_or_else(|_| "No logs available".into());
             bail!("Server failed to start. Logs:\n{}", logs);
@@ -802,6 +908,8 @@ impl Deployer {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::field_reassign_with_default)]
+
     use super::*;
 
     #[test]

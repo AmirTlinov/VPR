@@ -22,9 +22,7 @@ fn noise_keypair_zeroizes_secret() {
     let kp = NoiseKeypair::generate();
     let mut bytes = kp.secret_bytes();
     // overwrite bytes to simulate drop
-    for b in &mut bytes {
-        *b = 0;
-    }
+    bytes.fill(0);
     // regenerate and ensure not all zero
     let kp2 = NoiseKeypair::generate();
     assert!(kp2.secret_bytes().iter().any(|b| *b != 0));

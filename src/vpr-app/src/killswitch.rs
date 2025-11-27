@@ -161,11 +161,37 @@ async fn enable_nftables(policy: &KillSwitchPolicy) -> Result<()> {
     exec_require("nft", &["create", "table", "inet", NFT_TABLE])?;
 
     // Create chains with high priority (negative = earlier)
-    let out_chain_spec = format!("{{ type filter hook output priority {}; policy drop; }}", NFT_PRIORITY);
-    let in_chain_spec = format!("{{ type filter hook input priority {}; policy drop; }}", NFT_PRIORITY);
+    let out_chain_spec = format!(
+        "{{ type filter hook output priority {}; policy drop; }}",
+        NFT_PRIORITY
+    );
+    let in_chain_spec = format!(
+        "{{ type filter hook input priority {}; policy drop; }}",
+        NFT_PRIORITY
+    );
 
-    exec_require("nft", &["add", "chain", "inet", NFT_TABLE, NFT_CHAIN_OUT, &out_chain_spec])?;
-    exec_require("nft", &["add", "chain", "inet", NFT_TABLE, NFT_CHAIN_IN, &in_chain_spec])?;
+    exec_require(
+        "nft",
+        &[
+            "add",
+            "chain",
+            "inet",
+            NFT_TABLE,
+            NFT_CHAIN_OUT,
+            &out_chain_spec,
+        ],
+    )?;
+    exec_require(
+        "nft",
+        &[
+            "add",
+            "chain",
+            "inet",
+            NFT_TABLE,
+            NFT_CHAIN_IN,
+            &in_chain_spec,
+        ],
+    )?;
 
     // === ACCEPT rules (order matters for efficiency) ===
 
@@ -186,13 +212,25 @@ async fn enable_nftables(policy: &KillSwitchPolicy) -> Result<()> {
         let ip_str = ip.to_string();
 
         for port in &policy.allow_tcp_ports {
-            nft_add_rule(NFT_CHAIN_OUT, &format!("ip daddr {} tcp dport {} accept", ip_str, port))?;
-            nft_add_rule(NFT_CHAIN_IN, &format!("ip saddr {} tcp sport {} accept", ip_str, port))?;
+            nft_add_rule(
+                NFT_CHAIN_OUT,
+                &format!("ip daddr {} tcp dport {} accept", ip_str, port),
+            )?;
+            nft_add_rule(
+                NFT_CHAIN_IN,
+                &format!("ip saddr {} tcp sport {} accept", ip_str, port),
+            )?;
         }
 
         for port in &policy.allow_udp_ports {
-            nft_add_rule(NFT_CHAIN_OUT, &format!("ip daddr {} udp dport {} accept", ip_str, port))?;
-            nft_add_rule(NFT_CHAIN_IN, &format!("ip saddr {} udp sport {} accept", ip_str, port))?;
+            nft_add_rule(
+                NFT_CHAIN_OUT,
+                &format!("ip daddr {} udp dport {} accept", ip_str, port),
+            )?;
+            nft_add_rule(
+                NFT_CHAIN_IN,
+                &format!("ip saddr {} udp sport {} accept", ip_str, port),
+            )?;
         }
     }
 
@@ -239,16 +277,52 @@ async fn enable_iptables(policy: &KillSwitchPolicy) -> Result<()> {
     // === ACCEPT rules ===
 
     // 1. Loopback
-    exec_warn("iptables", &["-A", IPT_CHAIN_OUT, "-o", "lo", "-j", "ACCEPT"]);
-    exec_warn("iptables", &["-A", IPT_CHAIN_IN, "-i", "lo", "-j", "ACCEPT"]);
+    exec_warn(
+        "iptables",
+        &["-A", IPT_CHAIN_OUT, "-o", "lo", "-j", "ACCEPT"],
+    );
+    exec_warn(
+        "iptables",
+        &["-A", IPT_CHAIN_IN, "-i", "lo", "-j", "ACCEPT"],
+    );
 
     // 2. Established/related
-    exec_warn("iptables", &["-A", IPT_CHAIN_OUT, "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"]);
-    exec_warn("iptables", &["-A", IPT_CHAIN_IN, "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"]);
+    exec_warn(
+        "iptables",
+        &[
+            "-A",
+            IPT_CHAIN_OUT,
+            "-m",
+            "conntrack",
+            "--ctstate",
+            "ESTABLISHED,RELATED",
+            "-j",
+            "ACCEPT",
+        ],
+    );
+    exec_warn(
+        "iptables",
+        &[
+            "-A",
+            IPT_CHAIN_IN,
+            "-m",
+            "conntrack",
+            "--ctstate",
+            "ESTABLISHED,RELATED",
+            "-j",
+            "ACCEPT",
+        ],
+    );
 
     // 3. TUN interfaces (vpr+ matches vpr0, vpr1, etc.)
-    exec_warn("iptables", &["-A", IPT_CHAIN_OUT, "-o", "vpr+", "-j", "ACCEPT"]);
-    exec_warn("iptables", &["-A", IPT_CHAIN_IN, "-i", "vpr+", "-j", "ACCEPT"]);
+    exec_warn(
+        "iptables",
+        &["-A", IPT_CHAIN_OUT, "-o", "vpr+", "-j", "ACCEPT"],
+    );
+    exec_warn(
+        "iptables",
+        &["-A", IPT_CHAIN_IN, "-i", "vpr+", "-j", "ACCEPT"],
+    );
 
     // 4. VPN server IP + ports
     for ip in &policy.allow_ipv4 {
@@ -256,14 +330,70 @@ async fn enable_iptables(policy: &KillSwitchPolicy) -> Result<()> {
 
         for port in &policy.allow_tcp_ports {
             let port_str = port.to_string();
-            exec_warn("iptables", &["-A", IPT_CHAIN_OUT, "-d", &ip_str, "-p", "tcp", "--dport", &port_str, "-j", "ACCEPT"]);
-            exec_warn("iptables", &["-A", IPT_CHAIN_IN, "-s", &ip_str, "-p", "tcp", "--sport", &port_str, "-j", "ACCEPT"]);
+            exec_warn(
+                "iptables",
+                &[
+                    "-A",
+                    IPT_CHAIN_OUT,
+                    "-d",
+                    &ip_str,
+                    "-p",
+                    "tcp",
+                    "--dport",
+                    &port_str,
+                    "-j",
+                    "ACCEPT",
+                ],
+            );
+            exec_warn(
+                "iptables",
+                &[
+                    "-A",
+                    IPT_CHAIN_IN,
+                    "-s",
+                    &ip_str,
+                    "-p",
+                    "tcp",
+                    "--sport",
+                    &port_str,
+                    "-j",
+                    "ACCEPT",
+                ],
+            );
         }
 
         for port in &policy.allow_udp_ports {
             let port_str = port.to_string();
-            exec_warn("iptables", &["-A", IPT_CHAIN_OUT, "-d", &ip_str, "-p", "udp", "--dport", &port_str, "-j", "ACCEPT"]);
-            exec_warn("iptables", &["-A", IPT_CHAIN_IN, "-s", &ip_str, "-p", "udp", "--sport", &port_str, "-j", "ACCEPT"]);
+            exec_warn(
+                "iptables",
+                &[
+                    "-A",
+                    IPT_CHAIN_OUT,
+                    "-d",
+                    &ip_str,
+                    "-p",
+                    "udp",
+                    "--dport",
+                    &port_str,
+                    "-j",
+                    "ACCEPT",
+                ],
+            );
+            exec_warn(
+                "iptables",
+                &[
+                    "-A",
+                    IPT_CHAIN_IN,
+                    "-s",
+                    &ip_str,
+                    "-p",
+                    "udp",
+                    "--sport",
+                    &port_str,
+                    "-j",
+                    "ACCEPT",
+                ],
+            );
         }
     }
 
@@ -330,21 +460,27 @@ async fn enable_macos(policy: &KillSwitchPolicy) -> Result<()> {
     // Allow VPN server IPs
     for ip in &policy.allow_ipv4 {
         for port in &policy.allow_tcp_ports {
-            rules.push_str(&format!("pass out quick proto tcp to {} port {}\n", ip, port));
+            rules.push_str(&format!(
+                "pass out quick proto tcp to {} port {}\n",
+                ip, port
+            ));
         }
         for port in &policy.allow_udp_ports {
-            rules.push_str(&format!("pass out quick proto udp to {} port {}\n", ip, port));
+            rules.push_str(&format!(
+                "pass out quick proto udp to {} port {}\n",
+                ip, port
+            ));
         }
     }
 
     // Write rules to temp file
     let rules_path = std::env::temp_dir().join("vpr_killswitch.pf");
-    let mut file = std::fs::File::create(&rules_path)
-        .context("creating pf rules file")?;
+    let mut file = std::fs::File::create(&rules_path).context("creating pf rules file")?;
     file.write_all(rules.as_bytes())
         .context("writing pf rules")?;
 
-    let rules_path_str = rules_path.to_str()
+    let rules_path_str = rules_path
+        .to_str()
         .ok_or_else(|| anyhow::anyhow!("invalid path"))?;
 
     // Load rules into anchor
@@ -388,42 +524,74 @@ async fn enable_windows(policy: &KillSwitchPolicy) -> Result<()> {
 
         for port in &policy.allow_tcp_ports {
             let rule_name = format!("{} TCP {} {}", FW_RULE_ALLOW_PREFIX, ip, port);
-            exec_warn("netsh", &[
-                "advfirewall", "firewall", "add", "rule",
-                &format!("name={}", rule_name),
-                "dir=out", "action=allow", "protocol=tcp",
-                &format!("remoteip={}", ip_str),
-                &format!("remoteport={}", port),
-                "enable=yes"
-            ]);
+            exec_warn(
+                "netsh",
+                &[
+                    "advfirewall",
+                    "firewall",
+                    "add",
+                    "rule",
+                    &format!("name={}", rule_name),
+                    "dir=out",
+                    "action=allow",
+                    "protocol=tcp",
+                    &format!("remoteip={}", ip_str),
+                    &format!("remoteport={}", port),
+                    "enable=yes",
+                ],
+            );
         }
 
         for port in &policy.allow_udp_ports {
             let rule_name = format!("{} UDP {} {}", FW_RULE_ALLOW_PREFIX, ip, port);
-            exec_warn("netsh", &[
-                "advfirewall", "firewall", "add", "rule",
-                &format!("name={}", rule_name),
-                "dir=out", "action=allow", "protocol=udp",
-                &format!("remoteip={}", ip_str),
-                &format!("remoteport={}", port),
-                "enable=yes"
-            ]);
+            exec_warn(
+                "netsh",
+                &[
+                    "advfirewall",
+                    "firewall",
+                    "add",
+                    "rule",
+                    &format!("name={}", rule_name),
+                    "dir=out",
+                    "action=allow",
+                    "protocol=udp",
+                    &format!("remoteip={}", ip_str),
+                    &format!("remoteport={}", port),
+                    "enable=yes",
+                ],
+            );
         }
     }
 
     // Block all other outbound traffic
-    exec_require("netsh", &[
-        "advfirewall", "firewall", "add", "rule",
-        &format!("name={}", FW_RULE_BLOCK_OUT),
-        "dir=out", "action=block", "enable=yes"
-    ])?;
+    exec_require(
+        "netsh",
+        &[
+            "advfirewall",
+            "firewall",
+            "add",
+            "rule",
+            &format!("name={}", FW_RULE_BLOCK_OUT),
+            "dir=out",
+            "action=block",
+            "enable=yes",
+        ],
+    )?;
 
     // Block all inbound traffic (except established via stateful inspection)
-    exec_require("netsh", &[
-        "advfirewall", "firewall", "add", "rule",
-        &format!("name={}", FW_RULE_BLOCK_IN),
-        "dir=in", "action=block", "enable=yes"
-    ])?;
+    exec_require(
+        "netsh",
+        &[
+            "advfirewall",
+            "firewall",
+            "add",
+            "rule",
+            &format!("name={}", FW_RULE_BLOCK_IN),
+            "dir=in",
+            "action=block",
+            "enable=yes",
+        ],
+    )?;
 
     info!(backend = "netsh", "kill switch enabled");
     Ok(())
@@ -432,20 +600,38 @@ async fn enable_windows(policy: &KillSwitchPolicy) -> Result<()> {
 #[cfg(target_os = "windows")]
 async fn disable_windows() -> Result<()> {
     // Delete block rules
-    let _ = exec("netsh", &[
-        "advfirewall", "firewall", "delete", "rule",
-        &format!("name={}", FW_RULE_BLOCK_OUT)
-    ]);
-    let _ = exec("netsh", &[
-        "advfirewall", "firewall", "delete", "rule",
-        &format!("name={}", FW_RULE_BLOCK_IN)
-    ]);
+    let _ = exec(
+        "netsh",
+        &[
+            "advfirewall",
+            "firewall",
+            "delete",
+            "rule",
+            &format!("name={}", FW_RULE_BLOCK_OUT),
+        ],
+    );
+    let _ = exec(
+        "netsh",
+        &[
+            "advfirewall",
+            "firewall",
+            "delete",
+            "rule",
+            &format!("name={}", FW_RULE_BLOCK_IN),
+        ],
+    );
 
     // Delete allow rules (pattern match)
-    let _ = exec("netsh", &[
-        "advfirewall", "firewall", "delete", "rule",
-        &format!("name={} *", FW_RULE_ALLOW_PREFIX)
-    ]);
+    let _ = exec(
+        "netsh",
+        &[
+            "advfirewall",
+            "firewall",
+            "delete",
+            "rule",
+            &format!("name={} *", FW_RULE_ALLOW_PREFIX),
+        ],
+    );
 
     info!(backend = "netsh", "kill switch disabled");
     Ok(())

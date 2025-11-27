@@ -303,15 +303,15 @@ async fn main() -> Result<()> {
     // Run diagnostics if requested
     if args.diagnose || args.auto_fix {
         use masque_core::diagnostics::{
-            DiagnosticConfig, FixConsentLevel,
-            engine::DiagnosticEngine,
-            ssh_client::SshConfig,
+            engine::DiagnosticEngine, ssh_client::SshConfig, DiagnosticConfig, FixConsentLevel,
         };
 
         info!("Running VPN diagnostics");
 
         // Parse server address for diagnostics
-        let (server_ip, server_port) = args.server.split_once(':')
+        let (server_ip, server_port) = args
+            .server
+            .split_once(':')
             .ok_or_else(|| anyhow::anyhow!("Invalid server address format"))?;
         let server_ip: std::net::IpAddr = server_ip.parse()?;
         let server_port: u16 = server_port.parse()?;
@@ -344,7 +344,9 @@ async fn main() -> Result<()> {
         let engine = DiagnosticEngine::new(diag_config, ssh_config);
 
         // Run diagnostics
-        let context = engine.run_full_diagnostics().await
+        let context = engine
+            .run_full_diagnostics()
+            .await
             .context("Failed to run diagnostics")?;
 
         // Print report
@@ -353,7 +355,10 @@ async fn main() -> Result<()> {
         println!("╚═══════════════════════════════════════╝\n");
 
         if let Some(client_report) = &context.client_report {
-            println!("📋 Client-Side Checks ({} total):", client_report.results.len());
+            println!(
+                "📋 Client-Side Checks ({} total):",
+                client_report.results.len()
+            );
             for result in &client_report.results {
                 let icon = if result.passed { "✅" } else { "❌" };
                 println!("  {} {}: {}", icon, result.check_name, result.message);
@@ -362,7 +367,10 @@ async fn main() -> Result<()> {
         }
 
         if let Some(server_report) = &context.server_report {
-            println!("🖥️  Server-Side Checks ({} total):", server_report.results.len());
+            println!(
+                "🖥️  Server-Side Checks ({} total):",
+                server_report.results.len()
+            );
             for result in &server_report.results {
                 let icon = if result.passed { "✅" } else { "❌" };
                 println!("  {} {}: {}", icon, result.check_name, result.message);
@@ -406,7 +414,9 @@ async fn main() -> Result<()> {
             } else {
                 println!("🔧 Applying {} auto-fixes...\n", fixable.len());
 
-                let fix_results = engine.apply_auto_fixes(&context, consent_level).await
+                let fix_results = engine
+                    .apply_auto_fixes(&context, consent_level)
+                    .await
                     .context("Auto-fix failed")?;
 
                 for result in fix_results {
@@ -444,7 +454,6 @@ async fn main() -> Result<()> {
     run_vpn_client(args, shutdown_signal).await
 }
 
-
 async fn run_vpn_client(args: Args, shutdown_signal: oneshot::Receiver<()>) -> Result<()> {
     // SECURITY WARNING: --insecure flag disables TLS certificate verification
     // This should NEVER be used in production as it makes the connection vulnerable to MITM attacks
@@ -469,7 +478,9 @@ async fn run_vpn_client(args: Args, shutdown_signal: oneshot::Receiver<()>) -> R
                      VPR_ALLOW_INSECURE=1"
                 );
             }
-            warn!("VPR_ALLOW_INSECURE=1 is set. Proceeding with disabled certificate verification.");
+            warn!(
+                "VPR_ALLOW_INSECURE=1 is set. Proceeding with disabled certificate verification."
+            );
         }
     }
 
@@ -592,7 +603,12 @@ async fn run_vpn_client(args: Args, shutdown_signal: oneshot::Receiver<()>) -> R
     );
 
     // Build QUIC client config
-    let quic_config = build_quic_config(args.insecure, args.idle_timeout, tls_profile, args.ca_cert.clone())?;
+    let quic_config = build_quic_config(
+        args.insecure,
+        args.idle_timeout,
+        tls_profile,
+        args.ca_cert.clone(),
+    )?;
 
     // Padding config for probe challenge (uses CLI defaults before server config arrives)
     let challenge_padder = Arc::new(build_padder_cli(&args, args.mtu));
@@ -1256,14 +1272,17 @@ fn build_quic_config(
 
         // Load custom CA cert if provided, otherwise use webpki roots
         if let Some(ca_cert_path) = &ca_cert {
-            let cert_pem = std::fs::read_to_string(ca_cert_path)
-                .context(format!("Failed to read CA certificate from {:?}", ca_cert_path))?;
+            let cert_pem = std::fs::read_to_string(ca_cert_path).context(format!(
+                "Failed to read CA certificate from {:?}",
+                ca_cert_path
+            ))?;
             let certs = rustls_pemfile::certs(&mut cert_pem.as_bytes())
                 .collect::<Result<Vec<_>, _>>()
                 .context("Failed to parse PEM certificate")?;
 
             for cert in certs {
-                roots.add(cert)
+                roots
+                    .add(cert)
                     .context("Failed to add CA certificate to root store")?;
             }
         } else {

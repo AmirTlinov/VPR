@@ -67,38 +67,36 @@ impl TuiConfig {
     /// Load config from file or create default
     pub fn load() -> Self {
         let path = Self::config_path();
-        
+
         if path.exists() {
             match std::fs::read_to_string(&path) {
-                Ok(content) => {
-                    match serde_json::from_str(&content) {
-                        Ok(config) => return config,
-                        Err(e) => {
-                            tracing::warn!("Failed to parse config: {}, using defaults", e);
-                        }
+                Ok(content) => match serde_json::from_str(&content) {
+                    Ok(config) => return config,
+                    Err(e) => {
+                        tracing::warn!("Failed to parse config: {}, using defaults", e);
                     }
-                }
+                },
                 Err(e) => {
                     tracing::warn!("Failed to read config: {}, using defaults", e);
                 }
             }
         }
-        
+
         Self::default()
     }
 
     /// Save config to file
     pub fn save(&self) -> anyhow::Result<()> {
         let path = Self::config_path();
-        
+
         // Ensure parent directory exists
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        
+
         let content = serde_json::to_string_pretty(self)?;
         std::fs::write(&path, content)?;
-        
+
         tracing::info!("Config saved to {:?}", path);
         Ok(())
     }
@@ -123,7 +121,11 @@ impl TuiConfig {
 
     /// Add server to list if not exists
     pub fn add_server(&mut self, server: ServerConfig) {
-        if !self.servers.iter().any(|s| s.host == server.host && s.port == server.port) {
+        if !self
+            .servers
+            .iter()
+            .any(|s| s.host == server.host && s.port == server.port)
+        {
             self.servers.push(server);
         }
     }
@@ -163,7 +165,7 @@ fn find_client_binary() -> PathBuf {
                 return path;
             }
         }
-        
+
         // Check PATH
         if let Ok(output) = std::process::Command::new("which").arg(name).output() {
             if output.status.success() {
@@ -216,7 +218,7 @@ mod tests {
         let config = TuiConfig::default();
         let json = serde_json::to_string(&config).unwrap();
         let loaded: TuiConfig = serde_json::from_str(&json).unwrap();
-        
+
         assert_eq!(loaded.tun_name, config.tun_name);
         assert_eq!(loaded.auto_reconnect, config.auto_reconnect);
     }
@@ -230,11 +232,11 @@ mod tests {
             name: "Test".into(),
             location: "Test".into(),
         };
-        
+
         let initial_count = config.servers.len();
         config.add_server(server.clone());
         assert_eq!(config.servers.len(), initial_count + 1);
-        
+
         // Adding same server again should not duplicate
         config.add_server(server);
         assert_eq!(config.servers.len(), initial_count + 1);
@@ -242,14 +244,16 @@ mod tests {
 
     #[test]
     fn test_to_controller_config() {
-        let mut config = TuiConfig::default();
-        config.last_server = Some(ServerConfig {
-            host: "test.com".into(),
-            port: 443,
-            name: "Test".into(),
-            location: "Test".into(),
-        });
-        
+        let config = TuiConfig {
+            last_server: Some(ServerConfig {
+                host: "test.com".into(),
+                port: 443,
+                name: "Test".into(),
+                location: "Test".into(),
+            }),
+            ..TuiConfig::default()
+        };
+
         let ctrl_config = config.to_controller_config();
         assert_eq!(ctrl_config.server.host, "test.com");
         assert_eq!(ctrl_config.tun_name, "vpr0");

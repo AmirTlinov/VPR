@@ -278,7 +278,7 @@ async fn test_dns_updater_verify_txt_record_real_dns() -> Result<()> {
         Ok(exists) => {
             // Record either exists and matches (true) or doesn't exist/doesn't match (false)
             // Both are valid outcomes - we're testing the lookup mechanism works
-            assert!(exists == true || exists == false);
+            let _ = exists;
         }
         Err(e) => {
             // DNS lookup failure is acceptable in test environments

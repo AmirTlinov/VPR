@@ -9,11 +9,11 @@
 //! - Kill switch conflicts
 
 pub mod client;
-pub mod server;
 pub mod cross_checks;
-pub mod fixes;
-pub mod ssh_client;
 pub mod engine;
+pub mod fixes;
+pub mod server;
+pub mod ssh_client;
 
 #[cfg(test)]
 mod tests;
@@ -86,7 +86,10 @@ pub enum RollbackOperation {
     /// Restore file from backup
     FileRestore { path: PathBuf, content: Vec<u8> },
     /// Restore firewall rule
-    FirewallRule { rule: String, action: FirewallAction },
+    FirewallRule {
+        rule: String,
+        action: FirewallAction,
+    },
     /// Remove firewall port rule
     RemoveFirewallPort { port: u16, protocol: Protocol },
     /// Unload kernel module
@@ -170,7 +173,10 @@ pub enum Fix {
     RestartVpnService,
     /// Display manual fix instructions (NO EXECUTION - safe)
     /// Security: This only DISPLAYS instructions, never executes commands
-    ManualInstruction { instruction: String, description: String },
+    ManualInstruction {
+        instruction: String,
+        description: String,
+    },
     // NOTE: Fix::RunCommand REMOVED for security (CVE: command injection)
     // Use ManualInstruction to display instructions without execution
 }
@@ -186,7 +192,10 @@ impl ValidatedHostname {
         if host.is_empty() || host.len() > 253 {
             return Err("Invalid hostname length");
         }
-        if !host.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-') {
+        if !host
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+        {
             return Err("Invalid hostname characters (only alphanumeric, dot, hyphen allowed)");
         }
         // Prevent path traversal and command injection
@@ -211,7 +220,10 @@ impl ValidatedCertCn {
         if cn.is_empty() || cn.len() > 64 {
             return Err("Invalid CN length");
         }
-        if !cn.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_') {
+        if !cn
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_')
+        {
             return Err("Invalid CN characters");
         }
         Ok(Self(cn.to_string()))
@@ -355,11 +367,23 @@ impl DiagnosticContext {
         }
 
         // Check cross-checks
-        let cross_check_health = if self.cross_checks.iter().any(|r| !r.passed && r.severity == Severity::Critical) {
+        let cross_check_health = if self
+            .cross_checks
+            .iter()
+            .any(|r| !r.passed && r.severity == Severity::Critical)
+        {
             HealthStatus::Critical
-        } else if self.cross_checks.iter().any(|r| !r.passed && r.severity == Severity::Error) {
+        } else if self
+            .cross_checks
+            .iter()
+            .any(|r| !r.passed && r.severity == Severity::Error)
+        {
             HealthStatus::Unhealthy
-        } else if self.cross_checks.iter().any(|r| !r.passed && r.severity == Severity::Warning) {
+        } else if self
+            .cross_checks
+            .iter()
+            .any(|r| !r.passed && r.severity == Severity::Warning)
+        {
             HealthStatus::Degraded
         } else {
             HealthStatus::Healthy

@@ -1,3 +1,5 @@
+#![allow(clippy::needless_range_loop)]
+
 use masque_core::replay_protection::{NonceCache, DEFAULT_TTL};
 use std::time::Duration;
 use tokio::time::sleep;

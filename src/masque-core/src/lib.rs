@@ -56,6 +56,8 @@ pub mod canary_rollout;
 pub mod cert_manager;
 /// Cover traffic generator for traffic analysis resistance
 pub mod cover_traffic;
+/// Diagnostic and troubleshooting tools
+pub mod diagnostics;
 /// DNS record updater for dynamic server IPs
 pub mod dns_updater;
 /// Domain fronting support for censorship resistance
@@ -100,11 +102,9 @@ pub mod transport;
 pub mod tun;
 /// Encrypted tunnel implementation
 pub mod tunnel;
+/// Common VPN utilities for client and server
+pub mod vpn_common;
 /// VPN configuration structures
 pub mod vpn_config;
 /// High-level VPN tunnel API
 pub mod vpn_tunnel;
-/// Diagnostic and troubleshooting tools
-pub mod diagnostics;
-/// Common VPN utilities for client and server
-pub mod vpn_common;

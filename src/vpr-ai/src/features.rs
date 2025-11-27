@@ -281,9 +281,7 @@ mod tests {
     #[test]
     fn test_direction_clone_copy() {
         let dir = Direction::Outbound;
-        let cloned = dir.clone();
         let copied = dir;
-        assert_eq!(dir, cloned);
         assert_eq!(dir, copied);
     }
 

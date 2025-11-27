@@ -677,6 +677,8 @@ fn html_unescape(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::field_reassign_with_default)]
+
     use super::*;
     use vpr_crypto::manifest::{ManifestPayload, ServerEndpoint};
 

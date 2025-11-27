@@ -3,9 +3,7 @@
 //! Tests the full cycle of encoding manifests into RSS feeds and decoding them back,
 //! including integration with ManifestClient and various steganographic methods.
 
-use masque_core::bootstrap::ManifestClientConfig;
 use masque_core::stego_rss::{StegoMethod, StegoRssConfig, StegoRssDecoder, StegoRssEncoder};
-use std::time::Duration;
 use tempfile::TempDir;
 use vpr_crypto::keys::SigningKeypair;
 use vpr_crypto::manifest::{ManifestPayload, ServerEndpoint, SignedManifest};
@@ -43,7 +41,7 @@ async fn test_stego_rss_base64_method_encode_decode_payload() {
     let method = StegoMethod::Base64Content;
 
     let config = StegoRssConfig {
-        method: method.clone(),
+        method,
         feed_title: "Test Feed".to_string(),
         feed_description: "Test Description".to_string(),
         feed_link: "https://example.com/feed".to_string(),
@@ -61,7 +59,7 @@ async fn test_stego_rss_base64_method_encode_decode_payload() {
     // Encode
     let rss_xml = encoder
         .encode_payload(&payload)
-        .expect(&format!("failed to encode with method {:?}", method));
+        .unwrap_or_else(|_| panic!("failed to encode with method {:?}", method));
 
     // Verify RSS XML is valid
     assert!(rss_xml.contains("<rss"));
@@ -71,7 +69,7 @@ async fn test_stego_rss_base64_method_encode_decode_payload() {
     // Decode
     let decoded = decoder
         .decode_payload(&rss_xml)
-        .expect(&format!("failed to decode with method {:?}", method));
+        .unwrap_or_else(|_| panic!("failed to decode with method {:?}", method));
 
     // Verify decoded payload matches original
     assert_eq!(decoded.version, payload.version);
@@ -87,7 +85,7 @@ async fn test_stego_rss_base64_method_encode_decode_signed_manifest() {
     let method = StegoMethod::Base64Content;
 
     let config = StegoRssConfig {
-        method: method.clone(),
+        method,
         feed_title: "Test Feed".to_string(),
         feed_description: "Test Description".to_string(),
         feed_link: "https://example.com/feed".to_string(),
@@ -103,20 +101,18 @@ async fn test_stego_rss_base64_method_encode_decode_signed_manifest() {
     let (signed, keypair) = create_test_signed_manifest();
 
     // Encode
-    let rss_xml = encoder.encode_manifest(&signed).expect(&format!(
-        "failed to encode signed manifest with method {:?}",
-        method
-    ));
+    let rss_xml = encoder
+        .encode_manifest(&signed)
+        .unwrap_or_else(|_| panic!("failed to encode signed manifest with method {:?}", method));
 
     // Verify RSS XML is valid
     assert!(rss_xml.contains("<rss"));
     assert!(rss_xml.contains("<channel>"));
 
     // Decode
-    let decoded = decoder.decode_manifest(&rss_xml).expect(&format!(
-        "failed to decode signed manifest with method {:?}",
-        method
-    ));
+    let decoded = decoder
+        .decode_manifest(&rss_xml)
+        .unwrap_or_else(|_| panic!("failed to decode signed manifest with method {:?}", method));
 
     // Verify signature
     let payload = decoded
@@ -195,14 +191,6 @@ async fn test_stego_rss_roundtrip_with_manifest_client() {
         .await
         .expect("failed to write RSS file");
 
-    // Create ManifestClient with RSS feed URL
-    let mut client_config = ManifestClientConfig::default();
-    client_config.cache_dir = temp_dir.path().join("cache");
-    client_config.expected_pubkey = keypair.public_bytes();
-    client_config.rss_feeds = vec![format!("file://{}", rss_file.display())];
-    client_config.rss_stego_method = StegoMethod::Base64Content;
-    client_config.timeout = Duration::from_secs(5);
-
     // Note: file:// URLs won't work with reqwest, but this tests the structure
     // In real usage, RSS feeds would be served over HTTP
     // For now, we'll test the decode path directly
@@ -237,7 +225,7 @@ async fn test_stego_rss_invalid_xml_handling() {
 
     // Try to decode invalid XML
     let invalid_xml = "<not>valid</rss>";
-    let result = decoder.decode_payload(&invalid_xml);
+    let result = decoder.decode_payload(invalid_xml);
     assert!(result.is_err());
 }
 

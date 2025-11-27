@@ -18,7 +18,9 @@ use tokio::sync::RwLock;
 
 use crate::config::TuiConfig;
 use crate::globe::GlobeRenderer;
-use crate::render::{draw_main_screen, draw_logs_screen, draw_servers_screen, draw_settings_screen, draw_help_screen};
+use crate::render::{
+    draw_help_screen, draw_logs_screen, draw_main_screen, draw_servers_screen, draw_settings_screen,
+};
 use crate::vpn::{ConnectionState, ControllerConfig, ServerConfig, VpnController, VpnMetrics};
 
 /// Active screen in TUI
@@ -181,7 +183,10 @@ pub async fn run_with_config(config: ControllerConfig) -> Result<()> {
 }
 
 /// Run TUI with full configuration
-pub async fn run_with_tui_config(controller_config: ControllerConfig, tui_config: TuiConfig) -> Result<()> {
+pub async fn run_with_tui_config(
+    controller_config: ControllerConfig,
+    tui_config: TuiConfig,
+) -> Result<()> {
     let vpn = Arc::new(VpnController::new(controller_config));
     let state = Arc::new(RwLock::new(AppState::new(Arc::clone(&vpn), tui_config)));
 
@@ -221,16 +226,16 @@ where
         {
             let mut app = state.write().await;
             app.conn_state = vpn.state().await;
-            
+
             // Update metrics less frequently
             if metrics_update.elapsed() > Duration::from_secs(1) {
                 app.metrics = vpn.metrics().await;
-                
+
                 // Update traffic stats if connected
                 if matches!(app.conn_state, ConnectionState::Connected { .. }) {
                     vpn.update_traffic_metrics().await;
                 }
-                
+
                 metrics_update = Instant::now();
             }
         }
@@ -240,7 +245,7 @@ where
             let app = state.read().await;
             terminal.draw(|frame| {
                 let area = frame.size();
-                
+
                 match app.screen {
                     Screen::Main => draw_main_screen(frame, &globe, area, &app),
                     Screen::Logs => draw_logs_screen(frame, area, &app, &vpn),
@@ -256,7 +261,7 @@ where
         if event::poll(timeout)? {
             if let Event::Key(key) = event::read()? {
                 let mut app = state.write().await;
-                
+
                 // Handle input mode first
                 if app.input_mode != InputMode::Normal {
                     match key.code {
@@ -357,7 +362,7 @@ async fn handle_main_keys(app: &mut AppState, vpn: &VpnController, key: KeyCode)
                             }
                         }
                     }
-                    
+
                     app.set_status(">>> INITIALIZING SECURE TUNNEL...");
                     if let Err(e) = vpn.connect().await {
                         app.set_status(format!("✗ Connection failed: {}", e));
@@ -487,7 +492,7 @@ async fn handle_servers_keys(app: &mut AppState, vpn: &VpnController, key: KeyCo
 /// Handle settings screen keys
 fn handle_settings_keys(app: &mut AppState, key: KeyCode) {
     const MAX_SETTINGS: usize = 7; // Total number of settings items
-    
+
     match key {
         KeyCode::Up | KeyCode::Char('k') => {
             if app.settings_selection > 0 {

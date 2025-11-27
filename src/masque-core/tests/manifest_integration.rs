@@ -1,3 +1,5 @@
+#![allow(clippy::field_reassign_with_default)]
+
 //! Integration tests for Manifest fetch and fallback mechanisms
 //!
 //! Tests: Manifest fetch → Server selection → Connection

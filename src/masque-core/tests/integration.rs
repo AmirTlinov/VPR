@@ -264,6 +264,9 @@ async fn quic_udp_end_to_end() {
         .spawn()
         .expect("start client");
 
+    // give client time to bind UDP listener
+    sleep(Duration::from_millis(200)).await;
+
     // Send UDP packet to client listener and expect echo
     let sock = UdpSocket::bind("127.0.0.1:0").unwrap();
     sock.set_read_timeout(Some(Duration::from_millis(500)))
@@ -283,6 +286,7 @@ async fn quic_udp_end_to_end() {
     assert!(received, "no UDP echo received through tunnel");
 
     let _ = client.kill();
+    let _ = client.wait();
     let _ = server.kill();
     let _ = server.wait();
 }

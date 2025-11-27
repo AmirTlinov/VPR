@@ -99,7 +99,10 @@ mod cross_checks_tests {
         };
 
         let checks = cross_checks::run_cross_checks(&client_report, &server_report).await;
-        assert!(checks.is_ok(), "Cross-checks should not fail on empty reports");
+        assert!(
+            checks.is_ok(),
+            "Cross-checks should not fail on empty reports"
+        );
     }
 
     #[tokio::test]
@@ -151,10 +154,7 @@ mod engine_tests {
         assert!(context.is_ok(), "Engine diagnostics should not fail");
 
         let context = context.unwrap();
-        assert!(
-            context.client_report.is_some(),
-            "Should have client report"
-        );
+        assert!(context.client_report.is_some(), "Should have client report");
         assert!(
             context.server_report.is_none(),
             "Should not have server report without SSH"
@@ -182,11 +182,7 @@ mod engine_tests {
 
         assert!(result.is_ok(), "Auto-fix should not fail");
         let fixes = result.unwrap();
-        assert_eq!(
-            fixes.len(),
-            0,
-            "Manual consent should not apply any fixes"
-        );
+        assert_eq!(fixes.len(), 0, "Manual consent should not apply any fixes");
     }
 }
 
@@ -262,8 +258,7 @@ mod fixes_tests {
 #[cfg(test)]
 mod context_tests {
     use crate::diagnostics::{
-        DiagnosticContext, DiagnosticReport, DiagnosticResult, Fix, HealthStatus,
-        Severity, Side,
+        DiagnosticContext, DiagnosticReport, DiagnosticResult, Fix, HealthStatus, Severity, Side,
     };
     use std::time::SystemTime;
 
