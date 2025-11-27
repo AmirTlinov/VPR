@@ -108,7 +108,7 @@ impl SuspicionTracker {
 }
 
 #[derive(Parser, Debug)]
-#[command(name = "vpn-server", about = "VPR VPN server with TUN tunnel")]
+#[command(name = "vpn-server", version, about = "VPR VPN server with TUN tunnel")]
 struct Args {
     /// QUIC bind address
     #[arg(long, default_value = "0.0.0.0:4433")]

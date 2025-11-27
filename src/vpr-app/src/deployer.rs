@@ -177,6 +177,8 @@ pub enum SshOperation {
     GetLogs { lines: u32 },
     /// Remove installation directory
     Uninstall,
+    /// Get server binary version
+    GetServerVersion,
 }
 
 impl SshOperation {
@@ -266,6 +268,11 @@ impl SshOperation {
 
             SshOperation::Uninstall => {
                 format!("rm -rf {REMOTE_DIR}")
+            }
+
+            SshOperation::GetServerVersion => {
+                // Get version from deployed binary (--version outputs to stdout)
+                format!("{REMOTE_DIR}/bin/vpn-server --version 2>/dev/null || echo 'unknown'")
             }
         }
     }
@@ -660,10 +667,28 @@ impl Deployer {
             .map(|s| s.trim() == "yes")
             .unwrap_or(false);
 
+        // Get version only if server is deployed
+        let version = if deployed {
+            self.execute(SshOperation::GetServerVersion)
+                .await
+                .ok()
+                .and_then(|output| {
+                    let trimmed = output.trim();
+                    if trimmed == "unknown" || trimmed.is_empty() {
+                        None
+                    } else {
+                        // Parse "vpn-server 0.1.0" -> "0.1.0"
+                        trimmed.split_whitespace().nth(1).map(|v| v.to_string())
+                    }
+                })
+        } else {
+            None
+        };
+
         ServerStatus {
             deployed,
             running,
-            version: None, // TODO: implement version check safely
+            version,
             uptime_secs: None,
             error: None,
         }
@@ -976,6 +1001,30 @@ mod tests {
         let cmd = SshOperation::StartServer.to_command();
         assert!(cmd.contains("vpn-server"));
         assert!(cmd.contains("--bind 0.0.0.0:443"));
+
+        // Test GetServerVersion command
+        let cmd = SshOperation::GetServerVersion.to_command();
+        assert!(cmd.contains("--version"));
+        assert!(cmd.contains("vpn-server"));
+    }
+
+    #[test]
+    fn test_version_parsing() {
+        // Test version string parsing logic
+        fn parse_version(output: &str) -> Option<String> {
+            let trimmed = output.trim();
+            if trimmed == "unknown" || trimmed.is_empty() {
+                None
+            } else {
+                trimmed.split_whitespace().nth(1).map(|v| v.to_string())
+            }
+        }
+
+        assert_eq!(parse_version("vpn-server 0.1.0"), Some("0.1.0".to_string()));
+        assert_eq!(parse_version("vpn-server 1.2.3-alpha"), Some("1.2.3-alpha".to_string()));
+        assert_eq!(parse_version("unknown"), None);
+        assert_eq!(parse_version(""), None);
+        assert_eq!(parse_version("  vpn-server 0.1.0  "), Some("0.1.0".to_string()));
     }
 
     #[test]
