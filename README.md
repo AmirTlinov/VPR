@@ -1,348 +1,192 @@
-# VPR – Stealth VPN Tunnel
+# VPR - Post-Quantum Stealth VPN
 
-**VPR** (VPN Protocol Router) — ультра-производительный, высокосекретный VPN протокол с защитой от обнаружения и блокировки. Проект разработан для работы в условиях активного DPI, цензуры и государственного надзора.
+**VPR** (VPN Protocol Router) is an ultra-performant, stealth VPN protocol designed for hostile network environments. Built to bypass advanced DPI, censorship, and state-level surveillance.
 
-## 🎯 Цель проекта
+## Key Features
 
-Создание программы для туннелирования интернет-соединения с использованием неизвестного ультра-производительного, высокосекретного, безопасного протокола, который нельзя обнаружить или заблокировать. Протокол настраивается "одной кнопкой" на сервер и работает даже в условиях жесткой цензуры (Северная Корея, Татарстан, РФ, Китай и т.д.).
+- **Post-Quantum Cryptography**: Hybrid Noise_IK + ML-KEM768 + X25519
+- **DPI Evasion**: TLS fingerprint mimicry (JA3/JA4), adaptive traffic morphing
+- **MASQUE/QUIC Transport**: High-performance HTTP/3-based tunneling
+- **Stealth Mode**: Probe protection, replay protection, domain fronting
+- **AI Traffic Morpher**: 20M parameter neural network for traffic obfuscation
+- **Kill Switch**: WAL-based crash recovery with NetworkStateGuard
 
-## ✨ Ключевые особенности
+## Project Status
 
-- **🔐 Гибридная постквантовая криптография**: Noise_IK/NK + ML-KEM768 + X25519
-- **🎭 Защита от DPI**: TLS fingerprint customization, adaptive traffic morphing, cover traffic
-- **🚀 MASQUE/QUIC**: Высокопроизводительный транспорт на базе HTTP/3
-- **🛡️ Stealth режим**: Probe protection, replay protection, domain fronting
-- **📊 AI-оркестрация**: Компактная нейросеть для адаптивного управления маскировкой
-- **⚡ Производительность**: Поддержка Gbps трафика, низкая задержка
-- **🔧 One-button deployment**: Terraform/Ansible автоматизация развертывания
+| Metric | Value | Status |
+|--------|-------|--------|
+| **Overall Score** | 87/100 | Production Ready |
+| Tests | 1,081 passing | All green |
+| Clippy Errors | 0 | Clean |
+| Security Fixes | VPR-SEC-001..009 | All resolved |
+| E2E Tested | Real VPS | Working |
 
-## 📊 Статус проекта
+**Last Audit**: 2025-11-27 ([Full Report](AUDIT_REPORT_2025-11-27.md))
 
-**Readiness Score: 85/100** ✅ Flagship Ready
+## Quick Start
 
-- ✅ Компиляция без ошибок
-- ✅ 188+ тестов проходят
-- ✅ Clippy без ошибок в библиотеках
-- ✅ Критичные исправления безопасности завершены
-- ✅ Документация unsafe блоков
-
-Подробности: [`FLAGSHIP_PROGRESS.md`](FLAGSHIP_PROGRESS.md)
-
-## 🏗️ Архитектура
-
-VPR построен на многослойной архитектуре:
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    Desktop Client (Tauri)                   │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐      │
-│  │   GUI/TUI    │  │ VPN Client   │  │ AI Morpher   │      │
-│  └──────────────┘  └──────────────┘  └──────────────┘      │
-└───────────────────────────┬─────────────────────────────────┘
-                            │
-                            ▼
-┌─────────────────────────────────────────────────────────────┐
-│              Transport Layer (MASQUE/QUIC)                  │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐      │
-│  │ HTTP/3       │  │ QUIC Streams │  │ QUIC Datagr. │      │
-│  └──────────────┘  └──────────────┘  └──────────────┘      │
-└───────────────────────────┬─────────────────────────────────┘
-                            │
-                            ▼
-┌─────────────────────────────────────────────────────────────┐
-│            Cryptographic Layer (Noise + PQ)                  │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐      │
-│  │ Noise_IK/NK  │  │ ML-KEM768    │  │ Key Rotation │      │
-│  └──────────────┘  └──────────────┘  └──────────────┘      │
-└───────────────────────────┬─────────────────────────────────┘
-                            │
-                            ▼
-┌─────────────────────────────────────────────────────────────┐
-│              Stealth Layer (DPI Evasion)                     │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐      │
-│  │ TLS FP       │  │ Traffic      │  │ Cover        │      │
-│  │ Customization│  │ Morphing     │  │ Traffic      │      │
-│  └──────────────┘  └──────────────┘  └──────────────┘      │
-└───────────────────────────┬─────────────────────────────────┘
-                            │
-                            ▼
-┌─────────────────────────────────────────────────────────────┐
-│                    Server (masque-core)                      │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐      │
-│  │ MASQUE       │  │ DoH Gateway  │  │ TUN Device    │      │
-│  │ Server       │  │              │  │               │      │
-│  └──────────────┘  └──────────────┘  └──────────────┘      │
-└─────────────────────────────────────────────────────────────┘
-```
-
-Подробное описание архитектуры: [`docs/architecture.md`](docs/architecture.md)
-
-## 📦 Компоненты
-
-### Core компоненты
-
-- **`masque-core`** — MASQUE CONNECT-UDP сервер с поддержкой QUIC/HTTP/3
-  - Hybrid Noise handshake (Noise_IK/NK + ML-KEM768)
-  - TLS fingerprint customization
-  - Probe protection и replay protection
-  - TUN/TAP интерфейс для захвата трафика
-  - Adaptive padding и cover traffic
-
-- **`vpr-crypto`** — Криптографические примитивы
-  - PKI (offline CA generation)
-  - Noise protocol с гибридным PQ-KEM
-  - Age encryption для секретов
-  - Key rotation и management
-
-- **`doh-gateway`** — DNS-over-HTTPS/QUIC gateway
-  - DoH/ODoH/DoQ endpoints
-  - DNS health monitoring
-  - Moving-target rotation
-
-- **`vpr-app`** — Desktop клиент (Tauri)
-  - GUI на базе Tauri + Rust
-  - Kill switch
-  - Auto-connect
-  - Process manager
-
-### Вспомогательные компоненты
-
-- **`health-harness`** — Health check утилита
-- **`health-history`** — CLI для истории health reports
-- **`vpr-tui`** — TUI с ASCII Earth визуализацией
-- **`vpr-ai`** — AI Traffic Morpher (20M параметров)
-
-## 🚀 Быстрый старт
-
-### Требования
+### Requirements
 
 - Rust 1.70+ (edition 2021)
-- Linux/macOS (Windows в разработке)
-- Root/Admin права для TUN устройства
+- Linux (macOS/Windows in development)
+- Root privileges for TUN device
 
-### Сборка
+### Build
 
-```sh
-# Клонировать репозиторий
-git clone <repo-url>
+```bash
+git clone https://github.com/AmirTlinov/VPR.git
 cd VPR
-
-# Собрать все компоненты
 cargo build --release
-
-# Запустить тесты
-cargo test --workspace
+cargo test --all
 ```
 
-### Клиент
+### Client
 
-```sh
-# Dev режим с hot reload
-make dev
+```bash
+# Generate Noise keys
+./scripts/gen-noise-keys.sh secrets client
 
-# Сборка релиза
-make build
-
-# Запуск приложения
-make app
-
-# Или напрямую
-./target/release/vpr-app
+# Connect to server
+sudo ./target/release/vpn-client \
+  --server your-server.com:443 \
+  --tun-name vpr0 \
+  --noise-dir secrets \
+  --noise-name client \
+  --server-pub secrets/server.noise.pub
 ```
 
-Пакеты после сборки:
-- `target/release/bundle/deb/VPR_*.deb`
-- `target/release/bundle/rpm/VPR-*.rpm`
+### Server
 
-### Сервер
+```bash
+# Generate server keys
+./scripts/gen-noise-keys.sh secrets server
 
-```sh
-# Генерация ключей
-scripts/gen-noise-keys.sh secrets
+# Generate TLS certificates (or use Let's Encrypt)
+openssl req -x509 -newkey rsa:4096 -keyout secrets/server.key \
+  -out secrets/server.crt -days 365 -nodes -subj "/CN=vpn.example.com"
 
-# Запуск MASQUE сервера
-target/release/masque-core \
-  --config config/masque.toml.sample \
-  --noise-key secrets/server.key
-
-# Запуск DoH gateway
-target/release/doh-gateway \
-  --config config/doh.toml.sample \
-  --odoh-enable
-
-# TLS для DoH/DoQ
-# Порядок выбора сертификата:
-#   1) ACME через CertificateManager (если заданы cert_domain + acme_directory_url)
-#   2) Явные файлы cert/key в конфиге
-#   3) Автогенерируемый self-signed (fallback для dev)
-#
-# Пример с ACME в config/doh.toml:
-#   cert_domain = "doh.example.com"
-#   acme_directory_url = "https://acme-v02.api.letsencrypt.org/directory"
-#   cert_dir = "/var/lib/vpr/certs"
-#
-# Пример с файлами:
-#   doq_cert = "/etc/vpr/doh_cert.pem"
-#   doq_key  = "/etc/vpr/doh_key.pem"
-
-# DNS серверы (по умолчанию 8.8.8.8, 1.1.1.1)
-# Можно задать свои: --dns-servers 9.9.9.9,1.0.0.1,2001:4860:4860::8888
-
-# Health check
-target/release/health-harness \
-  --doh-url http://127.0.0.1:8053/dns-query \
-  --samples=3
+# Start server
+sudo ./target/release/vpn-server \
+  --bind 0.0.0.0:443 \
+  --tun-name vpr-srv \
+  --tun-addr 10.9.0.1 \
+  --pool-start 10.9.0.2 \
+  --pool-end 10.9.0.254 \
+  --noise-dir secrets \
+  --noise-name server \
+  --cert secrets/server.crt \
+  --key secrets/server.key \
+  --enable-forwarding
 ```
 
-### Развертывание (One-button)
+## Architecture
 
-```sh
-# Terraform для инфраструктуры
-cd infra/terraform
-terraform init
-terraform apply
-
-# Ansible для конфигурации
-cd infra/ansible
-ansible-playbook -i inventory deploy.yml
+```
+Client                           Server
+┌─────────────────┐              ┌─────────────────┐
+│   Application   │              │   Application   │
+├─────────────────┤              ├─────────────────┤
+│   TUN Device    │              │   TUN Device    │
+│     (vpr0)      │              │    (vpr-srv)    │
+├─────────────────┤              ├─────────────────┤
+│  Traffic Morpher│              │   NAT/Routing   │
+│    (AI 20M)     │              │                 │
+├─────────────────┤   QUIC/443   ├─────────────────┤
+│  MASQUE/HTTP3   │◄────────────►│  MASQUE/HTTP3   │
+├─────────────────┤              ├─────────────────┤
+│  Noise + ML-KEM │              │  Noise + ML-KEM │
+│   (PQ Crypto)   │              │   (PQ Crypto)   │
+├─────────────────┤              ├─────────────────┤
+│  TLS Fingerprint│              │   DoH Gateway   │
+│    (Chrome)     │              │  (DoH/DoQ/ODoH) │
+└─────────────────┘              └─────────────────┘
 ```
 
-Подробности: [`infra/README.md`](infra/README.md)
+## Project Structure
 
-## 🧪 Тестирование
+```
+src/
+├── masque-core/      # MASQUE CONNECT-UDP, QUIC transport
+├── vpr-crypto/       # Noise protocol, ML-KEM, key management
+├── vpr-ai/           # AI traffic morpher (ONNX)
+├── vpr-app/          # Desktop GUI (Tauri)
+├── vpr-tui/          # Terminal UI with ASCII Earth
+├── vpr-e2e/          # E2E testing framework
+├── health-harness/   # Health monitoring
+├── health-history/   # Health data CLI
+└── diagnostics/      # System diagnostics
+```
 
-```sh
-# Все тесты
-cargo test --workspace
+## Documentation
 
-# Тесты конкретного компонента
+| Document | Description |
+|----------|-------------|
+| [Architecture](docs/architecture.md) | System design and components |
+| [Security](docs/security.md) | Threat model, crypto details |
+| [User Guide](docs/user-guide.md) | End-user documentation |
+| [CONTRIBUTING](CONTRIBUTING.md) | Developer guide |
+| [ROADMAP](docs/ROADMAP.md) | Development plan |
+| [UX Roadmap](docs/UX_IMPROVEMENT_ROADMAP.md) | UX improvement plan |
+
+## Security
+
+VPR implements defense-in-depth security:
+
+| Feature | Implementation |
+|---------|----------------|
+| **Post-Quantum** | ML-KEM768 + X25519 hybrid |
+| **Key Rotation** | 60s or 1GB threshold |
+| **Secret Hygiene** | Zeroizing, no hardcoded secrets |
+| **Replay Protection** | 5-minute sliding window |
+| **Probe Protection** | Challenge/response system |
+| **Constant-Time** | subtle crate for crypto ops |
+
+See [SECURITY.md](SECURITY.md) for vulnerability reporting.
+
+## Testing
+
+```bash
+# All tests
+cargo test --all
+
+# Specific crate
 cargo test -p masque-core
 cargo test -p vpr-crypto
 
-# E2E тесты
-scripts/e2e_full_test.sh
-scripts/e2e_automated.sh
+# Clippy
+cargo clippy --all-targets --all-features
 
-# Clippy проверки
-cargo clippy --workspace --lib -- -D warnings
-
-# Форматирование
+# Format check
 cargo fmt --check
 ```
 
-## 📚 Документация
+## Contributing
 
-- **[Архитектура](docs/architecture.md)** — Детальное описание архитектуры и компонентов
-- **[Roadmap](docs/ROADMAP.md)** — План развития проекта
-- **[Security](docs/security.md)** — Политики безопасности и threat model
-- **[Project Structure](PROJECT_STRUCTURE.md)** — Структура проекта
-- **[Changelog](CHANGELOG.md)** — История изменений
-- **[AI Stealth Plan](docs/AI_STEALTH_PLAN.md)** — План интеграции ИИ для маскировки
-- **[AI Traffic Morpher](docs/AI_TRAFFIC_MORPHER.md)** — Нейросеть для морфинга трафика
-- **[Design Documents](docs/design/)** — Технические спецификации компонентов
+We welcome contributions! Please read:
 
-## 🔒 Безопасность
+1. [CONTRIBUTING.md](CONTRIBUTING.md) - Development guidelines
+2. [Code of Conduct](CODE_OF_CONDUCT.md) - Community standards
 
-VPR следует строгим стандартам безопасности:
+### Quality Standards
 
-- **Randomness (CRIT-001)**: Все ключи генерируются через `OsRng`
-- **Secret Hygiene (CRIT-002)**: ML-KEM секреты в `Zeroizing<Vec<u8>>`
-- **Replay Protection (CRIT-003)**: 5-минутное окно с sliding TTL
-- **Unsafe блоки**: Все задокументированы с SAFETY комментариями
-- **Error handling**: Критичные `unwrap()` заменены на правильную обработку ошибок
+- Cyclomatic complexity <= 10
+- Test coverage >= 85% on changed code
+- No mocks/fakes in production code
+- Conventional Commits format
 
-Подробности: [`docs/security.md`](docs/security.md)
+## License
 
-## 🤝 Вклад в проект
+MIT License - see [LICENSE](LICENSE) for details.
 
-Мы приветствуем вклад в проект! Пожалуйста, ознакомьтесь с:
+## Acknowledgments
 
-- [CONTRIBUTING.md](CONTRIBUTING.md) — Руководство для разработчиков
-- [AGENTS.md](AGENTS.md) — Система AI-агентов для разработки
-- [TARGETS.md](TARGETS.md) — Цели сборки
-- [TODO.md](TODO.md) — Краткий список задач (детальный roadmap: [docs/ROADMAP.md](docs/ROADMAP.md))
-
-### Стандарты качества
-
-- Cyclomatic complexity ≤ 10
-- Test coverage ≥ 85% по изменённому коду
-- Никаких моков/фейков в продакшн коде
-- Conventional Commits
-- Документация обновляется вместе с кодом
-
-## 📈 Статус разработки
-
-### ✅ Реализовано
-
-- ✅ Гибридная криптография (Noise + ML-KEM768)
-- ✅ MASQUE/QUIC транспорт
-- ✅ TLS fingerprint customization
-- ✅ DoH/ODoH/DoQ gateway
-- ✅ Health monitoring
-- ✅ TUI с ASCII Earth
-- ✅ Desktop клиент (базовая функциональность)
-- ✅ Kill switch и process manager
-- ✅ Probe protection и replay protection
-- ✅ Key rotation
-- ✅ AI Traffic Morpher (базовая версия)
-
-### 🔄 В разработке
-
-- 🔄 MASQUE CONNECT-UDP полная реализация (RFC 9298)
-- 🔄 Routing & NAT
-- 🔄 Split tunnel
-- 🔄 Bootstrap manifest system
-- 🔄 Moving-target DoH rotation
-
-### 📋 Планируется
-
-- 📋 DPDK ingress path
-- 📋 Hidden-master DNS
-- 📋 Offline CA generation tooling
-- 📋 CI/CD pipeline
-- 📋 Network-namespace test harness
-
-Подробный roadmap: [`docs/ROADMAP.md`](docs/ROADMAP.md)
-
-## 🛠️ Утилиты
-
-### Health History CLI
-
-```sh
-# Последние 5 отчетов
-cargo run -p health-history -- --tail 5
-
-# JSON формат для автоматизации
-cargo run -p health-history -- --json
-```
-
-Читает `~/.vpr/health_reports.jsonl`.
-
-### TUI ASCII Earth
-
-```sh
-# Интерактивный режим (выход: q/Esc)
-cargo run -p vpr-tui --release
-
-# Снепшот кадра
-cargo run -p vpr-tui --bin frame_dump -- 64 32 0.6
-```
-
-Детали: [`docs/tui-earth.md`](docs/tui-earth.md)
-
-## 📄 Лицензия
-
-Проект распространяется под лицензией MIT. См. [LICENSE](LICENSE) для деталей.
-
-## 🙏 Благодарности
-
-Проект использует следующие технологии:
+Built with:
 - [QUIC](https://quicwg.org/) / [MASQUE](https://datatracker.ietf.org/wg/masque/about/)
 - [Noise Protocol](https://noiseprotocol.org/)
-- [ML-KEM](https://csrc.nist.gov/projects/post-quantum-cryptography)
+- [ML-KEM (CRYSTALS-Kyber)](https://pq-crystals.org/kyber/)
 - [Tauri](https://tauri.app/)
 - [Rust](https://www.rust-lang.org/)
 
 ---
 
-**VPR** — Stealth VPN для свободного интернета 🌐
+**VPR** - Freedom through technology

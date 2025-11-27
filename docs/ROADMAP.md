@@ -1,489 +1,139 @@
-# VPR Roadmap
+# VPR Development Roadmap
+
+**Last Updated**: 2025-11-27
+**Current Status**: Production Ready (87/100)
+
+---
+
+## Priority Legend
+
+- **P0** - Critical path, blocking production
+- **P1** - Important for stealth/security
+- **P2** - Operations and infrastructure
+- **P3** - Nice-to-have features
+
+---
+
+## Completed
+
+### Core VPN (P0)
+- [x] MASQUE CONNECT-UDP (RFC 9298)
+- [x] QUIC/HTTP3 transport (h3-quinn)
+- [x] Hybrid Noise + ML-KEM768 handshake
+- [x] TUN device management
+- [x] NAT/routing on server
+- [x] Client IP pool allocation
+- [x] DNS configuration
+
+### Security (P1)
+- [x] Post-quantum cryptography
+- [x] Key rotation (60s / 1GB)
+- [x] Replay protection (5-min window)
+- [x] Probe protection (challenge/response)
+- [x] Zeroizing secrets
+- [x] Kill switch with WAL pattern
+- [x] NetworkStateGuard crash recovery
+- [x] All VPR-SEC-001..009 fixes
+
+### Stealth (P1)
+- [x] TLS fingerprint customization (JA3/JA4)
+- [x] AI Traffic Morpher (20M params)
+- [x] Cover traffic generator
+- [x] Adaptive padding
+- [x] Chrome profile mimicry
+
+### Client (P0)
+- [x] Desktop GUI (Tauri)
+- [x] TUI with ASCII Earth
+- [x] Auto-connect
+- [x] Connection statistics
+- [x] Kill switch UI
+
+### Infrastructure (P2)
+- [x] CI/CD (GitHub Actions)
+- [x] Terraform modules
+- [x] Systemd services
+- [x] 1,081 unit tests
+
+---
+
+## In Progress
+
+### Code Quality (P1)
+- [ ] Refactor large files (20 files >300 lines)
+  - [ ] tun.rs (1,628 lines)
+  - [ ] vpn_client.rs (1,567 lines)
+  - [ ] vpn_server.rs (1,517 lines)
+- [ ] Audit unwrap() calls (460 total)
+- [ ] Fix HACK markers (8 total)
+
+### Documentation (P2)
+- [ ] Add doc comments to public API
+- [ ] Per-crate README files
+- [ ] API documentation site
+
+---
+
+## Planned
+
+### Testing (P1)
+- [ ] Integration tests for full VPN flow
+- [ ] Fuzz testing for protocol parsing
+- [ ] Performance benchmarks (criterion)
+- [ ] Code coverage CI
+
+### Mobile Clients (P2)
+See [UX_IMPROVEMENT_ROADMAP.md](UX_IMPROVEMENT_ROADMAP.md)
+
+- [ ] Android client (Kotlin + Rust FFI)
+- [ ] iOS client (Swift + Rust FFI)
+- [ ] Shared Rust core library
+
+### Distribution (P2)
+- [ ] Linux: AppImage, deb, rpm, AUR
+- [ ] macOS: DMG with drag-and-drop
+- [ ] Windows: MSI installer
+- [ ] Config file support (~/.config/vpr/config.toml)
+
+### Advanced Features (P3)
+- [ ] Multi-hop VPN (double encryption)
+- [ ] Split tunneling per-app
+- [ ] WebRTC fallback transport
+- [ ] DPDK for high-performance ingress
 
-> План развития проекта VPR. Последнее обновление: 2025-01-27
+### Enterprise (P3)
+- [ ] Admin dashboard
+- [ ] SSO integration
+- [ ] Audit logging
+- [ ] Custom server deployment
 
-## Статус проекта
+---
 
-**Readiness Score: 85/100** ✅ Flagship Ready
+## Timeline Estimate
 
-Подробности о текущем состоянии: [`../FLAGSHIP_PROGRESS.md`](../FLAGSHIP_PROGRESS.md)
+| Phase | Duration | Focus |
+|-------|----------|-------|
+| Q4 2025 | Now | Code quality, documentation |
+| Q1 2026 | 8 weeks | Mobile clients, installers |
+| Q2 2026 | 4 weeks | Advanced features |
+| Q3 2026 | Ongoing | Enterprise, maintenance |
 
-## Легенда приоритетов
+---
 
-- **P0** — Блокер для функционального VPN туннеля
-- **P1** — Требуется для stealth/DPI-resistance
-- **P2** — Улучшения операций/разработки
-- **P3** — Nice-to-have функции
+## Metrics Goals
 
-## ✅ Реализовано
+| Metric | Current | Target |
+|--------|---------|--------|
+| Overall Score | 87/100 | 95/100 |
+| Code Quality | 85/100 | 92/100 |
+| Documentation | 70/100 | 90/100 |
+| Architecture | 82/100 | 90/100 |
 
-### Криптография и безопасность
+---
 
-- ✅ **Гибридная постквантовая криптография**
-  - Noise_IK/NK с ML-KEM768 + X25519
-  - Hybrid KEM key exchange
-  - Forward secrecy через frequent rotation
+## Related Documents
 
-- ✅ **Key Management**
-  - Session ticket rotation (≤60s или 1GB)
-  - Key rotation система
-  - Age encryption для секретов
-
-- ✅ **Security Hardening**
-  - Replay protection (5-минутное окно)
-  - Probe protection (challenge/response)
-  - Constant-time операции
-  - Zeroizing для секретов
-
-### Транспорт и протоколы
-
-- ✅ **MASQUE/QUIC транспорт**
-  - HTTP/3 сервер (h3-quinn)
-  - QUIC streams и datagrams
-  - Базовый MASQUE CONNECT-UDP
-
-- ✅ **TLS Fingerprint Customization**
-  - JA3/JA4 поддержка
-  - Custom TLS профили
-  - Динамическая загрузка профилей
-
-- ✅ **DNS Gateway**
-  - DoH/ODoH/DoQ endpoints
-  - DNS health monitoring
-  - Рекурсивный резолвер
-
-### Клиент и UI
-
-- ✅ **Desktop клиент (vpr-app)**
-  - Tauri GUI
-  - Kill switch
-  - Auto-connect
-  - Process manager
-  - Статистика сессии
-
-- ✅ **TUI (vpr-tui)**
-  - ASCII Earth визуализация
-  - Интерактивный режим
-  - Снепшоты кадров
-
-### Stealth и DPI Evasion
-
-- ✅ **Traffic Morphing**
-  - AI Traffic Morpher (20M параметров)
-  - ONNX Runtime интеграция
-  - Базовый морфинг трафика
-
-- ✅ **Cover Traffic**
-  - Генератор cover traffic
-  - Trace-driven паттерны
-  - Adaptive padding buckets
-
-- ✅ **Probe Protection**
-  - Challenge/response система
-  - Timing obfuscation
-  - Active probe detection
-
-### Инфраструктура и инструменты
-
-- ✅ **Health Monitoring**
-  - health-harness CLI
-  - health-history утилита
-  - Suspicion score расчет
-  - Health reports (JSONL)
-
-- ✅ **Bootstrap**
-  - Базовый bootstrap manifest
-  - Domain fronting поддержка
-  - Noise key generation
-
-- ✅ **TUN/TAP**
-  - TUN интерфейс для Linux
-  - Захват системного трафика
-  - Базовый routing
-
-### Качество кода
-
-- ✅ **Компиляция**: Без ошибок
-- ✅ **Тесты**: 188+ тестов проходят
-- ✅ **Clippy**: Без ошибок в библиотеках
-- ✅ **Форматирование**: Соответствует стандартам
-- ✅ **Unsafe блоки**: Все задокументированы
-
-## 🔄 В разработке
-
-### P0 — Критический путь к рабочему VPN
-
-#### MASQUE CONNECT-UDP полная реализация (RFC 9298)
-
-**Статус:** Частично реализовано, требуется доработка
-
-**Что сделано:**
-- Базовый CONNECT-UDP handler
-- QUIC datagrams поддержка
-- Capsule Protocol базовая реализация
-
-**Что осталось:**
-- Полная поддержка всех capsule типов
-- UDP forwarding оптимизация
-- Context ID management
-- Integration тесты
-
-**ETA:** 2 недели
-
-#### Routing & NAT
-
-**Статус:** Базовая реализация есть, требуется расширение
-
-**Что сделано:**
-- TUN интерфейс
-- Базовый routing
-
-**Что осталось:**
-- NAT masquerading на сервере
-- Split tunnel поддержка
-- Policy-based routing
-- IPv6 поддержка
-
-**ETA:** 1 неделя
-
-#### VPN Client полная интеграция
-
-**Статус:** Базовая функциональность есть
-
-**Что сделано:**
-- GUI клиент
-- Базовое подключение
-
-**Что осталось:**
-- Полная интеграция с masque-core
-- TUN device управление
-- Routing configuration
-- DNS configuration
-
-**ETA:** 2 недели
-
-### P1 — Stealth & Security Hardening
-
-#### Adaptive Traffic Shaping
-
-**Статус:** Базовая версия есть
-
-**Что сделано:**
-- AI Traffic Morpher (20M параметров)
-- Базовый морфинг
-
-**Что осталось:**
-- Интеграция с реальным трафиком
-- Адаптивная настройка параметров
-- Cover traffic оптимизация
-- DPI feedback loop
-
-**ETA:** 2 недели
-
-#### Bootstrap Manifest System
-
-**Статус:** Базовая структура есть
-
-**Что сделано:**
-- Manifest структура
-- Подпись и проверка
-
-**Что осталось:**
-- Stego RSS publisher
-- Автоматическое распространение
-- Version management
-- Rollback механизм
-
-**ETA:** 1 неделя
-
-#### Moving-target DoH Rotation
-
-**Статус:** Планируется
-
-**Что нужно:**
-- ACME автоматизация
-- DNS обновления
-- Manifest push
-- Canary rollout
-
-**ETA:** 1 неделя
-
-## 📋 Планируется
-
-### P2 — DNS Plane & Infrastructure
-
-#### Hidden-master DNS
-
-**Описание:** Авторитативный DNS сервер с DNSSEC
-
-**Требования:**
-- DNSSEC подпись (ZSK weekly, KSK monthly)
-- IXFR sync pipeline
-- WireGuard транспорт для sync
-
-**ETA:** 1 неделя
-
-#### IXFR Sync Pipeline
-
-**Описание:** Signed incremental zone transfer
-
-**Требования:**
-- WireGuard транспорт
-- Подпись зон
-- Автоматическая синхронизация
-
-**ETA:** 3 дня
-
-#### Offline Root CA Tooling
-
-**Описание:** Air-gapped CA generation
-
-**Требования:**
-- Скрипты генерации root CA
-- Intermediate cert issuance
-- Key rotation automation
-
-**ETA:** 3 дня
-
-#### Key Rotation Policy
-
-**Описание:** Документированные процедуры + автоматизация
-
-**Требования:**
-- Документация процедур
-- Автоматизация ротации
-- Rollback механизмы
-
-**ETA:** 2 дня
-
-### P2 — Ops & Developer Experience
-
-#### CI/CD Pipeline
-
-**Описание:** GitHub Actions для автоматизации
-
-**Требования:**
-- Lint, fmt, test
-- Coverage reports
-- Release builds
-- Artifact publishing
-
-**ETA:** 2 дня
-
-#### GUI Packaging
-
-**Описание:** Распространение GUI клиента
-
-**Требования:**
-- Linux (deb, rpm, AppImage)
-- macOS (dmg)
-- Windows (msi)
-
-**ETA:** 2 дня
-
-#### Network-namespace Test Harness
-
-**Описание:** Изолированные тесты туннеля
-
-**Требования:**
-- Network namespace изоляция
-- Non-disruptive тесты
-- E2E сценарии
-
-**ETA:** 3 дня
-
-#### Chaos Testing Suite
-
-**Описание:** Тестирование отказоустойчивости
-
-**Требования:**
-- Packet loss сценарии
-- QUIC blocking симуляция
-- DNS poisoning тесты
-- Failover drills
-
-**ETA:** 1 неделя
-
-### P3 — Расширенные функции
-
-#### DPDK Ingress Path
-
-**Описание:** Kernel bypass для высокой производительности
-
-**Требования:**
-- DPDK интеграция
-- Опциональный feature flag
-- Performance тесты
-
-**ETA:** 2 недели (опционально)
-
-#### Split Tunnel
-
-**Описание:** Selective routing для приложений
-
-**Требования:**
-- Policy-based routing
-- Application whitelist
-- DNS split
-
-**ETA:** 1 неделя
-
-#### Multipath QUIC
-
-**Описание:** Множественные пути для отказоустойчивости
-
-**Требования:**
-- Multipath QUIC поддержка
-- Path selection логика
-- Load balancing
-
-**ETA:** 2 недели
-
-#### Forward Error Correction (FEC)
-
-**Описание:** RaptorQ для устойчивости к потерям
-
-**Требования:**
-- RaptorQ интеграция
-- FEC stripes
-- 1-3% loss resilience
-
-**ETA:** 1 неделя
-
-## Метрики прогресса
-
-### Текущие метрики
-
-| Метрика | Значение | Статус |
-|---------|----------|--------|
-| Компиляция | ✅ Без ошибок | Отлично |
-| Тесты | ✅ 188+ тестов | Отлично |
-| Clippy | ✅ Без ошибок | Отлично |
-| Форматирование | ✅ Соответствует | Отлично |
-| Обработка ошибок | ✅ Критичные исправлены | Хорошо |
-| Документация unsafe | ✅ Все задокументированы | Отлично |
-| Test coverage | ~75% | Хорошо (цель 85%) |
-
-### Целевые метрики
-
-- **Test coverage**: ≥85% по изменённому коду
-- **Cyclomatic complexity**: ≤10
-- **Suspicion score**: <0.35
-- **JA3 уникальность**: <0.2%
-- **Bootstrap time**: <3 секунды
-- **Throughput**: ≥5 Gbps на 25G NIC
-
-## Распределение задач по компонентам
-
-### masque-core
-
-**Реализовано:**
-- ✅ Hybrid handshake
-- ✅ TLS fingerprint customization
-- ✅ Probe protection
-- ✅ Replay protection
-- ✅ Key rotation
-- ✅ TUN интерфейс
-- ✅ Базовый MASQUE
-
-**В разработке:**
-- 🔄 Полный MASQUE CONNECT-UDP
-- 🔄 Routing & NAT
-- 🔄 Split tunnel
-
-**Планируется:**
-- 📋 DPDK ingress
-- 📋 Multipath QUIC
-- 📋 FEC
-
-### vpr-crypto
-
-**Реализовано:**
-- ✅ Noise protocol
-- ✅ Hybrid ML-KEM768
-- ✅ PKI базовая
-- ✅ Age encryption
-- ✅ Key management
-
-**В разработке:**
-- 🔄 Offline CA generation
-- 🔄 Key rotation automation
-
-**Планируется:**
-- 📋 HSM интеграция (опционально)
-
-### doh-gateway
-
-**Реализовано:**
-- ✅ DoH/ODoH/DoQ
-- ✅ DNS health monitoring
-- ✅ Рекурсивный резолвер
-
-**В разработке:**
-- 🔄 Moving-target rotation
-- 🔄 DNSSEC полная поддержка
-
-**Планируется:**
-- 📋 Hidden-master DNS
-- 📋 IXFR sync
-
-### vpr-app
-
-**Реализовано:**
-- ✅ Tauri GUI
-- ✅ Kill switch
-- ✅ Auto-connect
-- ✅ Process manager
-
-**В разработке:**
-- 🔄 Полная интеграция с masque-core
-- 🔄 TUN управление
-- 🔄 Routing configuration
-
-**Планируется:**
-- 📋 Split tunnel UI
-- 📋 Advanced settings
-- 📋 Statistics dashboard
-
-### vpr-ai
-
-**Реализовано:**
-- ✅ AI Traffic Morpher (20M)
-- ✅ ONNX Runtime
-- ✅ Базовый морфинг
-
-**В разработке:**
-- 🔄 Интеграция с реальным трафиком
-- 🔄 Адаптивная настройка
-
-**Планируется:**
-- 📋 RL компонент
-- 📋 Ensemble стратегии
-- 📋 Adversarial training
-
-## Рекомендуемые следующие шаги
-
-1. **Завершить MASQUE CONNECT-UDP** — критично для полной функциональности
-2. **Реализовать Routing & NAT** — необходимо для работы VPN
-3. **Интегрировать VPN Client** — завершить клиент-серверную интеграцию
-4. **Улучшить Test Coverage** — довести до 85%+
-5. **Реализовать Bootstrap Manifest** — для автоматического развертывания
-
-## Оценка усилий до MVP
-
-**Минимальный Viable Product (MVP):**
-- MASQUE CONNECT-UDP полная реализация: 2 недели
-- Routing & NAT: 1 неделя
-- VPN Client интеграция: 2 недели
-- Тестирование и отладка: 1 неделя
-
-**Итого:** ~6-8 недель focused development
-
-## Ссылки
-
-- [FLAGSHIP_PROGRESS.md](../FLAGSHIP_PROGRESS.md) — Детальный отчет о готовности
-- [Architecture](architecture.md) — Архитектура проекта
-- [Security](security.md) — Политики безопасности
-- [README](../README.md) — Обзор проекта
-- [CONTRIBUTING](../CONTRIBUTING.md) — Руководство для разработчиков
-- [TODO.md](../TODO.md) — Детальный список задач
+- [TODO.md](../TODO.md) - Immediate tasks
+- [UX_IMPROVEMENT_ROADMAP.md](UX_IMPROVEMENT_ROADMAP.md) - User experience plan
+- [CONTRIBUTING.md](../CONTRIBUTING.md) - Developer guide
+- [architecture.md](architecture.md) - System design
