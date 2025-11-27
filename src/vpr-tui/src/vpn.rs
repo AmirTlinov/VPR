@@ -64,7 +64,7 @@ impl Default for ServerConfig {
     fn default() -> Self {
         Self {
             host: String::new(),
-            port: 443,
+            port: 4433,
             name: "Default Server".into(),
             location: "Unknown".into(),
         }
@@ -103,6 +103,8 @@ pub struct ControllerConfig {
     pub client_binary: PathBuf,
     /// Path to secrets directory
     pub secrets_dir: PathBuf,
+    /// Path to server public key file
+    pub server_pub: PathBuf,
     /// Current server configuration
     pub server: ServerConfig,
     /// TUN interface name
@@ -113,23 +115,28 @@ pub struct ControllerConfig {
     pub auto_reconnect: bool,
     /// Max reconnect attempts
     pub max_reconnect_attempts: u32,
+    /// Set default route through VPN
+    pub set_default_route: bool,
 }
 
 impl Default for ControllerConfig {
     fn default() -> Self {
-        let secrets_dir = dirs::config_dir()
+        let config_dir = dirs::config_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join("vpr")
-            .join("secrets");
+            .join("vpr");
+        let secrets_dir = config_dir.join("secrets");
+        let server_pub = secrets_dir.join("server.noise.pub");
 
         Self {
             client_binary: PathBuf::from("vpn-client"),
             secrets_dir,
+            server_pub,
             server: ServerConfig::default(),
             tun_name: "vpr0".into(),
             insecure: false,
             auto_reconnect: true,
             max_reconnect_attempts: 5,
+            set_default_route: true,
         }
     }
 }
@@ -144,6 +151,26 @@ impl VpnController {
             config: Arc::new(RwLock::new(config)),
             shutdown_tx: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// Check if binary has CAP_NET_ADMIN and CAP_NET_RAW capabilities
+    #[cfg(unix)]
+    fn binary_has_caps(path: &std::path::Path) -> bool {
+        use std::process::Command as StdCommand;
+
+        let output = StdCommand::new("getcap").arg(path).output();
+        match output {
+            Ok(o) => {
+                let stdout = String::from_utf8_lossy(&o.stdout);
+                stdout.contains("cap_net_admin") && stdout.contains("cap_net_raw")
+            }
+            Err(_) => false,
+        }
+    }
+
+    #[cfg(not(unix))]
+    fn binary_has_caps(_path: &std::path::Path) -> bool {
+        false
     }
 
     /// Get current connection state
@@ -200,12 +227,30 @@ impl VpnController {
         }
 
         // Build command
-        let mut cmd = Command::new(&config.client_binary);
+        let server_addr = format!("{}:{}", config.server.host, config.server.port);
+
+        // Check if we need privilege escalation
+        // SAFETY: libc::geteuid() is a safe POSIX call returning effective user ID
+        let is_root = unsafe { libc::geteuid() } == 0;
+        let has_caps = Self::binary_has_caps(&config.client_binary);
+
+        let mut cmd = if is_root || has_caps {
+            // Run directly if we are root or binary has CAP_NET_ADMIN/RAW
+            Command::new(&config.client_binary)
+        } else {
+            // Use pkexec for privilege escalation with GUI prompt
+            let mut c = Command::new("pkexec");
+            c.arg(&config.client_binary);
+            c
+        };
+
         cmd.args([
             "--server",
+            &server_addr,
+            "--server-name",
             &config.server.host,
-            "--port",
-            &config.server.port.to_string(),
+            "--server-pub",
+            config.server_pub.to_str().unwrap_or("server.noise.pub"),
             "--tun-name",
             &config.tun_name,
             "--noise-dir",
@@ -214,8 +259,14 @@ impl VpnController {
             "client",
         ]);
 
+        if config.set_default_route {
+            cmd.arg("--set-default-route");
+        }
+
         if config.insecure {
             cmd.arg("--insecure");
+            // Also set environment variable for insecure mode
+            cmd.env("VPR_ALLOW_INSECURE", "1");
         }
 
         cmd.stdout(Stdio::piped())

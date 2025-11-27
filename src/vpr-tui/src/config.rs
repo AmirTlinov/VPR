@@ -103,19 +103,22 @@ impl TuiConfig {
 
     /// Convert to VPN controller config
     pub fn to_controller_config(&self) -> ControllerConfig {
-        let secrets_dir = dirs::config_dir()
+        let config_dir = dirs::config_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join("vpr")
-            .join("secrets");
+            .join("vpr");
+        let secrets_dir = config_dir.join("secrets");
+        let server_pub = secrets_dir.join("server.noise.pub");
 
         ControllerConfig {
             client_binary: find_client_binary(),
             secrets_dir,
+            server_pub,
             server: self.last_server.clone().unwrap_or_default(),
             tun_name: self.tun_name.clone(),
             insecure: self.insecure,
             auto_reconnect: self.auto_reconnect,
             max_reconnect_attempts: self.max_reconnect_attempts,
+            set_default_route: true,
         }
     }
 
@@ -187,13 +190,13 @@ fn default_server_list() -> Vec<ServerConfig> {
     vec![
         ServerConfig {
             host: "64.176.70.203".into(),
-            port: 443,
+            port: 4433,
             name: "VPR-Tokyo".into(),
             location: "Tokyo, Japan".into(),
         },
         ServerConfig {
             host: String::new(),
-            port: 443,
+            port: 4433,
             name: "Custom Server".into(),
             location: "Enter manually".into(),
         },
@@ -247,7 +250,7 @@ mod tests {
         let config = TuiConfig {
             last_server: Some(ServerConfig {
                 host: "test.com".into(),
-                port: 443,
+                port: 4433,
                 name: "Test".into(),
                 location: "Test".into(),
             }),
@@ -256,6 +259,8 @@ mod tests {
 
         let ctrl_config = config.to_controller_config();
         assert_eq!(ctrl_config.server.host, "test.com");
+        assert_eq!(ctrl_config.server.port, 4433);
         assert_eq!(ctrl_config.tun_name, "vpr0");
+        assert!(ctrl_config.set_default_route);
     }
 }
