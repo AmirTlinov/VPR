@@ -15,6 +15,9 @@ pub mod fixes;
 pub mod ssh_client;
 pub mod engine;
 
+#[cfg(test)]
+mod tests;
+
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 use std::path::PathBuf;

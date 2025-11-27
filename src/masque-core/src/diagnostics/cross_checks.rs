@@ -9,18 +9,14 @@ pub async fn run_cross_checks(
     client_report: &DiagnosticReport,
     server_report: &DiagnosticReport,
 ) -> Result<Vec<DiagnosticResult>> {
-    let mut results = Vec::new();
-
-    // Check 1: Noise key synchronization
-    results.push(check_noise_key_sync()?);
-
-    // Check 2: Time skew between client and server
-    results.push(check_time_skew(client_report, server_report)?);
-
-    // Check 3: Protocol version match (TODO: when versioning is implemented)
-    // results.push(check_protocol_version_match(client_report, server_report)?);
-
-    Ok(results)
+    Ok(vec![
+        // Check 1: Noise key synchronization
+        check_noise_key_sync()?,
+        // Check 2: Time skew between client and server
+        check_time_skew(client_report, server_report)?,
+        // Check 3: Protocol version match (TODO: when versioning is implemented)
+        // check_protocol_version_match(client_report, server_report)?,
+    ])
 }
 
 fn check_noise_key_sync() -> Result<DiagnosticResult> {

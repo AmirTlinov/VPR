@@ -2,9 +2,12 @@
 
 use super::{DiagnosticConfig, DiagnosticReport, DiagnosticResult, Fix, HealthStatus, Protocol, Severity, Side};
 use anyhow::{Context, Result};
-use std::net::{IpAddr, TcpStream};
+use std::net::IpAddr;
 use std::path::PathBuf;
 use std::time::Duration;
+
+#[allow(clippy::disallowed_types)] // TcpStream is OK for diagnostics, not VPN traffic
+use std::net::TcpStream;
 
 /// Run all client-side diagnostic checks
 pub async fn run_diagnostics(config: &DiagnosticConfig) -> Result<DiagnosticReport> {
@@ -109,6 +112,7 @@ fn check_ca_cert_exists(_config: &DiagnosticConfig) -> Result<DiagnosticResult> 
     })
 }
 
+#[allow(clippy::disallowed_types)] // TcpStream OK for diagnostics
 fn check_server_tcp_reachable(server: IpAddr, port: u16) -> DiagnosticResult {
     let addr = format!("{}:{}", server, port);
     let reachable = TcpStream::connect_timeout(&addr.parse().unwrap(), Duration::from_secs(5)).is_ok();

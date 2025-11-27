@@ -155,6 +155,10 @@ impl FixExecutor {
     }
 
     async fn flush_dns(&mut self) -> Result<FixResult> {
+        if self.dry_run {
+            return Ok(FixResult::Skipped("[DRY RUN] Would flush DNS cache".to_string()));
+        }
+
         #[cfg(target_os = "linux")]
         {
             // Try systemd-resolved first
