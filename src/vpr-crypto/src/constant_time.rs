@@ -3,6 +3,49 @@
 //! Provides timing-attack resistant operations for comparing secrets.
 //! Uses the `subtle` crate to ensure all comparisons take the same time
 //! regardless of input values.
+//!
+//! # Why Constant-Time?
+//!
+//! Regular equality checks can leak information through timing:
+//! ```text
+//! // WRONG - early exit on mismatch
+//! fn bad_eq(a: &[u8], b: &[u8]) -> bool {
+//!     for (x, y) in a.iter().zip(b.iter()) {
+//!         if x != y { return false; }  // Timing leak!
+//!     }
+//!     true
+//! }
+//! ```
+//!
+//! An attacker can measure how long comparison takes to determine
+//! how many leading bytes match, gradually recovering the secret.
+//!
+//! # Functions by Use Case
+//!
+//! | Function | Use Case |
+//! |----------|----------|
+//! | [`ct_eq_32`] | 32-byte keys, hashes |
+//! | [`ct_eq_64`] | 64-byte signatures |
+//! | [`ct_eq`] | Variable-length with known max |
+//! | [`ct_eq_padded`] | Fully constant-time variable-length |
+//! | [`ct_is_zero`] | Check if memory is zeroed |
+//! | [`ct_select_u8`]/[`ct_select_u32`]/[`ct_select_u64`] | Constant-time conditional |
+//!
+//! # Example
+//!
+//! ```
+//! use vpr_crypto::constant_time::{ct_eq_32, SecretBytes};
+//!
+//! // Compare two 32-byte keys
+//! let key_a = [0u8; 32];
+//! let key_b = [0u8; 32];
+//! assert!(ct_eq_32(&key_a, &key_b));
+//!
+//! // Use SecretBytes for automatic zeroization
+//! let secret: SecretBytes<32> = [42u8; 32].into();
+//! assert_eq!(secret.as_bytes()[0], 42);
+//! // Automatically zeroed when dropped
+//! ```
 
 use subtle::{Choice, ConstantTimeEq};
 
@@ -123,7 +166,36 @@ pub fn ct_is_zero(data: &[u8]) -> bool {
     ct_select_u8(true, acc, 0) == 0
 }
 
-/// Wrapper type for secret byte arrays that implements constant-time equality.
+/// Wrapper type for secret byte arrays with constant-time equality and auto-zeroization.
+///
+/// `SecretBytes` provides:
+/// - Constant-time equality comparison (timing-attack resistant)
+/// - Automatic zeroization on drop (prevents memory disclosure)
+/// - Redacted debug output (never prints secret content)
+///
+/// # Example
+///
+/// ```
+/// use vpr_crypto::constant_time::SecretBytes;
+///
+/// let key: SecretBytes<32> = [0xAB; 32].into();
+///
+/// // Access the bytes
+/// assert_eq!(key.as_bytes()[0], 0xAB);
+///
+/// // Constant-time comparison
+/// let key2: SecretBytes<32> = [0xAB; 32].into();
+/// assert_eq!(key, key2);
+///
+/// // Debug never shows secrets
+/// assert_eq!(format!("{:?}", key), "SecretBytes<32>[REDACTED]");
+/// ```
+///
+/// # Security
+///
+/// - Content is overwritten with zeros on drop via `volatile_write`
+/// - Compiler fence prevents optimization of zeroization
+/// - Debug trait never exposes actual content
 #[derive(Clone)]
 pub struct SecretBytes<const N: usize>([u8; N]);
 

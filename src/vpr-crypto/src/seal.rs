@@ -37,7 +37,20 @@ use age::{
 use std::io::{Read, Write};
 use std::path::Path;
 
-/// Age identity (private key) for decryption
+/// Age identity (private key) for decryption.
+///
+/// Wraps an X25519 private key used for age encryption.
+/// The identity can decrypt data encrypted for its corresponding [`SealRecipient`].
+///
+/// # Security
+///
+/// - Private key is stored in memory; use [`zeroize`] for sensitive contexts
+/// - Save with [`save`](Self::save) which sets 0600 permissions on Unix
+///
+/// # Key Format
+///
+/// - Secret key: `AGE-SECRET-KEY-1...` (Bech32-encoded)
+/// - Derived public key: `age1...` (Bech32-encoded)
 pub struct SealIdentity {
     identity: x25519::Identity,
 }
@@ -112,7 +125,30 @@ impl SealIdentity {
     }
 }
 
-/// Age recipient (public key) for encryption
+/// Age recipient (public key) for encryption.
+///
+/// Wraps an X25519 public key used for age encryption.
+/// Anyone with the recipient can encrypt data that only
+/// the corresponding [`SealIdentity`] can decrypt.
+///
+/// # Key Format
+///
+/// Public key: `age1...` (Bech32-encoded, ~62 characters)
+///
+/// # Example
+///
+/// ```
+/// use vpr_crypto::seal::SealIdentity;
+///
+/// let identity = SealIdentity::generate();
+/// let recipient = identity.recipient();
+///
+/// // Share recipient.to_string() publicly
+/// println!("Public key: {}", recipient.to_string());
+///
+/// // Anyone can encrypt for this recipient
+/// let ciphertext = recipient.encrypt(b"secret message").unwrap();
+/// ```
 #[derive(Clone)]
 pub struct SealRecipient {
     recipient: x25519::Recipient,
@@ -186,7 +222,49 @@ pub fn unseal_file(input: &Path, output: &Path, identity: &SealIdentity) -> Resu
     Ok(())
 }
 
-/// Seal a directory of secret files
+/// Encrypt all files in a directory for deployment.
+///
+/// Iterates over files in `secrets_dir`, encrypting each to `output_dir`
+/// with `.age` extension. Skips files already ending in `.age`.
+///
+/// # Arguments
+///
+/// * `secrets_dir` - Directory containing plaintext secrets
+/// * `output_dir` - Directory for encrypted files (created if needed)
+/// * `recipient` - Public key for encryption
+///
+/// # Returns
+///
+/// List of encrypted filenames (original names, without `.age` suffix).
+///
+/// # Behavior
+///
+/// - Only processes regular files (not directories)
+/// - Skips files already ending in `.age`
+/// - Output files named `{original}.age`
+///
+/// # Example
+///
+/// ```no_run
+/// use vpr_crypto::seal::{SealIdentity, seal_secrets_dir};
+/// use std::path::Path;
+///
+/// let identity = SealIdentity::generate();
+/// let recipient = identity.recipient();
+///
+/// // Encrypt all secrets for deployment
+/// let sealed = seal_secrets_dir(
+///     Path::new("./secrets"),
+///     Path::new("./deploy/secrets"),
+///     &recipient
+/// ).unwrap();
+///
+/// println!("Sealed {} files", sealed.len());
+/// ```
+///
+/// # Errors
+///
+/// Returns error if directory read fails or any file encryption fails.
 pub fn seal_secrets_dir(
     secrets_dir: &Path,
     output_dir: &Path,

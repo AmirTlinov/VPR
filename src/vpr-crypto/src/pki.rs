@@ -7,7 +7,53 @@
 //!
 //! - **Root CA**: Offline, ECDSA P-384, 10-year validity
 //! - **Intermediate CA**: Online, ECDSA P-384, 1-year validity
-//! - **Service Certs**: Short-lived (90 days), auto-rotatable
+//! - **Service Certs**: Short-lived (90 days), ECDSA P-256, auto-rotatable
+//!
+//! # Certificate Hierarchy
+//!
+//! ```text
+//! ┌─────────────────────────────────────────────┐
+//! │              Root CA (P-384)                │
+//! │         Validity: 10 years                  │
+//! │         Key Usage: certSign, crlSign        │
+//! │         Store OFFLINE in HSM/airgapped      │
+//! └─────────────────────┬───────────────────────┘
+//!                       │ signs
+//!                       ▼
+//! ┌─────────────────────────────────────────────┐
+//! │         Intermediate CA (P-384)             │
+//! │         Validity: 1 year                    │
+//! │         Key Usage: certSign, crlSign        │
+//! │         PathLen: 0 (can only sign leaves)   │
+//! └─────────────────────┬───────────────────────┘
+//!                       │ signs
+//!                       ▼
+//! ┌─────────────────────────────────────────────┐
+//! │          Service Cert (P-256)               │
+//! │         Validity: 90 days                   │
+//! │         Key Usage: digitalSig, keyEncipher  │
+//! │         EKU: serverAuth, clientAuth         │
+//! │         SANs: DNS names for TLS             │
+//! └─────────────────────────────────────────────┘
+//! ```
+//!
+//! # Example
+//!
+//! ```
+//! use vpr_crypto::pki::{PkiConfig, generate_root_ca, generate_intermediate_ca, generate_service_cert};
+//!
+//! let config = PkiConfig::default();
+//!
+//! // Generate complete chain
+//! let root = generate_root_ca(&config).unwrap();
+//! let intermediate = generate_intermediate_ca(&config, "dc1", &root.cert_pem, &root.key_pem).unwrap();
+//! let service = generate_service_cert(
+//!     &config, "proxy", &["vpn.example.com".into()],
+//!     &intermediate.cert_pem, &intermediate.key_pem
+//! ).unwrap();
+//!
+//! // Use service.chain_pem for TLS server configuration
+//! ```
 
 use crate::{CryptoError, Result};
 use rcgen::{
@@ -18,13 +64,49 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use time::{Duration, OffsetDateTime};
 
-/// PKI hierarchy configuration
+/// Configuration for the PKI certificate hierarchy.
+///
+/// Controls organization name, common names, and validity periods
+/// for each tier of the certificate chain.
+///
+/// # Fields
+///
+/// | Field | Default | Description |
+/// |-------|---------|-------------|
+/// | `org_name` | "VPR" | Organization name in certificate DN |
+/// | `root_cn` | "VPR Root CA" | Common name for root CA |
+/// | `root_validity_days` | 3650 | Root CA validity (10 years) |
+/// | `intermediate_validity_days` | 365 | Intermediate CA validity (1 year) |
+/// | `service_validity_days` | 90 | Service cert validity (90 days) |
+///
+/// # Example
+///
+/// ```
+/// use vpr_crypto::PkiConfig;
+///
+/// // Use defaults
+/// let config = PkiConfig::default();
+/// assert_eq!(config.root_validity_days, 3650);
+///
+/// // Custom configuration
+/// let custom = PkiConfig {
+///     org_name: "MyOrg".into(),
+///     root_cn: "MyOrg Root CA".into(),
+///     service_validity_days: 30, // Shorter for testing
+///     ..Default::default()
+/// };
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PkiConfig {
+    /// Organization name for certificate Distinguished Name (O=)
     pub org_name: String,
+    /// Common Name for root certificate (CN=)
     pub root_cn: String,
+    /// Root CA validity in days (default: 3650 = 10 years)
     pub root_validity_days: i64,
+    /// Intermediate CA validity in days (default: 365 = 1 year)
     pub intermediate_validity_days: i64,
+    /// Service certificate validity in days (default: 90)
     pub service_validity_days: i64,
 }
 
@@ -40,20 +122,81 @@ impl Default for PkiConfig {
     }
 }
 
-/// Generated CA bundle (root or intermediate)
+/// Certificate Authority bundle containing certificate and private key.
+///
+/// Used for both root and intermediate CAs. Contains PEM-encoded
+/// X.509 certificate and PKCS#8 private key.
+///
+/// # Security
+///
+/// The `key_pem` field contains sensitive key material. When saving:
+/// - Use [`save_ca_bundle`] which sets 0o600 permissions on Unix
+/// - For root CA, store on air-gapped system or HSM
+///
+/// # Fields
+///
+/// - `cert_pem`: PEM-encoded X.509 certificate
+/// - `key_pem`: PEM-encoded PKCS#8 private key (ECDSA P-384)
 pub struct CaBundle {
+    /// PEM-encoded X.509 certificate
     pub cert_pem: String,
+    /// PEM-encoded PKCS#8 private key
     pub key_pem: String,
 }
 
-/// Generated service certificate
+/// Generated service certificate with full chain.
+///
+/// Contains everything needed to configure a TLS server:
+/// - Single certificate for the service
+/// - Private key for TLS handshake
+/// - Full chain (service + intermediate) for client verification
+///
+/// # Fields
+///
+/// - `cert_pem`: Service certificate only
+/// - `key_pem`: ECDSA P-256 private key
+/// - `chain_pem`: Full chain (service + intermediate) for TLS config
+///
+/// # Example
+///
+/// ```no_run
+/// # use vpr_crypto::pki::ServiceCert;
+/// # let service: ServiceCert = todo!();
+/// // Configure TLS server (e.g., rustls)
+/// // cert_chain: parse service.chain_pem
+/// // private_key: parse service.key_pem
+/// ```
 pub struct ServiceCert {
+    /// PEM-encoded service certificate only
     pub cert_pem: String,
+    /// PEM-encoded PKCS#8 private key (ECDSA P-256)
     pub key_pem: String,
-    pub chain_pem: String, // full chain for TLS
+    /// Full certificate chain (service + intermediate) for TLS
+    pub chain_pem: String,
 }
 
-/// Generate offline root CA
+/// Generate self-signed root Certificate Authority.
+///
+/// Creates an ECDSA P-384 root CA certificate suitable for offline storage.
+/// This is the trust anchor for the entire PKI hierarchy.
+///
+/// # Security Recommendations
+///
+/// - Generate on air-gapped machine
+/// - Store private key in HSM or encrypted offline storage
+/// - Only use for signing intermediate CAs (not service certs directly)
+///
+/// # Certificate Properties
+///
+/// - **Algorithm**: ECDSA P-384 with SHA-384
+/// - **Key Usage**: keyCertSign, cRLSign
+/// - **Basic Constraints**: CA:TRUE, pathLen:1
+/// - **Validity**: Configured via `config.root_validity_days`
+///
+/// # Errors
+///
+/// Returns [`CryptoError::KeyGen`] if key generation fails, or
+/// [`CryptoError::Pki`] if certificate generation fails.
 pub fn generate_root_ca(config: &PkiConfig) -> Result<CaBundle> {
     let key = KeyPair::generate_for(&rcgen::PKCS_ECDSA_P384_SHA384)
         .map_err(|e| CryptoError::KeyGen(e.to_string()))?;
@@ -80,7 +223,42 @@ pub fn generate_root_ca(config: &PkiConfig) -> Result<CaBundle> {
     Ok(CaBundle { cert_pem, key_pem })
 }
 
-/// Generate intermediate CA signed by root
+/// Generate intermediate Certificate Authority signed by the root CA.
+///
+/// Creates an ECDSA P-384 intermediate CA that can sign service certificates.
+/// The intermediate CA has `pathLen:0`, meaning it can only sign leaf certs.
+///
+/// # Arguments
+///
+/// * `config` - PKI configuration with validity periods
+/// * `node_name` - Identifier for this CA (e.g., "dc1", "eu-west")
+/// * `root_cert_pem` - PEM-encoded root CA certificate
+/// * `root_key_pem` - PEM-encoded root CA private key
+///
+/// # Certificate Properties
+///
+/// - **Algorithm**: ECDSA P-384 with SHA-384
+/// - **Key Usage**: keyCertSign, cRLSign
+/// - **Basic Constraints**: CA:TRUE, pathLen:0
+/// - **CN**: "VPR Intermediate CA - {node_name}"
+///
+/// # Example
+///
+/// ```
+/// use vpr_crypto::pki::{PkiConfig, generate_root_ca, generate_intermediate_ca};
+///
+/// let config = PkiConfig::default();
+/// let root = generate_root_ca(&config).unwrap();
+///
+/// // Create regional intermediate CAs
+/// let eu_ca = generate_intermediate_ca(&config, "eu-west", &root.cert_pem, &root.key_pem).unwrap();
+/// let us_ca = generate_intermediate_ca(&config, "us-east", &root.cert_pem, &root.key_pem).unwrap();
+/// ```
+///
+/// # Errors
+///
+/// Returns [`CryptoError::InvalidKey`] if root key PEM is malformed, or
+/// [`CryptoError::Certificate`] if root cert PEM is invalid.
 pub fn generate_intermediate_ca(
     config: &PkiConfig,
     node_name: &str,
@@ -117,7 +295,53 @@ pub fn generate_intermediate_ca(
     Ok(CaBundle { cert_pem, key_pem })
 }
 
-/// Generate service certificate (for MASQUE, DoH, etc.)
+/// Generate TLS service certificate signed by intermediate CA.
+///
+/// Creates an ECDSA P-256 end-entity certificate for TLS servers
+/// (MASQUE, DoH, ACME, etc.). Includes Subject Alternative Names
+/// for DNS-based certificate validation.
+///
+/// # Arguments
+///
+/// * `config` - PKI configuration with validity periods
+/// * `service_name` - Human-readable service name (e.g., "masque", "doh")
+/// * `dns_names` - DNS names for Subject Alternative Names (SANs)
+/// * `intermediate_cert_pem` - PEM-encoded intermediate CA certificate
+/// * `intermediate_key_pem` - PEM-encoded intermediate CA private key
+///
+/// # Certificate Properties
+///
+/// - **Algorithm**: ECDSA P-256 with SHA-256 (TLS-friendly)
+/// - **Key Usage**: digitalSignature, keyEncipherment
+/// - **Extended Key Usage**: serverAuth, clientAuth
+/// - **SANs**: All provided DNS names
+/// - **CN**: "VPR {service_name}"
+///
+/// # Example
+///
+/// ```
+/// use vpr_crypto::pki::{PkiConfig, generate_root_ca, generate_intermediate_ca, generate_service_cert};
+///
+/// let config = PkiConfig::default();
+/// let root = generate_root_ca(&config).unwrap();
+/// let intermediate = generate_intermediate_ca(&config, "dc1", &root.cert_pem, &root.key_pem).unwrap();
+///
+/// // Generate cert with multiple SANs
+/// let service = generate_service_cert(
+///     &config,
+///     "masque",
+///     &["vpn.example.com".into(), "*.vpn.example.com".into()],
+///     &intermediate.cert_pem,
+///     &intermediate.key_pem,
+/// ).unwrap();
+///
+/// // service.chain_pem contains service + intermediate for TLS config
+/// ```
+///
+/// # Errors
+///
+/// Returns [`CryptoError::Certificate`] if any DNS name is invalid, or
+/// [`CryptoError::InvalidKey`] if intermediate key is malformed.
 pub fn generate_service_cert(
     config: &PkiConfig,
     service_name: &str,
@@ -177,7 +401,31 @@ pub fn generate_service_cert(
     })
 }
 
-/// Save CA bundle to directory
+/// Save CA bundle (certificate + key) to directory.
+///
+/// Writes `{name}.crt` and `{name}.key` files to the specified directory.
+/// On Unix, sets key file permissions to `0o600` (owner read/write only).
+///
+/// # Arguments
+///
+/// * `bundle` - CA certificate and key to save
+/// * `dir` - Target directory (created if it doesn't exist)
+/// * `name` - Base filename (without extension)
+///
+/// # Files Created
+///
+/// - `{dir}/{name}.crt` - PEM certificate
+/// - `{dir}/{name}.key` - PEM private key (mode 0600 on Unix)
+///
+/// # Security
+///
+/// Always store root CA keys on air-gapped systems or in HSMs.
+/// Use this function only for intermediate CAs in production.
+///
+/// # Errors
+///
+/// Returns [`std::io::Error`] wrapped in [`CryptoError`] if directory
+/// creation or file write fails.
 pub fn save_ca_bundle(bundle: &CaBundle, dir: &Path, name: &str) -> Result<()> {
     std::fs::create_dir_all(dir)?;
     let cert_path = dir.join(format!("{name}.crt"));
@@ -192,7 +440,31 @@ pub fn save_ca_bundle(bundle: &CaBundle, dir: &Path, name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Load CA bundle from directory
+/// Load CA bundle (certificate + key) from directory.
+///
+/// Reads `{name}.crt` and `{name}.key` files from the specified directory.
+///
+/// # Arguments
+///
+/// * `dir` - Directory containing the CA files
+/// * `name` - Base filename (without extension)
+///
+/// # Returns
+///
+/// Tuple of `(cert_pem, key_pem)` as strings.
+///
+/// # Example
+///
+/// ```no_run
+/// use vpr_crypto::pki::load_ca_bundle;
+/// use std::path::Path;
+///
+/// let (cert_pem, key_pem) = load_ca_bundle(Path::new("/etc/vpr/pki"), "intermediate").unwrap();
+/// ```
+///
+/// # Errors
+///
+/// Returns [`std::io::Error`] if files don't exist or can't be read.
 pub fn load_ca_bundle(dir: &Path, name: &str) -> Result<(String, String)> {
     let cert_path = dir.join(format!("{name}.crt"));
     let key_path = dir.join(format!("{name}.key"));
@@ -201,8 +473,36 @@ pub fn load_ca_bundle(dir: &Path, name: &str) -> Result<(String, String)> {
     Ok((cert_pem, key_pem))
 }
 
-/// Validate PEM certificate and key, returning them for signing operations.
-/// This validates the PEM formats are correct before use.
+/// Validate and parse CA certificate and key for signing operations.
+///
+/// Verifies that both PEM formats are correct and the key matches
+/// the certificate before use. Use this to validate loaded CA bundles.
+///
+/// # Arguments
+///
+/// * `cert_pem` - PEM-encoded X.509 certificate
+/// * `key_pem` - PEM-encoded PKCS#8 private key
+///
+/// # Returns
+///
+/// Cloned `(cert_pem, key_pem)` tuple if validation succeeds.
+///
+/// # Example
+///
+/// ```
+/// use vpr_crypto::pki::{PkiConfig, generate_root_ca, parse_ca_for_signing};
+///
+/// let root = generate_root_ca(&PkiConfig::default()).unwrap();
+///
+/// // Validate before using for signing
+/// let (cert, key) = parse_ca_for_signing(&root.cert_pem, &root.key_pem).unwrap();
+/// ```
+///
+/// # Errors
+///
+/// Returns [`CryptoError::InvalidKey`] if key PEM is malformed, or
+/// [`CryptoError::Certificate`] if cert PEM is invalid or doesn't
+/// match the key.
 pub fn parse_ca_for_signing(cert_pem: &str, key_pem: &str) -> Result<(String, String)> {
     // Validate key PEM can be parsed
     KeyPair::from_pem(key_pem).map_err(|e| CryptoError::InvalidKey(e.to_string()))?;
@@ -213,7 +513,39 @@ pub fn parse_ca_for_signing(cert_pem: &str, key_pem: &str) -> Result<(String, St
     Ok((cert_pem.to_string(), key_pem.to_string()))
 }
 
-/// Save service certificate bundle
+/// Save service certificate bundle to directory.
+///
+/// Writes three files for TLS server configuration:
+/// - `{name}.crt` - Service certificate only
+/// - `{name}.key` - Private key (mode 0600 on Unix)
+/// - `{name}.chain.crt` - Full chain (service + intermediate)
+///
+/// # Arguments
+///
+/// * `cert` - Service certificate bundle
+/// * `dir` - Target directory (created if it doesn't exist)
+/// * `name` - Base filename (without extension)
+///
+/// # TLS Server Configuration
+///
+/// Most TLS servers need:
+/// - Certificate chain: `{name}.chain.crt`
+/// - Private key: `{name}.key`
+///
+/// # Example
+///
+/// ```no_run
+/// use vpr_crypto::pki::{save_service_cert, ServiceCert};
+/// use std::path::Path;
+///
+/// # let service: ServiceCert = todo!();
+/// save_service_cert(&service, Path::new("/etc/vpr/tls"), "masque").unwrap();
+/// // Creates: masque.crt, masque.key, masque.chain.crt
+/// ```
+///
+/// # Errors
+///
+/// Returns [`std::io::Error`] if directory creation or file write fails.
 pub fn save_service_cert(cert: &ServiceCert, dir: &Path, name: &str) -> Result<()> {
     std::fs::create_dir_all(dir)?;
     std::fs::write(dir.join(format!("{name}.crt")), &cert.cert_pem)?;
@@ -228,7 +560,34 @@ pub fn save_service_cert(cert: &ServiceCert, dir: &Path, name: &str) -> Result<(
     Ok(())
 }
 
-/// Certificate fingerprint (SHA-256)
+/// Calculate SHA-256 fingerprint of a PEM certificate.
+///
+/// Returns a lowercase hex-encoded fingerprint string (64 characters).
+/// Useful for certificate pinning and verification.
+///
+/// # Arguments
+///
+/// * `pem` - PEM-encoded X.509 certificate
+///
+/// # Returns
+///
+/// 64-character lowercase hex string (SHA-256 hash).
+///
+/// # Example
+///
+/// ```
+/// use vpr_crypto::pki::{PkiConfig, generate_root_ca, cert_fingerprint};
+///
+/// let root = generate_root_ca(&PkiConfig::default()).unwrap();
+/// let fingerprint = cert_fingerprint(&root.cert_pem).unwrap();
+///
+/// assert_eq!(fingerprint.len(), 64); // SHA-256 = 32 bytes = 64 hex chars
+/// println!("Root CA fingerprint: {}", fingerprint);
+/// ```
+///
+/// # Errors
+///
+/// Returns [`CryptoError::Certificate`] if PEM parsing fails.
 pub fn cert_fingerprint(pem: &str) -> Result<String> {
     use sha2::{Digest, Sha256};
     use x509_parser::pem::parse_x509_pem;
