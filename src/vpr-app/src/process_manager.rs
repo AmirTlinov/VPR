@@ -46,6 +46,7 @@ pub struct VpnClientConfig {
     pub noise_dir: PathBuf,
     pub noise_name: String,
     pub server_pub: PathBuf,
+    pub ca_cert: Option<PathBuf>,
     pub set_default_route: bool,
     pub dns_protection: bool,
     pub dns_servers: Vec<std::net::IpAddr>,
@@ -64,6 +65,7 @@ impl Default for VpnClientConfig {
             noise_dir: PathBuf::from("secrets"),
             noise_name: "client".to_string(),
             server_pub: PathBuf::from("secrets/server.noise.pub"),
+            ca_cert: Some(PathBuf::from("secrets/server.crt")),
             set_default_route: true,
             dns_protection: true,
             dns_servers: vec![],
@@ -304,6 +306,10 @@ impl VpnProcessManager {
                     .join(",");
                 cmd.arg("--dns-servers").arg(dns_str);
             }
+        }
+
+        if let Some(ca_cert) = &config.ca_cert {
+            cmd.arg("--ca-cert").arg(ca_cert);
         }
 
         if config.insecure {
