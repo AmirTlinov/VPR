@@ -11,10 +11,10 @@
 
 ### Code Quality
 - [ ] Audit 460 `unwrap()` calls for panic safety
-- [ ] Refactor large files (>300 lines):
-  - [ ] `tun.rs` (1,628 lines)
-  - [ ] `vpn_client.rs` (1,567 lines)
-  - [ ] `vpn_server.rs` (1,517 lines)
+- [x] Refactor large files (>300 lines):
+  - [x] `tun.rs` (1,628 → 9 modules in tun/)
+  - [x] `vpn_client.rs` (1,567 → 1,468 lines + vpn_common.rs)
+  - [x] `vpn_server.rs` (1,517 → 1,448 lines)
 
 ### Documentation
 - [x] Add doc comments to public API (all crate-level docs complete)
