@@ -17,7 +17,7 @@
   - [ ] `vpn_server.rs` (1,517 lines)
 
 ### Documentation
-- [ ] Add doc comments to public API (~40% undocumented)
+- [x] Add doc comments to public API (all crate-level docs complete)
 - [ ] Create per-crate README files
 
 ---
