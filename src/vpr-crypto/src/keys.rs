@@ -255,7 +255,29 @@ impl SigningKeypair {
     }
 }
 
-/// Signature verifier (public key only, for verification without signing capability)
+/// Ed25519 signature verifier (public key only).
+///
+/// Use when you need to verify signatures but don't have the private key.
+/// This is the typical case for clients verifying server-signed manifests.
+///
+/// # Example
+///
+/// ```no_run
+/// use vpr_crypto::SignatureVerifier;
+/// use std::path::Path;
+///
+/// // Load public key from file
+/// let verifier = SignatureVerifier::load(Path::new("server.sign.pub"))
+///     .expect("failed to load public key");
+///
+/// // Verify signature
+/// let message = b"manifest data";
+/// let signature = [0u8; 64]; // In practice: received from server
+/// match verifier.verify(message, &signature) {
+///     Ok(()) => println!("Signature valid"),
+///     Err(e) => println!("Signature invalid: {e}"),
+/// }
+/// ```
 #[derive(Clone)]
 pub struct SignatureVerifier {
     verifying: VerifyingKey,
