@@ -108,3 +108,5 @@ pub mod vpn_common;
 pub mod vpn_config;
 /// High-level VPN tunnel API
 pub mod vpn_tunnel;
+/// VPN server components (decomposed binary support)
+pub mod server;

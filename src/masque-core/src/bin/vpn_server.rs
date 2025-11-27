@@ -6,22 +6,15 @@
 use anyhow::{Context, Result};
 use bytes::Bytes;
 use clap::Parser;
-use quinn::{Endpoint, ServerConfig, TransportConfig};
-use rustls::pki_types::{CertificateDer, PrivateKeyDer};
-use rustls_pemfile::{certs, private_key};
-use std::collections::HashMap;
-use std::fs::{self, File};
-use std::io::BufReader;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::path::PathBuf;
+use quinn::Endpoint;
+use std::fs::File;
+use std::net::{IpAddr, Ipv4Addr};
 use std::process::Command;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::sync::Mutex;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{broadcast, mpsc, RwLock};
-use tokio::time::interval;
 use tokio::time::sleep;
 use tracing::{debug, error, info, trace, warn, Level};
 use tracing_subscriber::FmtSubscriber;
@@ -29,442 +22,27 @@ use tracing_subscriber::FmtSubscriber;
 use ipnetwork::IpNetwork;
 use masque_core::cover_traffic::CoverTrafficGenerator;
 use masque_core::hybrid_handshake::{read_handshake_msg, HybridServer};
-use masque_core::key_rotation::{
-    rotation_check_task, KeyRotationConfig, KeyRotationManager, SessionKeyState,
-};
-use masque_core::padding::{Padder, PaddingConfig, PaddingStrategy};
-use masque_core::probe_protection::{ProbeDetection, ProbeProtectionConfig, ProbeProtector};
+use masque_core::key_rotation::{rotation_check_task, KeyRotationConfig, KeyRotationManager};
+use masque_core::padding::Padder;
+use masque_core::probe_protection::ProbeDetection;
 use masque_core::quic_stream::QuicBiStream;
 use masque_core::replay_protection::NonceCache;
-use masque_core::rng;
-use masque_core::tls_fingerprint::{
-    select_tls_profile, GreaseMode, Ja3Fingerprint, Ja3sFingerprint, Ja4Fingerprint, TlsProfile,
-    TlsProfileBucket,
+use masque_core::server::{
+    build_padder, build_probe_protector, build_server_config, build_tls_fingerprint,
+    detect_default_iface, ipv4_to_ipv6, load_certs, load_key, probe_metrics_task,
+    resolve_dns_servers, tun_reader_task, tun_writer_task, Args, ClientSession, ServerState,
+    SuspicionTracker, VPR_PROTOCOL_VERSION,
 };
+use masque_core::tls_fingerprint::{select_tls_profile, TlsProfile, TlsProfileBucket};
 use masque_core::tun::{
     enable_ip_forwarding, setup_ipv6_nat, setup_nat_with_config, NatConfig, RouteRule,
     RoutingConfig, RoutingPolicy, RoutingState, TunConfig, TunDevice,
 };
-use masque_core::vpn_common::{
-    build_cover_config, padding_schedule_bytes_raw, parse_grease_mode, parse_padding_strategy,
-    preferred_tls13_cipher,
-};
+use masque_core::vpn_common::{build_cover_config, padding_schedule_bytes_raw, parse_grease_mode};
 use masque_core::vpn_config::{ConfigAck, VpnConfig};
 use masque_core::vpn_tunnel::PacketEncapsulator;
 use rustls::crypto::SupportedKxGroup;
-use rustls::SupportedCipherSuite;
-use vpr_crypto::ct_eq_32;
 use vpr_crypto::keys::NoiseKeypair;
-
-#[derive(Debug, Default)]
-struct SuspicionTracker {
-    score: Mutex<f64>,
-}
-
-/// Try to detect the default outbound interface from system routing table (Linux "ip route show default").
-fn detect_default_iface() -> Option<String> {
-    if let Ok(output) = Command::new("ip")
-        .args(["route", "show", "default"])
-        .output()
-    {
-        if output.status.success() {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            for line in stdout.lines() {
-                let mut parts = line.split_whitespace();
-                while let Some(tok) = parts.next() {
-                    if tok == "dev" {
-                        if let Some(iface) = parts.next() {
-                            return Some(iface.to_string());
-                        }
-                    }
-                }
-            }
-        }
-    }
-    None
-}
-
-impl SuspicionTracker {
-    fn new() -> Self {
-        Self {
-            score: Mutex::new(0.0),
-        }
-    }
-
-    fn add(&self, delta: f64) {
-        if let Ok(mut s) = self.score.lock() {
-            *s = (*s + delta).clamp(0.0, 100.0);
-        }
-    }
-
-    fn current(&self) -> f64 {
-        self.score.lock().map(|s| *s).unwrap_or(0.0)
-    }
-
-    fn prometheus(&self, prefix: &str) -> String {
-        let val = self.score.lock().map(|s| *s).unwrap_or(0.0);
-        format!("{prefix}_score {{}} {val}\n")
-    }
-}
-
-#[derive(Parser, Debug)]
-#[command(name = "vpn-server", version, about = "VPR VPN server with TUN tunnel")]
-struct Args {
-    /// QUIC bind address
-    #[arg(long, default_value = "0.0.0.0:4433")]
-    bind: SocketAddr,
-
-    /// TUN device name
-    #[arg(long, default_value = "vpr-srv0")]
-    tun_name: String,
-
-    /// Server TUN IP address (gateway for clients)
-    #[arg(long, default_value = "10.9.0.1")]
-    tun_addr: Ipv4Addr,
-
-    /// TUN netmask
-    #[arg(long, default_value = "255.255.255.0")]
-    tun_netmask: Ipv4Addr,
-
-    /// DNS servers to push to clients (comma-separated). Defaults to public resolvers if empty.
-    #[arg(long, value_delimiter = ',')]
-    dns_servers: Vec<IpAddr>,
-
-    /// MTU for TUN device
-    #[arg(long, default_value = "1400")]
-    mtu: u16,
-
-    /// Start of client IP pool
-    #[arg(long, default_value = "10.9.0.2")]
-    pool_start: Ipv4Addr,
-
-    /// End of client IP pool
-    #[arg(long, default_value = "10.9.0.254")]
-    pool_end: Ipv4Addr,
-
-    /// Padding strategy: none|bucket|rand-bucket|mtu
-    #[arg(long, default_value = "rand-bucket")]
-    padding_strategy: String,
-
-    /// Maximum jitter for padded sends (microseconds). 0 disables jitter.
-    #[arg(long, default_value = "5000")]
-    padding_max_jitter_us: u64,
-
-    /// Minimum padded packet size (bytes)
-    #[arg(long, default_value = "32")]
-    padding_min_size: usize,
-
-    /// Override MTU for padding (defaults to TUN MTU)
-    #[arg(long)]
-    padding_mtu: Option<u16>,
-
-    /// Cover traffic base rate (pps)
-    #[arg(long, default_value = "8.0")]
-    cover_traffic_rate: f64,
-
-    /// Cover traffic pattern: https|h3|webrtc|idle
-    #[arg(long, default_value = "https")]
-    cover_traffic_pattern: String,
-
-    /// Probe protection: PoW difficulty (leading zero bytes)
-    #[arg(long, default_value = "2")]
-    probe_difficulty: u8,
-
-    /// Probe protection: max failed attempts before ban
-    #[arg(long, default_value = "3")]
-    probe_max_failed_attempts: u32,
-
-    /// Probe protection: ban duration seconds
-    #[arg(long, default_value = "300")]
-    probe_ban_seconds: u64,
-
-    /// Probe protection: min handshake time ms (too fast -> suspicious)
-    #[arg(long, default_value = "50")]
-    probe_min_handshake_ms: u64,
-
-    /// Probe protection: max handshake time ms (too slow -> blocked)
-    #[arg(long, default_value = "10000")]
-    probe_max_handshake_ms: u64,
-
-    /// Write probe metrics to this path in Prometheus text format
-    #[arg(long)]
-    probe_metrics_path: Option<PathBuf>,
-
-    /// Interval for probe metrics export (seconds)
-    #[arg(long, default_value = "30")]
-    probe_metrics_interval: u64,
-
-    /// Directory containing Noise keys
-    #[arg(long, default_value = ".")]
-    noise_dir: PathBuf,
-
-    /// Noise key name
-    #[arg(long, default_value = "server")]
-    noise_name: String,
-
-    /// TLS certificate file (PEM)
-    #[arg(long)]
-    cert: PathBuf,
-
-    /// TLS private key file (PEM)
-    #[arg(long)]
-    key: PathBuf,
-
-    /// Outbound interface for NAT (e.g., eth0)
-    #[arg(long)]
-    outbound_iface: Option<String>,
-
-    /// Enable IP forwarding
-    #[arg(long, default_value_t = true)]
-    enable_forwarding: bool,
-
-    /// Idle timeout in seconds
-    #[arg(long, default_value = "300")]
-    idle_timeout: u64,
-
-    /// Session rekey time limit (seconds)
-    #[arg(long, default_value = "60")]
-    session_rekey_seconds: u64,
-
-    /// Session rekey data limit (bytes)
-    #[arg(long, default_value = "1073741824")]
-    session_rekey_bytes: u64,
-
-    /// Enable IPv6 support
-    #[arg(long)]
-    ipv6: bool,
-
-    /// Enable IPv6 NAT masquerading
-    #[arg(long)]
-    ipv6_nat: bool,
-
-    /// Routing policy: full|split|bypass
-    #[arg(long, default_value = "full")]
-    routing_policy: String,
-
-    /// Routes to push to clients (CIDR notation, comma-separated)
-    #[arg(long, value_delimiter = ',')]
-    routes: Vec<String>,
-
-    /// TLS fingerprint profile to mimic (chrome, firefox, safari, random)
-    #[arg(long, default_value = "chrome")]
-    tls_profile: String,
-
-    /// Canary TLS profile (chrome|firefox|safari|random|custom)
-    #[arg(long, default_value = "safari")]
-    tls_canary_profile: String,
-
-    /// Percent of connections using canary profile
-    #[arg(long, default_value = "5")]
-    tls_canary_percent: f64,
-
-    /// Seed for canary selection (0 = random)
-    #[arg(long, default_value_t = 0)]
-    tls_canary_seed: u64,
-
-    /// GREASE mode: random|deterministic
-    #[arg(long, default_value = "random")]
-    tls_grease_mode: String,
-
-    /// GREASE seed used when deterministic mode is selected
-    #[arg(long, default_value_t = 0)]
-    tls_grease_seed: u64,
-
-    /// Export JA3/JA3S/JA4 metrics to Prometheus text file
-    #[arg(long)]
-    tls_fp_metrics_path: Option<PathBuf>,
-
-    /// Run tls-fp-sync.py on startup to refresh fingerprint profiles
-    #[arg(long)]
-    tls_fp_sync: bool,
-
-    /// Path to tls-fp-sync log file
-    #[arg(long, default_value = "logs/tls-fp-sync.log")]
-    tls_fp_sync_log: PathBuf,
-}
-
-/// Client session with allocated IP and connection
-struct ClientSession {
-    #[allow(dead_code)]
-    connection: quinn::Connection,
-    #[allow(dead_code)]
-    allocated_ip: Ipv4Addr,
-    /// IPv6 address derived from IPv4 (ULA fd09::/64 + IPv4 suffix)
-    #[allow(dead_code)]
-    allocated_ip6: Ipv6Addr,
-    tx: mpsc::Sender<Bytes>,
-    #[allow(dead_code)]
-    session_state: Arc<SessionKeyState>,
-}
-
-/// IP address pool for clients
-struct IpPool {
-    start: u32,
-    end: u32,
-    allocated: Vec<bool>,
-}
-
-impl IpPool {
-    fn new(start: Ipv4Addr, end: Ipv4Addr) -> Self {
-        let start_u32 = u32::from(start);
-        let end_u32 = u32::from(end);
-        let size = (end_u32 - start_u32 + 1) as usize;
-
-        Self {
-            start: start_u32,
-            end: end_u32,
-            allocated: vec![false; size],
-        }
-    }
-
-    fn allocate(&mut self) -> Option<Ipv4Addr> {
-        for (i, used) in self.allocated.iter_mut().enumerate() {
-            if !*used {
-                *used = true;
-                return Some(Ipv4Addr::from(self.start + i as u32));
-            }
-        }
-        None
-    }
-
-    fn release(&mut self, ip: Ipv4Addr) {
-        let ip_u32 = u32::from(ip);
-        if ip_u32 >= self.start && ip_u32 <= self.end {
-            let idx = (ip_u32 - self.start) as usize;
-            if idx < self.allocated.len() {
-                self.allocated[idx] = false;
-            }
-        }
-    }
-}
-
-/// Persistent session info for reconnection support
-struct SessionInfo {
-    /// Allocated IP address for this session
-    allocated_ip: Ipv4Addr,
-    /// Client's Noise public key (for identity verification)
-    #[allow(dead_code)]
-    client_pubkey: [u8; 32],
-    /// When session was last active
-    last_seen: Instant,
-}
-
-/// Session timeout for reconnection (5 minutes)
-const SESSION_TIMEOUT: Duration = Duration::from_secs(300);
-
-/// Default DNS servers pushed to clients when none specified
-const DEFAULT_DNS_SERVERS: [IpAddr; 2] = [
-    IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)),
-    IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)),
-];
-
-/// Shared server state
-struct ServerState {
-    /// Active client sessions indexed by their allocated IPv4
-    clients: HashMap<Ipv4Addr, ClientSession>,
-    /// Active client senders indexed by their allocated IPv6 (for IPv6 packet routing)
-    clients_v6: HashMap<Ipv6Addr, mpsc::Sender<Bytes>>,
-    /// Persistent sessions indexed by session_id (for reconnect)
-    sessions: HashMap<String, SessionInfo>,
-    /// IP address pool
-    ip_pool: IpPool,
-}
-
-impl ServerState {
-    fn new(pool_start: Ipv4Addr, pool_end: Ipv4Addr) -> Self {
-        Self {
-            clients: HashMap::new(),
-            clients_v6: HashMap::new(),
-            sessions: HashMap::new(),
-            ip_pool: IpPool::new(pool_start, pool_end),
-        }
-    }
-
-    /// Try to restore session by session_id
-    #[allow(dead_code)]
-    fn restore_session(&mut self, session_id: &str, client_pubkey: &[u8; 32]) -> Option<Ipv4Addr> {
-        if let Some(session) = self.sessions.get(session_id) {
-            // Verify client identity and session freshness
-            // Use constant-time comparison to prevent timing attacks
-            if ct_eq_32(&session.client_pubkey, client_pubkey)
-                && session.last_seen.elapsed() < SESSION_TIMEOUT
-            {
-                return Some(session.allocated_ip);
-            }
-        }
-        None
-    }
-
-    /// Create new session
-    fn create_session(&mut self, client_pubkey: [u8; 32]) -> Option<(String, Ipv4Addr)> {
-        let ip = self.ip_pool.allocate()?;
-        let session_id = generate_session_id();
-
-        self.sessions.insert(
-            session_id.clone(),
-            SessionInfo {
-                allocated_ip: ip,
-                client_pubkey,
-                last_seen: Instant::now(),
-            },
-        );
-
-        Some((session_id, ip))
-    }
-
-    /// Update session last_seen time
-    fn touch_session(&mut self, session_id: &str) {
-        if let Some(session) = self.sessions.get_mut(session_id) {
-            session.last_seen = Instant::now();
-        }
-    }
-
-    /// Cleanup expired sessions
-    fn cleanup_expired_sessions(&mut self) {
-        let expired: Vec<String> = self
-            .sessions
-            .iter()
-            .filter(|(_, s)| s.last_seen.elapsed() > SESSION_TIMEOUT)
-            .map(|(id, _)| id.clone())
-            .collect();
-
-        for id in expired {
-            if let Some(session) = self.sessions.remove(&id) {
-                self.ip_pool.release(session.allocated_ip);
-                debug!(session_id = %id, "Session expired and cleaned up");
-            }
-        }
-    }
-}
-
-/// Convert IPv4 address to IPv6 using ULA prefix fd09::/64
-/// Maps 10.9.0.x -> fd09::10:9:0:x
-fn ipv4_to_ipv6(ipv4: Ipv4Addr) -> Ipv6Addr {
-    let octets = ipv4.octets();
-    // ULA prefix fd09:: with IPv4 embedded in last 64 bits
-    // Format: fd09:0000:0000:0000:00AA:00BB:00CC:00DD
-    Ipv6Addr::new(
-        0xfd09,
-        0,
-        0,
-        0,
-        u16::from(octets[0]),
-        u16::from(octets[1]),
-        u16::from(octets[2]),
-        u16::from(octets[3]),
-    )
-}
-
-/// Generate cryptographically secure session ID
-fn generate_session_id() -> String {
-    // Use 0 as fallback if system time is before UNIX epoch (should never happen)
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let random: u64 = rng::random_u64();
-    format!("{:x}{:016x}", timestamp, random)
-}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -498,8 +76,6 @@ async fn run_vpn_server(args: Args) -> Result<()> {
     let suspicion = Arc::new(SuspicionTracker::new());
 
     // Create DPI feedback controller for adaptive traffic shaping
-    // Note: We use the local SuspicionTracker, not the one from suspicion module
-    // For now, we'll update DPI feedback manually from suspicion score in connection handlers
     let dpi_feedback = Arc::new(masque_core::dpi_feedback::DpiFeedbackController::new());
 
     let padder = Arc::new(build_padder(&args));
@@ -591,7 +167,8 @@ async fn run_vpn_server(args: Args) -> Result<()> {
             masquerade_ipv6: args.ipv6_nat,
             preserve_source: false,
         };
-        setup_nat_with_config(tun.name(), &nat_config, &mut nat_state).context("setting up NAT")?;
+        setup_nat_with_config(tun.name(), &nat_config, &mut nat_state)
+            .context("setting up NAT")?;
         info!(
             tun = %tun.name(),
             outbound = %iface,
@@ -813,7 +390,7 @@ async fn handle_vpn_client_with_config(
     state: Arc<RwLock<ServerState>>,
     to_tun_tx: mpsc::Sender<Bytes>,
     rotation: Arc<KeyRotationManager>,
-    probe: Arc<ProbeProtector>,
+    probe: Arc<masque_core::probe_protection::ProbeProtector>,
     gateway_ip: Ipv4Addr,
     mtu: u16,
     padding_strategy: String,
@@ -860,7 +437,6 @@ async fn handle_vpn_client_with_config(
     let mut stream = QuicBiStream::new(send, recv);
 
     // Read protocol init byte (QUIC streams require client to write first)
-    const VPR_PROTOCOL_VERSION: u8 = 0x01;
     let mut init_buf = [0u8; 1];
     stream
         .read_exact(&mut init_buf)
@@ -963,7 +539,6 @@ async fn handle_vpn_client_with_config(
     }
 
     // Extract client's public key from handshake for session binding
-    // HybridSecret.combined is [u8; 32], so this is always valid
     let client_pubkey: [u8; 32] = hybrid_secret.combined;
 
     info!(
@@ -1132,7 +707,6 @@ async fn handle_vpn_client_with_config(
         }
     });
 
-    // Forward datagrams from client to TUN
     // Spawn cover traffic task
     let cover_conn = connection.clone();
     let cover_encap = encapsulator.clone();
@@ -1144,14 +718,12 @@ async fn handle_vpn_client_with_config(
             sleep(delay).await;
 
             let mut packet = cover_gen.generate_packet().data;
-            // Reuse padder for size/timing consistency
             cover_padder.pad_in_place(&mut packet);
             if let Some(j) = cover_padder.jitter_delay() {
                 sleep(j).await;
             }
 
             let datagram = cover_encap.encapsulate(Bytes::from(packet));
-            // Send through same QUIC connection to be indistinguishable
             session_state_cover.record_bytes(datagram.len() as u64);
             session_state_cover.maybe_rotate_with(|reason| {
                 info!(?reason, "Server session rekey (cover)");
@@ -1163,6 +735,7 @@ async fn handle_vpn_client_with_config(
         }
     });
 
+    // Main loop: forward datagrams from client to TUN
     loop {
         match connection.read_datagram().await {
             Ok(datagram) => {
@@ -1174,17 +747,15 @@ async fn handle_vpn_client_with_config(
                 match encapsulator.decapsulate(datagram) {
                     Ok(packet) => {
                         // Validate IP packet before sending to TUN
-                        // Cover traffic generates random data that is not valid IP
                         match masque_core::tun::IpPacketInfo::parse(&packet) {
                             Ok(_info) => {
-                                // Valid IP packet - send to TUN
                                 if to_tun_tx.send(packet).await.is_err() {
                                     warn!("TUN channel closed");
                                     break;
                                 }
                             }
                             Err(_) => {
-                                // Not a valid IP packet - likely cover traffic, silently drop
+                                // Not a valid IP packet - likely cover traffic
                                 trace!(
                                     packet_len = packet.len(),
                                     "Dropping non-IP packet (cover traffic)"
@@ -1222,7 +793,6 @@ async fn handle_vpn_client_with_config(
         st.clients_v6.remove(&client_ip6);
         // Touch session to reset timeout (allows reconnect within SESSION_TIMEOUT)
         st.touch_session(&session_id);
-        // Note: IP is NOT released here - session keeps IP reservation for reconnect
     }
 
     info!(
@@ -1235,218 +805,14 @@ async fn handle_vpn_client_with_config(
     Ok(())
 }
 
-/// Task to write packets to TUN device
-async fn tun_writer_task(
-    mut tun_writer: masque_core::tun::TunWriter,
-    mut rx: mpsc::Receiver<Bytes>,
-) {
-    while let Some(packet) = rx.recv().await {
-        if let Err(e) = tun_writer.write_packet(&packet).await {
-            error!(%e, "TUN write error");
-        }
-    }
-    debug!("TUN writer task ended");
-}
-
-/// Task to read from TUN and route packets to clients
-async fn tun_reader_task(
-    mut tun_reader: masque_core::tun::TunReader,
-    state: Arc<RwLock<ServerState>>,
-) {
-    loop {
-        match tun_reader.read_packet().await {
-            Ok(packet) => match masque_core::tun::IpPacketInfo::parse(&packet) {
-                Ok(info) => {
-                    // Dual-stack: route by IPv4 or IPv6 destination
-                    if let Some(dst_ipv4) = info.dst_addr.as_ipv4() {
-                        let st = state.read().await;
-                        if let Some(session) = st.clients.get(&dst_ipv4) {
-                            if session.tx.send(packet).await.is_err() {
-                                debug!(dst = %dst_ipv4, "Client channel closed");
-                            }
-                        } else {
-                            debug!(dst = %dst_ipv4, "No client for destination");
-                        }
-                    } else if let Some(dst_ipv6) = info.dst_addr.as_ipv6() {
-                        // IPv6 packet - lookup in clients_v6
-                        let st = state.read().await;
-                        if let Some(tx) = st.clients_v6.get(&dst_ipv6) {
-                            if tx.send(packet).await.is_err() {
-                                debug!(dst = %dst_ipv6, "Client channel closed (IPv6)");
-                            }
-                        } else {
-                            // Link-local and multicast IPv6 are common, log at trace
-                            trace!(
-                                dst = %dst_ipv6,
-                                protocol = %info.protocol_name(),
-                                "No client for IPv6 destination"
-                            );
-                        }
-                    }
-                }
-                Err(e) => {
-                    warn!(%e, packet_len = packet.len(), "Invalid IP packet from TUN, dropping");
-                }
-            },
-            Err(e) => {
-                error!(%e, "TUN read error");
-                break;
-            }
-        }
-    }
-    debug!("TUN reader task ended");
-}
-
-fn build_tls_fingerprint(
-    profile: &TlsProfile,
-    grease_mode: GreaseMode,
-) -> (Ja3Fingerprint, Ja3sFingerprint, Ja4Fingerprint, u16) {
-    let ja3 = Ja3Fingerprint::from_profile_with_grease(profile, grease_mode);
-    let selected_cipher = preferred_tls13_cipher(profile);
-    let ja3s = Ja3sFingerprint::from_profile_with_grease(profile, selected_cipher, grease_mode);
-    let ja4 = Ja4Fingerprint::from_profile(profile);
-    (ja3, ja3s, ja4, selected_cipher)
-}
-
-fn build_server_config(
-    certs: Vec<CertificateDer<'static>>,
-    key: PrivateKeyDer<'static>,
-    idle_timeout: u64,
-    cipher_suites: Vec<SupportedCipherSuite>,
-    kx_groups: Vec<&'static dyn SupportedKxGroup>,
-) -> Result<ServerConfig> {
-    let mut transport_config = TransportConfig::default();
-    transport_config.max_idle_timeout(Some(Duration::from_secs(idle_timeout).try_into()?));
-
-    // Enable QUIC datagrams for VPN traffic
-    transport_config.datagram_receive_buffer_size(Some(65536));
-    transport_config.datagram_send_buffer_size(65536);
-
-    // Configure MTU for VPN traffic - set initial MTU high enough for typical networks
-    // TUN MTU 1400 + QUIC overhead (~60 bytes) requires UDP payload of ~1460
-    // We set initial_mtu to 1500 (standard Ethernet MTU) and enable MTU discovery
-    transport_config.initial_mtu(1500);
-    transport_config.min_mtu(1280); // IPv6 minimum, safe fallback
-    transport_config.mtu_discovery_config(Some(quinn::MtuDiscoveryConfig::default()));
-
-    let provider = rustls::crypto::CryptoProvider {
-        cipher_suites,
-        kx_groups,
-        ..rustls::crypto::ring::default_provider()
-    };
-
-    let mut rustls_config = rustls::ServerConfig::builder_with_provider(Arc::new(provider))
-        .with_protocol_versions(&[&rustls::version::TLS13])?
-        .with_no_client_auth()
-        .with_single_cert(certs, key)?;
-
-    rustls_config.alpn_protocols = vec![b"h3".to_vec(), b"masque".to_vec()];
-    rustls_config.max_early_data_size = u32::MAX;
-
-    let crypto = quinn::crypto::rustls::QuicServerConfig::try_from(Arc::new(rustls_config))
-        .context("building rustls QUIC server config")?;
-
-    let mut server_config = ServerConfig::with_crypto(Arc::new(crypto));
-    server_config.transport_config(Arc::new(transport_config));
-
-    Ok(server_config)
-}
-
-fn build_padder(args: &Args) -> Padder {
-    let strategy = parse_padding_strategy(&args.padding_strategy);
-    let mtu = args.padding_mtu.unwrap_or(args.mtu) as usize;
-
-    let config = PaddingConfig {
-        strategy,
-        mtu,
-        jitter_enabled: args.padding_max_jitter_us > 0,
-        max_jitter_us: args.padding_max_jitter_us,
-        min_packet_size: args.padding_min_size,
-        adaptive: true,
-        high_strategy: PaddingStrategy::Mtu,
-        medium_strategy: PaddingStrategy::Bucket,
-        low_strategy: PaddingStrategy::RandomBucket,
-        high_threshold: 60,
-        medium_threshold: 20,
-        hysteresis: 5,
-    };
-
-    Padder::new(config)
-}
-
-fn build_probe_protector(args: &Args) -> ProbeProtector {
-    let config = ProbeProtectionConfig {
-        challenge_enabled: true,
-        challenge_difficulty: args.probe_difficulty,
-        ban_duration: Duration::from_secs(args.probe_ban_seconds),
-        max_failed_attempts: args.probe_max_failed_attempts,
-        timing_analysis: true,
-        min_handshake_time: Duration::from_millis(args.probe_min_handshake_ms),
-        max_handshake_time: Duration::from_millis(args.probe_max_handshake_ms),
-    };
-
-    ProbeProtector::new(config)
-}
-
-fn resolve_dns_servers(args: &Args) -> Vec<IpAddr> {
-    if args.dns_servers.is_empty() {
-        DEFAULT_DNS_SERVERS.to_vec()
-    } else {
-        args.dns_servers.clone()
-    }
-}
-
-async fn probe_metrics_task(
-    protector: Arc<ProbeProtector>,
-    suspicion: Arc<SuspicionTracker>,
-    path: PathBuf,
-    interval_secs: u64,
-) {
-    let mut ticker = interval(Duration::from_secs(interval_secs.max(1)));
-    loop {
-        ticker.tick().await;
-        let path = path.clone();
-        let protector_clone = protector.clone();
-        let suspicion_clone = suspicion.clone();
-        if let Err(e) = tokio::task::spawn_blocking(move || {
-            let content = protector_clone.metrics().to_prometheus("probe");
-            let susp = suspicion_clone.prometheus("suspicion");
-            let tmp = path.with_extension(".tmp");
-            fs::write(&tmp, format!("{content}{susp}").as_bytes())?;
-            fs::rename(&tmp, &path)?;
-            Ok::<(), std::io::Error>(())
-        })
-        .await
-        .unwrap_or_else(|e| {
-            Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                e.to_string(),
-            ))
-        }) {
-            warn!(%e, "Failed to persist probe metrics");
-        }
-    }
-}
-
-fn load_certs(path: &PathBuf) -> Result<Vec<CertificateDer<'static>>> {
-    let file = File::open(path).with_context(|| format!("opening cert file {:?}", path))?;
-    let mut reader = BufReader::new(file);
-    certs(&mut reader)
-        .collect::<Result<Vec<_>, _>>()
-        .context("parsing certificates")
-}
-
-fn load_key(path: &PathBuf) -> Result<PrivateKeyDer<'static>> {
-    let file = File::open(path).with_context(|| format!("opening key file {:?}", path))?;
-    let mut reader = BufReader::new(file);
-    private_key(&mut reader)
-        .context("parsing private key")?
-        .ok_or_else(|| anyhow::anyhow!("no private key found in {:?}", path))
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use clap::Parser;
+    use masque_core::rng;
+    use masque_core::server::{
+        generate_session_id, resolve_dns_servers, Args, DEFAULT_DNS_SERVERS,
+    };
+    use std::net::{IpAddr, Ipv4Addr};
 
     #[test]
     fn generate_session_id_uses_osrng() {
@@ -1457,7 +823,6 @@ mod tests {
             rng::osrng_call_count() >= 1,
             "Session ID generator must draw from OsRng"
         );
-        // Ensure formatting produced non-empty hex string
         assert!(id.len() >= 24);
     }
 
