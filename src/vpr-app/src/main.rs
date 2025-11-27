@@ -756,6 +756,16 @@ fn main() {
         std::process::exit(1);
     }
 
+    // Debug env to catch display/session issues early
+    eprintln!(
+        "env check: euid={} egid={} DISPLAY={:?} XDG_SESSION_TYPE={:?} WAYLAND_DISPLAY={:?}",
+        unsafe { libc::geteuid() },
+        unsafe { libc::getegid() },
+        std::env::var("DISPLAY").ok(),
+        std::env::var("XDG_SESSION_TYPE").ok(),
+        std::env::var("WAYLAND_DISPLAY").ok()
+    );
+
     // Инициализировать tracing
     tracing_subscriber::fmt::init();
 
