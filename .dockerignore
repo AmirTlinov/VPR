@@ -1,0 +1,41 @@
+# Build artifacts
+target/
+*.log
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Documentation
+docs/
+*.md
+!README.md
+
+# Tests and CI
+.github/
+.gitlab-ci.yml
+
+# Docker-specific excludes
+docker/scripts/
+!docker/scripts/*.sh
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Rust cache
+**/*.rs.bk
+Cargo.lock.bak
+
+# Secrets (should never be in image)
+*.pem
+*.key
+*.crt
+secrets/
