@@ -24,7 +24,7 @@ use tracing::{error, info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
 
 use ipnetwork::IpNetwork;
-use masque_core::cover_traffic::{CoverTrafficConfig, CoverTrafficGenerator, TrafficPattern};
+use masque_core::cover_traffic::{CoverTrafficConfig, CoverTrafficGenerator};
 use masque_core::hybrid_handshake::HybridClient;
 use masque_core::key_rotation::{
     rotation_check_task, KeyRotationConfig, KeyRotationManager, SessionKeyLimits, SessionKeyState,
@@ -33,13 +33,17 @@ use masque_core::network_guard::NetworkStateGuard;
 use masque_core::padding::{Padder, PaddingConfig, PaddingStrategy};
 use masque_core::quic_stream::QuicBiStream;
 use masque_core::tls_fingerprint::{
-    select_tls_profile, GreaseMode, Ja3Fingerprint, Ja3sFingerprint, Ja4Fingerprint, TlsProfile,
+    select_tls_profile, Ja3Fingerprint, Ja3sFingerprint, Ja4Fingerprint, TlsProfile,
     TlsProfileBucket,
 };
 use masque_core::tun::{
     restore_routing, restore_split_tunnel, setup_ipv6_routing, setup_policy_routing, setup_routing,
     setup_split_tunnel, DnsProtection, RouteRule, RoutingPolicy, RoutingState, TunConfig,
     TunDevice,
+};
+use masque_core::vpn_common::{
+    build_cover_config, padding_schedule_bytes, parse_grease_mode, parse_padding_strategy,
+    preferred_tls13_cipher, setup_shutdown_signal,
 };
 use masque_core::vpn_config::{ConfigAck, VpnConfig};
 use masque_core::vpn_tunnel::{
@@ -440,55 +444,6 @@ async fn main() -> Result<()> {
     run_vpn_client(args, shutdown_signal).await
 }
 
-fn parse_grease_mode(mode: &str, seed: u64) -> GreaseMode {
-    match mode.to_ascii_lowercase().as_str() {
-        "deterministic" | "det" | "fixed" => GreaseMode::Deterministic(seed),
-        _ => GreaseMode::Random,
-    }
-}
-
-fn preferred_tls13_cipher(profile: &TlsProfile) -> u16 {
-    profile
-        .cipher_suites()
-        .into_iter()
-        .find(|c| (*c & 0xff00) == 0x1300)
-        .or_else(|| profile.cipher_suites().first().copied())
-        .unwrap_or(0x1301)
-}
-
-/// Setup shutdown signal handler for graceful termination
-/// Returns a receiver that completes when SIGTERM or SIGINT is received
-fn setup_shutdown_signal() -> oneshot::Receiver<()> {
-    let (tx, rx) = oneshot::channel();
-
-    tokio::spawn(async move {
-        #[cfg(unix)]
-        {
-            use tokio::signal::unix::{signal, SignalKind};
-            let mut sigterm = signal(SignalKind::terminate()).expect("SIGTERM handler");
-            let mut sigint = signal(SignalKind::interrupt()).expect("SIGINT handler");
-
-            tokio::select! {
-                _ = sigterm.recv() => {
-                    info!("Received SIGTERM - initiating graceful shutdown");
-                }
-                _ = sigint.recv() => {
-                    info!("Received SIGINT (Ctrl+C) - initiating graceful shutdown");
-                }
-            }
-        }
-
-        #[cfg(not(unix))]
-        {
-            tokio::signal::ctrl_c().await.expect("Ctrl+C handler");
-            info!("Received Ctrl+C - initiating graceful shutdown");
-        }
-
-        let _ = tx.send(());
-    });
-
-    rx
-}
 
 async fn run_vpn_client(args: Args, shutdown_signal: oneshot::Receiver<()>) -> Result<()> {
     // SECURITY WARNING: --insecure flag disables TLS certificate verification
@@ -1353,19 +1308,6 @@ fn build_padder_cli(args: &Args, fallback_mtu: u16) -> Padder {
     Padder::new(config)
 }
 
-fn parse_padding_strategy(name: &str) -> PaddingStrategy {
-    match name.to_ascii_lowercase().as_str() {
-        "none" => PaddingStrategy::None,
-        "bucket" => PaddingStrategy::Bucket,
-        "mtu" => PaddingStrategy::Mtu,
-        "rand-bucket" | "random-bucket" | "random" => PaddingStrategy::RandomBucket,
-        other => {
-            tracing::warn!(strategy = %other, "Unknown padding strategy, using rand-bucket");
-            PaddingStrategy::RandomBucket
-        }
-    }
-}
-
 fn build_padder_from_config(args: &Args, config: &VpnConfig) -> Padder {
     // Prefer server-provided padding params to stay in sync
     let strategy = config
@@ -1400,47 +1342,6 @@ fn build_padder_from_config(args: &Args, config: &VpnConfig) -> Padder {
     };
 
     Padder::new(config)
-}
-
-fn parse_cover_pattern(name: &str) -> TrafficPattern {
-    match name.to_ascii_lowercase().as_str() {
-        "https" => TrafficPattern::HttpsBurst,
-        "h3" => TrafficPattern::H3Multiplex,
-        "webrtc" => TrafficPattern::WebRtcCbr,
-        "idle" => TrafficPattern::Idle,
-        _ => TrafficPattern::HttpsBurst,
-    }
-}
-
-fn build_cover_config(rate: f64, pattern: &str, mtu: usize) -> CoverTrafficConfig {
-    CoverTrafficConfig {
-        pattern: parse_cover_pattern(pattern),
-        base_rate_pps: rate,
-        rate_jitter: 0.35,
-        min_packet_size: 64,
-        max_packet_size: mtu.saturating_sub(40).max(64),
-        adaptive: true,
-        min_interval: std::time::Duration::from_millis(5),
-    }
-}
-
-fn padding_strategy_to_byte(strategy: PaddingStrategy) -> u8 {
-    match strategy {
-        PaddingStrategy::None => 0,
-        PaddingStrategy::Bucket => 1,
-        PaddingStrategy::RandomBucket => 2,
-        PaddingStrategy::Mtu => 3,
-    }
-}
-
-fn padding_schedule_bytes(padder: &Padder) -> Vec<u8> {
-    let cfg = padder.config();
-    let mut out = Vec::with_capacity(15);
-    out.push(padding_strategy_to_byte(cfg.strategy));
-    out.extend_from_slice(&cfg.max_jitter_us.to_be_bytes());
-    out.extend_from_slice(&(cfg.min_packet_size as u32).to_be_bytes());
-    out.extend_from_slice(&(cfg.mtu as u16).to_be_bytes());
-    out
 }
 
 fn solve_pow(nonce: &[u8; 32], difficulty: u8) -> [u8; 32] {

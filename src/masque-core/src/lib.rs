@@ -106,3 +106,5 @@ pub mod vpn_config;
 pub mod vpn_tunnel;
 /// Diagnostic and troubleshooting tools
 pub mod diagnostics;
+/// Common VPN utilities for client and server
+pub mod vpn_common;

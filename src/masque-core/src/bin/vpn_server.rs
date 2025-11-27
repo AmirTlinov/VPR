@@ -27,7 +27,7 @@ use tracing::{debug, error, info, trace, warn, Level};
 use tracing_subscriber::FmtSubscriber;
 
 use ipnetwork::IpNetwork;
-use masque_core::cover_traffic::{CoverTrafficConfig, CoverTrafficGenerator, TrafficPattern};
+use masque_core::cover_traffic::CoverTrafficGenerator;
 use masque_core::hybrid_handshake::{read_handshake_msg, HybridServer};
 use masque_core::key_rotation::{
     rotation_check_task, KeyRotationConfig, KeyRotationManager, SessionKeyState,
@@ -44,6 +44,10 @@ use masque_core::tls_fingerprint::{
 use masque_core::tun::{
     enable_ip_forwarding, setup_ipv6_nat, setup_nat_with_config, NatConfig, RouteRule,
     RoutingConfig, RoutingPolicy, RoutingState, TunConfig, TunDevice,
+};
+use masque_core::vpn_common::{
+    build_cover_config, padding_schedule_bytes_raw, parse_grease_mode, parse_padding_strategy,
+    preferred_tls13_cipher,
 };
 use masque_core::vpn_config::{ConfigAck, VpnConfig};
 use masque_core::vpn_tunnel::PacketEncapsulator;
@@ -892,7 +896,7 @@ async fn handle_vpn_client_with_config(
         anyhow::bail!("probe PoW failed");
     }
 
-    let server_padding_bytes = padding_schedule_bytes(
+    let server_padding_bytes = padding_schedule_bytes_raw(
         &padding_strategy,
         padding_max_jitter_us,
         padding_min_size,
@@ -1257,21 +1261,6 @@ async fn tun_reader_task(
     debug!("TUN reader task ended");
 }
 
-fn parse_grease_mode(mode: &str, seed: u64) -> GreaseMode {
-    match mode.to_ascii_lowercase().as_str() {
-        "deterministic" | "det" | "fixed" => GreaseMode::Deterministic(seed),
-        _ => GreaseMode::Random,
-    }
-}
-
-fn preferred_tls13_cipher(profile: &TlsProfile) -> u16 {
-    profile
-        .cipher_suites()
-        .into_iter()
-        .find(|c| (*c & 0xff00) == 0x1300)
-        .unwrap_or(0x1301)
-}
-
 fn build_tls_fingerprint(
     profile: &TlsProfile,
     grease_mode: GreaseMode,
@@ -1320,19 +1309,6 @@ fn build_server_config(
     Ok(server_config)
 }
 
-fn parse_padding_strategy(name: &str) -> PaddingStrategy {
-    match name.to_ascii_lowercase().as_str() {
-        "none" => PaddingStrategy::None,
-        "bucket" => PaddingStrategy::Bucket,
-        "mtu" => PaddingStrategy::Mtu,
-        "rand-bucket" | "random-bucket" | "random" => PaddingStrategy::RandomBucket,
-        other => {
-            warn!(strategy = %other, "Unknown padding strategy, falling back to random-bucket");
-            PaddingStrategy::RandomBucket
-        }
-    }
-}
-
 fn build_padder(args: &Args) -> Padder {
     let strategy = parse_padding_strategy(&args.padding_strategy);
     let mtu = args.padding_mtu.unwrap_or(args.mtu) as usize;
@@ -1353,51 +1329,6 @@ fn build_padder(args: &Args) -> Padder {
     };
 
     Padder::new(config)
-}
-
-fn parse_cover_pattern(name: &str) -> TrafficPattern {
-    match name.to_ascii_lowercase().as_str() {
-        "https" => TrafficPattern::HttpsBurst,
-        "h3" => TrafficPattern::H3Multiplex,
-        "webrtc" => TrafficPattern::WebRtcCbr,
-        "idle" => TrafficPattern::Idle,
-        _ => TrafficPattern::HttpsBurst,
-    }
-}
-
-fn build_cover_config(rate: f64, pattern: &str, mtu: usize) -> CoverTrafficConfig {
-    CoverTrafficConfig {
-        pattern: parse_cover_pattern(pattern),
-        base_rate_pps: rate,
-        rate_jitter: 0.35,
-        min_packet_size: 64,
-        max_packet_size: mtu.saturating_sub(40).max(64),
-        adaptive: true,
-        min_interval: Duration::from_millis(5),
-    }
-}
-
-fn padding_strategy_to_byte(strategy: &str) -> u8 {
-    match parse_padding_strategy(strategy) {
-        PaddingStrategy::None => 0,
-        PaddingStrategy::Bucket => 1,
-        PaddingStrategy::RandomBucket => 2,
-        PaddingStrategy::Mtu => 3,
-    }
-}
-
-fn padding_schedule_bytes(
-    strategy: &str,
-    max_jitter_us: u64,
-    min_size: usize,
-    mtu: u16,
-) -> Vec<u8> {
-    let mut out = Vec::with_capacity(15);
-    out.push(padding_strategy_to_byte(strategy));
-    out.extend_from_slice(&max_jitter_us.to_be_bytes());
-    out.extend_from_slice(&(min_size as u32).to_be_bytes());
-    out.extend_from_slice(&mtu.to_be_bytes());
-    out
 }
 
 fn build_probe_protector(args: &Args) -> ProbeProtector {
