@@ -1,5 +1,10 @@
 # VPR - Post-Quantum Stealth VPN
 
+[![CI](https://github.com/AmirTlinov/VPR/actions/workflows/ci.yml/badge.svg)](https://github.com/AmirTlinov/VPR/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/AmirTlinov/VPR/graph/badge.svg?token=YOUR_CODECOV_TOKEN)](https://codecov.io/gh/AmirTlinov/VPR)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Rust](https://img.shields.io/badge/rust-1.70+-orange.svg)](https://www.rust-lang.org/)
+
 **VPR** (VPN Protocol Router) is an ultra-performant, stealth VPN protocol designed for hostile network environments. Built to bypass advanced DPI, censorship, and state-level surveillance.
 
 ## Key Features
@@ -143,7 +148,34 @@ VPR implements defense-in-depth security:
 
 See [SECURITY.md](SECURITY.md) for vulnerability reporting.
 
-## Testing
+## Development
+
+### Quick Commands (Makefile)
+
+```bash
+make help          # Show all available commands
+make build         # Build debug binaries
+make release       # Build release binaries
+make test          # Run all tests
+make lint          # Run clippy
+make fmt           # Format code
+make docker-test   # Run Docker integration tests
+make keygen        # Generate Noise keypairs
+make cert          # Generate TLS certificates
+```
+
+### Pre-commit Hooks
+
+```bash
+# Option 1: Using pre-commit framework
+pip install pre-commit
+pre-commit install
+
+# Option 2: Native git hooks
+git config core.hooksPath .githooks
+```
+
+### Testing
 
 ```bash
 # All tests
@@ -152,6 +184,9 @@ cargo test --all
 # Specific crate
 cargo test -p masque-core
 cargo test -p vpr-crypto
+
+# With coverage
+cargo llvm-cov --workspace --html
 
 # Clippy
 cargo clippy --all-targets --all-features
