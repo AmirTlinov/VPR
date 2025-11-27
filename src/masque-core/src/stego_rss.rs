@@ -280,52 +280,41 @@ impl StegoRssEncoder {
     }
 
     /// Encode using hybrid method (combines multiple techniques)
+    ///
+    /// Hybrid method encodes ALL data in base64 chunks distributed across RSS item
+    /// descriptions. Items are shuffled for additional obfuscation, but chunk indices
+    /// are preserved via item GUIDs for correct reassembly.
     fn encode_hybrid(&mut self, data: &[u8]) -> Result<String> {
-        // Split data: first part in ordering, rest in base64 content
-        let split_point = data.len() / 2;
-        let (ordering_data, content_data) = data.split_at(split_point);
-
-        // Generate items
-        let num_items = self.config.min_items.max(data.len());
-        let mut items: Vec<RssItem> = (0..num_items)
-            .map(|i| self.generate_random_item(i))
-            .collect();
-
-        // Encode ordering part
-        if !ordering_data.is_empty() {
-            let seed: u64 = if ordering_data.len() >= 8 {
-                u64::from_le_bytes([
-                    ordering_data[0],
-                    ordering_data[1],
-                    ordering_data[2],
-                    ordering_data[3],
-                    ordering_data[4],
-                    ordering_data[5],
-                    ordering_data[6],
-                    ordering_data[7],
-                ])
-            } else {
-                let mut seed_bytes = [0u8; 8];
-                seed_bytes[..ordering_data.len().min(8)].copy_from_slice(ordering_data);
-                u64::from_le_bytes(seed_bytes)
-            };
-
-            let mut rng = StdRng::seed_from_u64(seed);
-            use rand::seq::SliceRandom;
-            items.shuffle(&mut rng);
-        }
-
-        // Encode content part in descriptions
-        let encoded = BASE64.encode(content_data);
+        // Encode ALL data as base64
+        let encoded = BASE64.encode(data);
         let chunks: Vec<String> = encoded
             .as_bytes()
             .chunks(64)
             .map(|chunk| String::from_utf8_lossy(chunk).to_string())
             .collect();
 
+        // Need at least enough items for all chunks, plus some cover items
+        let num_chunks = chunks.len();
+        let num_items = self.config.min_items.max(num_chunks + 5);
+
+        // Generate items with indexed GUIDs for ordering
+        let mut items: Vec<RssItem> = (0..num_items)
+            .map(|i| {
+                let mut item = self.generate_random_item(i);
+                // Embed chunk index in GUID for reassembly
+                item.guid = format!("chunk-{:04}-{}", i, item.guid);
+                item
+            })
+            .collect();
+
+        // Embed base64 chunks in first N item descriptions
         for (item, chunk) in items.iter_mut().zip(chunks.iter()) {
             item.description.push_str(&format!(" See: {}", chunk));
         }
+
+        // Shuffle items for obfuscation (decoder will use GUID ordering)
+        use rand::seq::SliceRandom;
+        items.shuffle(&mut self.rng);
 
         self.build_rss_feed(&items)
     }
@@ -586,20 +575,37 @@ impl StegoRssDecoder {
     fn decode_hybrid(&self, rss_xml: &str) -> Result<Vec<u8>> {
         let items = self.parse_rss_items(rss_xml)?;
 
-        // Extract base64 chunks from descriptions
-        let mut encoded = String::new();
+        // Extract items with chunks and their indices from GUIDs
+        let mut indexed_chunks: Vec<(usize, String)> = Vec::new();
+
         for item in items {
-            let desc = html_unescape(&item.description);
-            if let Some(start) = desc.find("See: ") {
-                let chunk_start = start + "See: ".len();
-                let chunk = &desc[chunk_start..].trim();
-                encoded.push_str(chunk);
+            // Parse chunk index from GUID format "chunk-NNNN-..."
+            if let Some(idx_str) = item.guid.strip_prefix("chunk-") {
+                if let Some(end) = idx_str.find('-') {
+                    if let Ok(idx) = idx_str[..end].parse::<usize>() {
+                        // Extract base64 chunk from description
+                        let desc = html_unescape(&item.description);
+                        if let Some(start) = desc.find("See: ") {
+                            let chunk_start = start + "See: ".len();
+                            let chunk = desc[chunk_start..].trim().to_string();
+                            if !chunk.is_empty() {
+                                indexed_chunks.push((idx, chunk));
+                            }
+                        }
+                    }
+                }
             }
         }
 
-        if encoded.is_empty() {
+        if indexed_chunks.is_empty() {
             return Err(anyhow::anyhow!("no encoded data found in RSS"));
         }
+
+        // Sort by index to restore original order
+        indexed_chunks.sort_by_key(|(idx, _)| *idx);
+
+        // Concatenate chunks in order
+        let encoded: String = indexed_chunks.into_iter().map(|(_, chunk)| chunk).collect();
 
         let decoded = BASE64.decode(encoded.trim())?;
         Ok(decoded)
@@ -1031,10 +1037,13 @@ mod tests {
     fn decode_hybrid_extracts_see_chunks() {
         let config = StegoRssConfig::default();
         let decoder = StegoRssDecoder::new(config);
-        // XML with See: base64 chunks
+        // XML with See: base64 chunks and proper chunk-NNNN-xxx GUIDs
         let xml = r#"
             <rss><channel>
-            <item><description>Text See: V29ybGQ=</description></item>
+            <item>
+                <guid>chunk-0000-article-1</guid>
+                <description>Text See: V29ybGQ=</description>
+            </item>
             </channel></rss>
         "#;
         let data = decoder.decode_hybrid(xml).unwrap();
@@ -1084,7 +1093,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "stego hybrid encoding needs proper chunking implementation"]
     fn test_stego_rss_encode_decode_hybrid() {
         let mut config = StegoRssConfig::default();
         config.method = StegoMethod::Hybrid;
