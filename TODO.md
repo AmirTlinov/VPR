@@ -120,6 +120,7 @@
 ## Ссылки
 
 - **[ROADMAP.md](docs/ROADMAP.md)** — Детальный план развития с приоритетами и ETA
+- **[UX_IMPROVEMENT_ROADMAP.md](docs/UX_IMPROVEMENT_ROADMAP.md)** — План улучшения пользовательского опыта
 - **[FLAGSHIP_PROGRESS.md](FLAGSHIP_PROGRESS.md)** — Текущий статус готовности
 - **[CONTRIBUTING.md](CONTRIBUTING.md)** — Руководство для разработчиков
 
