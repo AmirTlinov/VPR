@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod deployer;
+mod diagnostics_commands;
 mod killswitch;
 mod process_manager;
 mod tui_bridge;
@@ -141,6 +142,7 @@ struct AppState {
     vpn_manager: Arc<VpnProcessManager>,
     state: Arc<Mutex<VpnState>>,
     tui: Arc<tui_bridge::TuiState>,
+    diagnostic_state: Arc<Mutex<diagnostics_commands::DiagnosticState>>,
 }
 
 async fn build_killswitch_policy(server: &str, port: u16) -> killswitch::KillSwitchPolicy {
@@ -719,6 +721,7 @@ fn main() {
         vpn_manager: vpn_manager.clone(),
         state: Arc::new(Mutex::new(VpnState::default())),
         tui: Arc::new(tui_bridge::TuiState::new()),
+        diagnostic_state: Arc::new(Mutex::new(diagnostics_commands::DiagnosticState::default())),
     };
 
     // Запустить задачу для обновления состояния из менеджера
@@ -828,6 +831,7 @@ fn main() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .manage(app_state.diagnostic_state.clone())
         .manage(app_state)
         .invoke_handler(tauri::generate_handler![
             get_state,
@@ -851,7 +855,12 @@ fn main() {
             // TUI commands
             tui_render,
             tui_key,
-            tui_tick
+            tui_tick,
+            // Diagnostics commands
+            diagnostics_commands::run_diagnostics,
+            diagnostics_commands::apply_auto_fixes,
+            diagnostics_commands::get_diagnostic_state,
+            diagnostics_commands::cancel_diagnostics
         ])
         .run(tauri::generate_context!())
         .map_err(|e| {

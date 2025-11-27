@@ -7020,6 +7020,7 @@ dependencies = [
  "crossterm",
  "directories",
  "libc",
+ "masque-core",
  "nix 0.30.1",
  "ratatui",
  "serde",
