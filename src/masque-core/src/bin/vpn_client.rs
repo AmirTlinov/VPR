@@ -94,6 +94,10 @@ struct Args {
     #[arg(long)]
     server_pub: PathBuf,
 
+    /// Path to custom CA certificate file (PEM format)
+    #[arg(long)]
+    ca_cert: Option<PathBuf>,
+
     /// Skip TLS certificate verification (INSECURE - NEVER use in production!)
     ///
     /// WARNING: This flag disables TLS certificate verification, making the connection
@@ -443,7 +447,7 @@ async fn run_vpn_client(args: Args, shutdown_signal: oneshot::Receiver<()>) -> R
     );
 
     // Build QUIC client config
-    let quic_config = build_quic_config(args.insecure, args.idle_timeout, tls_profile)?;
+    let quic_config = build_quic_config(args.insecure, args.idle_timeout, tls_profile, args.ca_cert.clone())?;
 
     // Padding config for probe challenge (uses CLI defaults before server config arrives)
     let challenge_padder = Arc::new(build_padder_cli(&args, args.mtu));
@@ -1067,6 +1071,7 @@ fn build_quic_config(
     insecure: bool,
     idle_timeout: u64,
     tls_profile: TlsProfile,
+    ca_cert: Option<PathBuf>,
 ) -> Result<QuinnClientConfig> {
     tracing::debug!(profile = %tls_profile, "Building QUIC client config");
 
@@ -1103,7 +1108,22 @@ fn build_quic_config(
             .with_no_client_auth()
     } else {
         let mut roots = rustls::RootCertStore::empty();
-        roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+
+        // Load custom CA cert if provided, otherwise use webpki roots
+        if let Some(ca_cert_path) = &ca_cert {
+            let cert_pem = std::fs::read_to_string(ca_cert_path)
+                .context(format!("Failed to read CA certificate from {:?}", ca_cert_path))?;
+            let certs = rustls_pemfile::certs(&mut cert_pem.as_bytes())
+                .collect::<Result<Vec<_>, _>>()
+                .context("Failed to parse PEM certificate")?;
+
+            for cert in certs {
+                roots.add(cert)
+                    .context("Failed to add CA certificate to root store")?;
+            }
+        } else {
+            roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        }
 
         rustls::ClientConfig::builder_with_provider(Arc::new(provider))
             .with_protocol_versions(&[&rustls::version::TLS13])?
