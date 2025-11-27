@@ -494,11 +494,28 @@ async fn run_vpn_client(args: Args, shutdown_signal: oneshot::Receiver<()>) -> R
     // SECURITY WARNING: --insecure flag disables TLS certificate verification
     // This should NEVER be used in production as it makes the connection vulnerable to MITM attacks
     if args.insecure {
-        error!("SECURITY WARNING: TLS certificate verification is DISABLED via --insecure flag!");
-        error!("This makes the connection vulnerable to man-in-the-middle attacks.");
-        error!("NEVER use this flag in production environments.");
-        // In production builds, we could exit here, but for development/testing we allow it
-        // with prominent warnings
+        error!("╔═══════════════════════════════════════════════════════════════════╗");
+        error!("║  SECURITY WARNING: TLS CERTIFICATE VERIFICATION IS DISABLED!     ║");
+        error!("║  This makes the connection VULNERABLE to man-in-the-middle       ║");
+        error!("║  attacks. Your traffic can be intercepted and modified.          ║");
+        error!("╚═══════════════════════════════════════════════════════════════════╝");
+
+        // In release builds, require explicit opt-in via environment variable
+        #[cfg(not(debug_assertions))]
+        {
+            let allow_insecure = std::env::var("VPR_ALLOW_INSECURE")
+                .map(|v| v == "1" || v.to_lowercase() == "true")
+                .unwrap_or(false);
+
+            if !allow_insecure {
+                anyhow::bail!(
+                    "Insecure mode is disabled in release builds for security.\n\
+                     If you understand the risks and need this for testing, set:\n\
+                     VPR_ALLOW_INSECURE=1"
+                );
+            }
+            warn!("VPR_ALLOW_INSECURE=1 is set. Proceeding with disabled certificate verification.");
+        }
     }
 
     info!(

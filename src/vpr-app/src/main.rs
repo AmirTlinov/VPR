@@ -45,6 +45,9 @@ struct VpnState {
     server: String,
     error: Option<String>,
     statistics: process_manager::VpnStatistics,
+    /// Whether kill switch is currently active (not just configured)
+    #[serde(default)]
+    killswitch_active: bool,
 }
 
 impl Default for VpnState {
@@ -54,6 +57,7 @@ impl Default for VpnState {
             server: String::new(),
             error: None,
             statistics: process_manager::VpnStatistics::default(),
+            killswitch_active: false,
         }
     }
 }
@@ -263,7 +267,26 @@ async fn connect(
 
     // Enable insecure mode if configured or for localhost
     let is_localhost = server == "localhost" || server == "127.0.0.1" || server.starts_with("127.");
-    let use_insecure = config.insecure || is_localhost;
+    let use_insecure = if config.insecure && !is_localhost {
+        // In release builds, require explicit opt-in for insecure mode
+        #[cfg(not(debug_assertions))]
+        {
+            let allow_insecure = std::env::var("VPR_ALLOW_INSECURE")
+                .map(|v| v == "1" || v.to_lowercase() == "true")
+                .unwrap_or(false);
+
+            if !allow_insecure {
+                return Err(
+                    "Insecure mode is disabled in release builds. \
+                     Set VPR_ALLOW_INSECURE=1 environment variable to override.".into()
+                );
+            }
+            tracing::warn!("VPR_ALLOW_INSECURE=1 set - TLS verification disabled");
+        }
+        true
+    } else {
+        is_localhost // Allow insecure only for localhost without env var
+    };
 
     let vpn_config = VpnClientConfig {
         server: server.clone(),
@@ -284,12 +307,15 @@ async fn connect(
 
     // Включить kill switch ПЕРЕД запуском VPN клиента
     // Правила разрешают UDP/TCP на VPN сервер + входящие ответы
-    if config.killswitch {
+    let killswitch_enabled = if config.killswitch {
         let policy = build_killswitch_policy(&server, port_num).await;
         if let Err(e) = state.vpn_manager.enable_killswitch(policy).await {
             return Err(format!("Failed to enable kill switch: {}", e));
         }
-    }
+        true
+    } else {
+        false
+    };
 
     // Запустить VPN клиент
     match state.vpn_manager.start(vpn_config).await {
@@ -298,11 +324,12 @@ async fn connect(
             let mut vpn_state = state.state.lock().await;
             vpn_state.status = VpnStatus::Connected;
             vpn_state.error = None;
+            vpn_state.killswitch_active = killswitch_enabled;
             Ok(())
         }
         Err(e) => {
             // Отключить kill switch при ошибке
-            if config.killswitch {
+            if killswitch_enabled {
                 let _ = state.vpn_manager.disable_killswitch().await;
             }
 
@@ -310,6 +337,7 @@ async fn connect(
             let mut vpn_state = state.state.lock().await;
             vpn_state.status = VpnStatus::Error;
             vpn_state.error = Some(e.to_string());
+            vpn_state.killswitch_active = false;
             Err(format!("Failed to start VPN client: {}", e))
         }
     }
@@ -323,6 +351,12 @@ async fn disconnect(state: State<'_, AppState>) -> Result<(), String> {
         return Ok(());
     }
 
+    // Запомнить состояние kill switch перед изменением статуса
+    let was_killswitch_active = {
+        let vpn_state = state.state.lock().await;
+        vpn_state.killswitch_active
+    };
+
     // Обновить состояние
     {
         let mut vpn_state = state.state.lock().await;
@@ -330,20 +364,29 @@ async fn disconnect(state: State<'_, AppState>) -> Result<(), String> {
     }
 
     // Остановить VPN клиент
-    match state.vpn_manager.stop().await {
+    let stop_result = state.vpn_manager.stop().await;
+
+    // ALWAYS disable kill switch on disconnect to prevent traffic blocking
+    if was_killswitch_active {
+        if let Err(e) = state.vpn_manager.disable_killswitch().await {
+            tracing::warn!(%e, "Failed to disable kill switch during disconnect");
+        }
+    }
+
+    match stop_result {
         Ok(()) => {
-            // Обновить состояние
             let mut vpn_state = state.state.lock().await;
             vpn_state.status = VpnStatus::Disconnected;
             vpn_state.server = String::new();
             vpn_state.error = None;
+            vpn_state.killswitch_active = false;
             Ok(())
         }
         Err(e) => {
-            // Обновить состояние с ошибкой
             let mut vpn_state = state.state.lock().await;
             vpn_state.status = VpnStatus::Error;
             vpn_state.error = Some(e.to_string());
+            vpn_state.killswitch_active = false; // Also reset on error
             Err(format!("Failed to stop VPN client: {}", e))
         }
     }
@@ -787,7 +830,29 @@ fn main() {
             let is_localhost = config.server == "localhost"
                 || config.server == "127.0.0.1"
                 || config.server.starts_with("127.");
-            let use_insecure = config.insecure || is_localhost;
+            let use_insecure = if config.insecure && !is_localhost {
+                // In release builds, require explicit opt-in for insecure mode
+                #[cfg(not(debug_assertions))]
+                {
+                    let allow_insecure = std::env::var("VPR_ALLOW_INSECURE")
+                        .map(|v| v == "1" || v.to_lowercase() == "true")
+                        .unwrap_or(false);
+
+                    if !allow_insecure {
+                        let mut vpn_state = state_for_autoconnect.lock().await;
+                        vpn_state.status = VpnStatus::Error;
+                        vpn_state.error = Some(
+                            "Insecure mode is disabled in release builds. \
+                             Set VPR_ALLOW_INSECURE=1 to override.".into()
+                        );
+                        return;
+                    }
+                    tracing::warn!("VPR_ALLOW_INSECURE=1 set - TLS verification disabled");
+                }
+                true
+            } else {
+                is_localhost
+            };
 
             let vpn_config = VpnClientConfig {
                 server: config.server.clone(),
@@ -807,7 +872,7 @@ fn main() {
             };
 
             // Включить killswitch ПЕРЕД запуском VPN (как в connect)
-            if config.killswitch {
+            let killswitch_enabled = if config.killswitch {
                 let policy = build_killswitch_policy(&vpn_config.server, vpn_config.port).await;
                 if let Err(e) = manager_for_autoconnect.enable_killswitch(policy).await {
                     let mut vpn_state = state_for_autoconnect.lock().await;
@@ -815,16 +880,24 @@ fn main() {
                     vpn_state.error = Some(format!("Failed to enable kill switch: {}", e));
                     return;
                 }
-            }
+                true
+            } else {
+                false
+            };
 
             if let Err(e) = manager_for_autoconnect.start(vpn_config.clone()).await {
                 // Отключить killswitch при ошибке запуска
-                if config.killswitch {
+                if killswitch_enabled {
                     let _ = manager_for_autoconnect.disable_killswitch().await;
                 }
                 let mut vpn_state = state_for_autoconnect.lock().await;
                 vpn_state.status = VpnStatus::Error;
                 vpn_state.error = Some(e.to_string());
+                vpn_state.killswitch_active = false;
+            } else {
+                // Успешный старт - обновить состояние
+                let mut vpn_state = state_for_autoconnect.lock().await;
+                vpn_state.killswitch_active = killswitch_enabled;
             }
         });
     }
