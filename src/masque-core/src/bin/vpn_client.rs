@@ -3,7 +3,7 @@
 //! This binary creates a TUN interface and routes traffic through
 //! a MASQUE CONNECT-UDP tunnel with hybrid post-quantum encryption.
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use clap::Parser;
 use quinn::{ClientConfig as QuinnClientConfig, Endpoint, TransportConfig};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
@@ -209,6 +209,38 @@ struct Args {
     /// Skip automatic network repair on startup (enabled by default)
     #[arg(long)]
     no_auto_repair: bool,
+
+    /// Run diagnostics before connecting
+    #[arg(long)]
+    diagnose: bool,
+
+    /// Automatically apply fixes
+    #[arg(long)]
+    auto_fix: bool,
+
+    /// Fix consent level (auto/semi-auto/manual)
+    #[arg(long, default_value = "semi-auto")]
+    fix_consent: String,
+
+    /// Dry run (show what would be fixed without applying)
+    #[arg(long)]
+    dry_run: bool,
+
+    /// SSH host for server diagnostics
+    #[arg(long)]
+    ssh_host: Option<String>,
+
+    /// SSH port
+    #[arg(long, default_value = "22")]
+    ssh_port: u16,
+
+    /// SSH user
+    #[arg(long, default_value = "root")]
+    ssh_user: String,
+
+    /// SSH password (prefer SSH keys for security)
+    #[arg(long)]
+    ssh_password: Option<String>,
 }
 
 #[tokio::main]
@@ -258,6 +290,140 @@ async fn main() -> Result<()> {
                 warn!(%e, "Auto-repair failed - continuing anyway");
             }
         }
+    }
+
+    // Run diagnostics if requested
+    if args.diagnose || args.auto_fix {
+        use masque_core::diagnostics::{
+            DiagnosticConfig, FixConsentLevel,
+            engine::DiagnosticEngine,
+            ssh_client::SshConfig,
+        };
+
+        info!("Running VPN diagnostics");
+
+        // Parse server address for diagnostics
+        let (server_ip, server_port) = args.server.split_once(':')
+            .ok_or_else(|| anyhow::anyhow!("Invalid server address format"))?;
+        let server_ip: std::net::IpAddr = server_ip.parse()?;
+        let server_port: u16 = server_port.parse()?;
+
+        // Build SSH config if provided
+        let ssh_config = if let Some(ssh_host) = args.ssh_host.as_ref() {
+            Some(SshConfig {
+                host: ssh_host.clone(),
+                ssh_port: args.ssh_port,
+                user: args.ssh_user.clone(),
+                password: args.ssh_password.clone(),
+                ssh_key: None, // TODO: Add --ssh-key flag
+            })
+        } else {
+            None
+        };
+
+        // Build diagnostic config
+        let diag_config = DiagnosticConfig {
+            auto_fix: args.auto_fix,
+            timeout_secs: 10,
+            server_addr: Some((server_ip, server_port)),
+            privileged: unsafe { libc::geteuid() } == 0,
+        };
+
+        // Create diagnostic engine
+        let engine = DiagnosticEngine::new(diag_config, ssh_config);
+
+        // Run diagnostics
+        let context = engine.run_full_diagnostics().await
+            .context("Failed to run diagnostics")?;
+
+        // Print report
+        println!("\n╔═══════════════════════════════════════╗");
+        println!("║     VPN Diagnostic Report             ║");
+        println!("╚═══════════════════════════════════════╝\n");
+
+        if let Some(client_report) = &context.client_report {
+            println!("📋 Client-Side Checks ({} total):", client_report.results.len());
+            for result in &client_report.results {
+                let icon = if result.passed { "✅" } else { "❌" };
+                println!("  {} {}: {}", icon, result.check_name, result.message);
+            }
+            println!();
+        }
+
+        if let Some(server_report) = &context.server_report {
+            println!("🖥️  Server-Side Checks ({} total):", server_report.results.len());
+            for result in &server_report.results {
+                let icon = if result.passed { "✅" } else { "❌" };
+                println!("  {} {}: {}", icon, result.check_name, result.message);
+            }
+            println!();
+        }
+
+        if !context.cross_checks.is_empty() {
+            println!("🔄 Cross-Checks ({} total):", context.cross_checks.len());
+            for result in &context.cross_checks {
+                let icon = if result.passed { "✅" } else { "❌" };
+                println!("  {} {}: {}", icon, result.check_name, result.message);
+            }
+            println!();
+        }
+
+        println!("📊 Overall Health: {:?}\n", context.overall_health());
+
+        // Check for critical issues
+        if context.has_critical_issues() {
+            error!("Critical issues detected! Connection may fail.");
+
+            if !args.auto_fix {
+                println!("💡 Tip: Run with --auto-fix to automatically resolve these issues\n");
+                return Err(anyhow::anyhow!("Critical diagnostic failures - aborting"));
+            }
+        }
+
+        // Apply auto-fixes if requested
+        if args.auto_fix && !args.dry_run {
+            let consent_level = match args.fix_consent.as_str() {
+                "auto" => FixConsentLevel::Auto,
+                "semi-auto" => FixConsentLevel::SemiAuto,
+                "manual" => FixConsentLevel::Manual,
+                _ => bail!("Invalid fix-consent level: {}", args.fix_consent),
+            };
+
+            let fixable = context.all_auto_fixable_issues();
+            if fixable.is_empty() {
+                info!("No auto-fixable issues found");
+            } else {
+                println!("🔧 Applying {} auto-fixes...\n", fixable.len());
+
+                let fix_results = engine.apply_auto_fixes(&context, consent_level).await
+                    .context("Auto-fix failed")?;
+
+                for result in fix_results {
+                    match result {
+                        masque_core::diagnostics::fixes::FixResult::Success(msg) => {
+                            println!("  ✅ {}", msg);
+                        }
+                        masque_core::diagnostics::fixes::FixResult::Failed(msg) => {
+                            println!("  ❌ {}", msg);
+                        }
+                        masque_core::diagnostics::fixes::FixResult::Skipped(msg) => {
+                            println!("  ⏭️  {}", msg);
+                        }
+                    }
+                }
+                println!();
+            }
+        } else if args.dry_run {
+            println!("🔍 Dry-run mode: No fixes applied\n");
+        }
+
+        // Exit if diagnostics-only mode (not auto-fix)
+        if !args.auto_fix && args.diagnose {
+            info!("Diagnostics complete - exiting (use --auto-fix to continue with connection)");
+            return Ok(());
+        }
+
+        info!("Diagnostics complete - continuing with VPN connection");
     }
 
     // Setup graceful shutdown handler for SIGTERM/SIGINT

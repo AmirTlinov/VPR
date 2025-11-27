@@ -49,7 +49,7 @@ pub async fn run_diagnostics(config: &DiagnosticConfig) -> Result<DiagnosticRepo
     })
 }
 
-fn check_noise_keys_exist(config: &DiagnosticConfig) -> Result<DiagnosticResult> {
+fn check_noise_keys_exist(_config: &DiagnosticConfig) -> Result<DiagnosticResult> {
     // Assume noise_dir is 'secrets' by default
     let noise_dir = PathBuf::from("secrets");
     let client_key = noise_dir.join("client.noise.key");

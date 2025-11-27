@@ -1,10 +1,8 @@
 //! Server-side VPN diagnostics
 
-use super::{DiagnosticConfig, DiagnosticReport, DiagnosticResult, Fix, HealthStatus, Protocol, Severity, Side, SyncDirection};
+use super::{DiagnosticConfig, DiagnosticReport, DiagnosticResult, Fix, HealthStatus, Protocol, Severity, Side};
 use anyhow::{Context, Result};
-use std::net::IpAddr;
 use std::path::PathBuf;
-use std::time::Duration;
 
 /// Run all server-side diagnostic checks
 pub async fn run_diagnostics(config: &DiagnosticConfig) -> Result<DiagnosticReport> {

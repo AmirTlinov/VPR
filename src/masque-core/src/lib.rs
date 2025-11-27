@@ -27,3 +27,4 @@ pub mod tun;
 pub mod tunnel;
 pub mod vpn_config;
 pub mod vpn_tunnel;
+pub mod diagnostics;

@@ -1,7 +1,7 @@
 //! Auto-fix engine with rollback support
 
 use super::{Fix, FirewallAction, Protocol, RollbackOperation, SyncDirection};
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -398,7 +398,7 @@ impl FixExecutor {
         )))
     }
 
-    async fn upload_client_key(&mut self, server: &str) -> Result<FixResult> {
+    async fn upload_client_key(&mut self, _server: &str) -> Result<FixResult> {
         // This is essentially the same as ClientToServer sync
         self.sync_noise_keys(&SyncDirection::ClientToServer).await
     }

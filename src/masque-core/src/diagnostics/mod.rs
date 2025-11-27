@@ -13,7 +13,7 @@ pub mod server;
 pub mod cross_checks;
 pub mod fixes;
 pub mod ssh_client;
-// pub mod engine;    // TODO: Uncomment when created
+pub mod engine;
 
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
