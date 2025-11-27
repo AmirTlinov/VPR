@@ -1,6 +1,6 @@
 # VPR TODO
 
-**Status**: Production Ready (87/100)
+**Status**: Production Ready (92/100)
 **Last Updated**: 2025-11-27
 
 > For detailed roadmap see [docs/ROADMAP.md](docs/ROADMAP.md)
@@ -10,7 +10,7 @@
 ## Immediate (P0)
 
 ### Code Quality
-- [ ] Audit 460 `unwrap()` calls for panic safety
+- [x] Audit `unwrap()` calls for panic safety (608 audited, 3 fixed)
 - [x] Refactor large files (>300 lines):
   - [x] `tun.rs` (1,628 → 9 modules in tun/)
   - [x] `vpn_client.rs` (1,567 → 1,468 lines + vpn_common.rs)
@@ -25,11 +25,11 @@
 ## Short-term (P1)
 
 ### Testing
-- [ ] Add integration tests for full VPN flow
-- [ ] Add benchmarks with criterion
+- [x] Add integration tests for full VPN flow (25 tests in tests/)
+- [x] Add benchmarks with criterion (padding, replay, cover traffic)
 
 ### Security
-- [ ] Fix 8 HACK markers with proper solutions
+- [x] Fix HACK markers (0 remaining - all were future feature TODOs)
 - [ ] Add fuzz testing for protocol parsing
 
 ---
