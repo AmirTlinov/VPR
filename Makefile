@@ -1,8 +1,8 @@
 .PHONY: vpn app dev build clean diag tui
 
-# Run terminal TUI (headless-friendly)
+# Run VPR desktop app (hacker style Watch Dogs 2)
 tui:
-	@cargo run -p vpr-tui --release
+	@cd src/vpr-app && cargo tauri dev
 
 # Diagnostics: run after "Online" to verify tunnel and routing
 diag:
