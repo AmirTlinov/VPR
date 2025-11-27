@@ -12,6 +12,17 @@ const DNS_BACKUP_FILENAME: &str = "resolv.conf.bak";
 
 /// Get persistent backup path for DNS config
 pub fn get_dns_backup_path() -> PathBuf {
+    // For root user, use /var/lib/vpr/ (standard system state directory)
+    // SAFETY: geteuid() is a safe POSIX call returning effective user ID
+    let is_root = unsafe { libc::geteuid() } == 0;
+
+    if is_root {
+        let var_lib = PathBuf::from("/var/lib/vpr");
+        if std::fs::create_dir_all(&var_lib).is_ok() {
+            return var_lib.join(DNS_BACKUP_FILENAME);
+        }
+    }
+
     // Try XDG_STATE_HOME first (~/.local/state/vpr/)
     if let Some(state_dir) = dirs::state_dir() {
         let vpr_state = state_dir.join("vpr");
