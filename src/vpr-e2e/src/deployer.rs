@@ -1,4 +1,13 @@
 //! Server deployment and management
+//!
+//! WARNING: This module is for E2E TESTING ONLY.
+//! It uses password-based SSH authentication which is insecure for production.
+//! DO NOT use this code in production deployments.
+//!
+//! For production deployment, use vpr-app/src/deployer.rs which has:
+//! - Validated host/user/path types (prevents injection)
+//! - SSH key authentication only (no passwords)
+//! - Whitelisted SSH operations (no arbitrary commands)
 
 use crate::config::E2eConfig;
 use anyhow::{Context, Result};

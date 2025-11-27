@@ -13,23 +13,12 @@ use tauri::{AppHandle, Emitter};
 use tokio::sync::Mutex;
 
 /// Diagnostic state for the UI
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DiagnosticState {
     pub running: bool,
     pub progress: u8, // 0-100
     pub current_check: Option<String>,
     pub report: Option<SerializableReport>,
-}
-
-impl Default for DiagnosticState {
-    fn default() -> Self {
-        Self {
-            running: false,
-            progress: 0,
-            current_check: None,
-            report: None,
-        }
-    }
 }
 
 /// Serializable version of DiagnosticReport for Tauri
@@ -116,19 +105,28 @@ pub struct SshConfig {
     pub host: String,
     pub port: u16,
     pub user: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[deprecated(note = "Password auth is insecure, use SSH key instead")]
     pub password: Option<String>,
     pub key_path: Option<String>,
 }
 
-impl From<SshConfig> for CoreSshConfig {
-    fn from(config: SshConfig) -> Self {
-        CoreSshConfig {
-            host: config.host,
-            ssh_port: config.port,
-            user: config.user,
-            password: config.password,
-            ssh_key: config.key_path.map(|p| p.into()),
+impl TryFrom<SshConfig> for CoreSshConfig {
+    type Error = anyhow::Error;
+
+    #[allow(deprecated)]
+    fn try_from(config: SshConfig) -> Result<Self, Self::Error> {
+        // Security: Password auth is deprecated, warn user
+        if config.password.is_some() {
+            tracing::warn!("SSH password authentication is deprecated. Use SSH key instead.");
         }
+
+        CoreSshConfig::new(
+            &config.host,
+            config.port,
+            &config.user,
+            config.key_path.map(|p| p.into()),
+        )
     }
 }
 
@@ -165,7 +163,10 @@ pub async fn run_diagnostics(
         privileged: unsafe { libc::geteuid() } == 0,
     };
 
-    let ssh_cfg = ssh_config.map(CoreSshConfig::from);
+    let ssh_cfg = match ssh_config {
+        Some(cfg) => Some(CoreSshConfig::try_from(cfg).map_err(|e| format!("Invalid SSH config: {}", e))?),
+        None => None,
+    };
     let engine = DiagnosticEngine::new(config, ssh_cfg);
 
     // Emit progress events
@@ -242,7 +243,10 @@ pub async fn apply_auto_fixes(
         privileged: unsafe { libc::geteuid() } == 0,
     };
 
-    let ssh_cfg = ssh_config.map(CoreSshConfig::from);
+    let ssh_cfg = match ssh_config {
+        Some(cfg) => Some(CoreSshConfig::try_from(cfg).map_err(|e| format!("Invalid SSH config: {}", e))?),
+        None => None,
+    };
     let engine = DiagnosticEngine::new(config, ssh_cfg);
 
     // First run diagnostics to get context
