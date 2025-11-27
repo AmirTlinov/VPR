@@ -58,16 +58,17 @@ async fn test_routing_setup_restore() -> Result<()> {
 
     let tun_name = "vpr_test_route";
     let gateway = Ipv4Addr::new(10, 8, 0, 1);
+    let server_ip = IpAddr::V4(Ipv4Addr::new(10, 8, 0, 254));
 
     // Setup routing
-    setup_routing(tun_name, gateway)?;
+    setup_routing(tun_name, gateway, server_ip)?;
 
     // Verify route exists
     let has_route = check_route_exists(&gateway)?;
     assert!(has_route, "Route should exist after setup");
 
     // Restore routing
-    restore_routing(tun_name, gateway)?;
+    restore_routing(tun_name, gateway, Some(server_ip))?;
 
     // Verify route removed
     let route_still_exists = check_route_exists(&gateway)?;

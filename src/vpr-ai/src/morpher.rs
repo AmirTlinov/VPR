@@ -370,7 +370,7 @@ pub fn create_morpher_with_config(
     #[cfg(feature = "_onnx_core")]
     if let Some(path) = model_path {
         if path.exists() {
-            match OnnxMorpher::load_with_config(path, profile, config.clone()) {
+            match OnnxMorpher::load_with_config(path, profile, config) {
                 Ok(morpher) => {
                     tracing::info!(?profile, ?path, "Loaded ONNX traffic morpher");
                     return Box::new(morpher);
