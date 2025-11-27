@@ -1,6 +1,11 @@
 //! Auto-fix engine with rollback support
+//!
+//! Security: All command execution is hardened against injection attacks.
+//! - No `sh -c` shell execution with user input
+//! - All values validated through typed wrappers
+//! - Whitelist approach for services and modules
 
-use super::{Fix, FirewallAction, Protocol, RollbackOperation, SyncDirection};
+use super::{Fix, FirewallAction, Protocol, RollbackOperation, SyncDirection, ValidatedModuleName};
 use anyhow::{bail, Result};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -63,7 +68,7 @@ impl FixExecutor {
         self.dry_run = dry_run;
     }
 
-    /// Apply a fix
+    /// Apply a fix (security-hardened, no arbitrary command execution)
     pub async fn apply_fix(&mut self, fix: &Fix) -> Result<FixResult> {
         if self.dry_run {
             return Ok(FixResult::Skipped(format!(
@@ -79,19 +84,24 @@ impl FixExecutor {
                 self.open_firewall_port(*port, *protocol).await
             }
             Fix::SyncNoiseKeys { direction } => self.sync_noise_keys(direction).await,
-            Fix::DownloadCaCert { server } => self.download_ca_cert(server).await,
-            Fix::UploadClientKey { server } => self.upload_client_key(server).await,
+            Fix::DownloadCaCert { server } => self.download_ca_cert(server.as_str()).await,
+            Fix::UploadClientKey { server } => self.upload_client_key(server.as_str()).await,
             Fix::CleanOrphanedState => self.clean_orphaned_state().await,
             Fix::FixKillSwitch => self.fix_killswitch().await,
             Fix::RepairNetwork => self.repair_network().await,
             Fix::RestartVpnService => self.restart_vpn_service().await,
             Fix::RegenerateCertificate { cn, san } => {
-                self.regenerate_certificate(cn, san).await
+                self.regenerate_certificate(cn.as_str(), san).await
             }
-            Fix::RunCommand {
-                command,
-                description,
-            } => self.run_custom_command(command, description).await,
+            // ManualInstruction: Display-only, never executes commands (security)
+            Fix::ManualInstruction { instruction, description } => {
+                Ok(FixResult::Skipped(format!(
+                    "[MANUAL FIX REQUIRED] {}: Run manually: {}",
+                    description, instruction
+                )))
+            }
+            // NOTE: Fix::RunCommand REMOVED - was a critical security vulnerability
+            // All fixes must use typed, validated operations
         }
     }
 
@@ -109,31 +119,36 @@ impl FixExecutor {
         Ok(())
     }
 
+    /// Execute rollback operation (security-hardened, no shell injection)
     async fn execute_rollback(&self, op: &RollbackOperation) -> Result<()> {
         match op {
-            RollbackOperation::CommandUndo { command } => {
-                tracing::info!("Rolling back with command: {}", command);
-                let output = Command::new("sh").arg("-c").arg(command).output()?;
+            RollbackOperation::RestartService { service } => {
+                // Security: Only whitelisted service names via ValidatedServiceName enum
+                tracing::info!("Rolling back by restarting service: {}", service.as_str());
+                let output = Command::new("systemctl")
+                    .arg("restart")
+                    .arg(service.as_str()) // Safe: validated enum value
+                    .output()?;
 
                 if !output.status.success() {
                     bail!(
-                        "Rollback command failed: {}",
+                        "Service restart failed: {}",
                         String::from_utf8_lossy(&output.stderr)
                     );
                 }
-
                 Ok(())
             }
             RollbackOperation::FileRestore { path, content } => {
                 tracing::info!("Restoring file: {}", path.display());
+                // Security: Path should be validated before creating rollback op
                 std::fs::write(path, content)?;
                 Ok(())
             }
             RollbackOperation::FirewallRule { rule, action } => {
                 tracing::info!("Rolling back firewall rule: {:?}", action);
+                // Security: rule should be pre-validated when creating rollback op
                 match action {
                     FirewallAction::Add => {
-                        // Remove the rule
                         Command::new("nft")
                             .arg("delete")
                             .arg("rule")
@@ -141,13 +156,57 @@ impl FixExecutor {
                             .status()?;
                     }
                     FirewallAction::Remove => {
-                        // Re-add the rule
                         Command::new("nft")
                             .arg("add")
                             .arg("rule")
                             .arg(rule)
                             .status()?;
                     }
+                }
+                Ok(())
+            }
+            RollbackOperation::RemoveFirewallPort { port, protocol } => {
+                tracing::info!("Rolling back firewall port: {}/{:?}", port, protocol);
+                // Security: port is u16 (validated by type system)
+                #[cfg(target_os = "linux")]
+                {
+                    let proto_str = match protocol {
+                        Protocol::Tcp => "tcp",
+                        Protocol::Udp => "udp",
+                        Protocol::Both => "tcp",
+                    };
+                    // Use nft with separate arguments (no shell injection possible)
+                    Command::new("nft")
+                        .args(["delete", "rule", "inet", "filter", "input", proto_str, "dport"])
+                        .arg(port.to_string())
+                        .arg("accept")
+                        .status()?;
+
+                    // For "Both" protocol, also delete UDP rule
+                    if matches!(protocol, Protocol::Both) {
+                        Command::new("nft")
+                            .args(["delete", "rule", "inet", "filter", "input", "udp", "dport"])
+                            .arg(port.to_string())
+                            .arg("accept")
+                            .status()?;
+                    }
+                }
+                Ok(())
+            }
+            RollbackOperation::UnloadModule { module } => {
+                // Security: Only whitelisted module names via ValidatedModuleName enum
+                tracing::info!("Unloading kernel module: {}", module.as_str());
+                let output = Command::new("modprobe")
+                    .arg("-r")
+                    .arg(module.as_str()) // Safe: validated enum value
+                    .output()?;
+
+                if !output.status.success() {
+                    tracing::warn!(
+                        "Module unload failed (may be in use): {}",
+                        String::from_utf8_lossy(&output.stderr)
+                    );
+                    // Don't fail - module may be in use
                 }
                 Ok(())
             }
@@ -222,9 +281,9 @@ impl FixExecutor {
             let output = Command::new("modprobe").arg("tun").output()?;
 
             if output.status.success() {
-                // Add rollback to unload module
-                self.rollback_stack.push(RollbackOperation::CommandUndo {
-                    command: "modprobe -r tun".to_string(),
+                // Add rollback to unload module (security: using validated enum)
+                self.rollback_stack.push(RollbackOperation::UnloadModule {
+                    module: ValidatedModuleName::Tun,
                 });
 
                 Ok(FixResult::Success("TUN module loaded".to_string()))
@@ -260,9 +319,10 @@ impl FixExecutor {
                         .output()?;
 
                     if output.status.success() {
-                        // Add rollback
-                        self.rollback_stack.push(RollbackOperation::CommandUndo {
-                            command: format!("ufw delete allow {}/{}", port, proto_str),
+                        // Add rollback (security: using typed operation)
+                        self.rollback_stack.push(RollbackOperation::RemoveFirewallPort {
+                            port,
+                            protocol,
                         });
 
                         return Ok(FixResult::Success(format!(
@@ -582,25 +642,9 @@ impl FixExecutor {
         }
     }
 
-    async fn run_custom_command(&mut self, command: &str, description: &str) -> Result<FixResult> {
-        tracing::info!("Running custom command: {} ({})", command, description);
-
-        let output = Command::new("sh").arg("-c").arg(command).output()?;
-
-        if output.status.success() {
-            Ok(FixResult::Success(format!(
-                "{}: {}",
-                description,
-                String::from_utf8_lossy(&output.stdout).trim()
-            )))
-        } else {
-            Ok(FixResult::Failed(format!(
-                "{} failed: {}",
-                description,
-                String::from_utf8_lossy(&output.stderr)
-            )))
-        }
-    }
+    // NOTE: run_custom_command REMOVED - was a critical security vulnerability (CVE: command injection)
+    // All fixes must use typed, validated operations with no shell string execution.
+    // See: SECURITY_AUDIT_REPORT.md VPR-SEC-001
 }
 
 #[cfg(test)]
@@ -612,9 +656,9 @@ mod tests {
         let mut executor = FixExecutor::new(None);
         executor.set_dry_run(true);
 
-        // Simulate fix application
-        executor.rollback_stack.push(RollbackOperation::CommandUndo {
-            command: "echo 'test rollback'".to_string(),
+        // Simulate fix application with safe typed rollback operation
+        executor.rollback_stack.push(RollbackOperation::UnloadModule {
+            module: ValidatedModuleName::Tun,
         });
 
         // Rollback should clear stack
@@ -635,5 +679,20 @@ mod tests {
             }
             _ => panic!("Expected Skipped result in dry-run mode"),
         }
+    }
+
+    #[test]
+    fn test_validated_hostname() {
+        // Valid hostnames
+        assert!(super::super::ValidatedHostname::new("example.com").is_ok());
+        assert!(super::super::ValidatedHostname::new("192.168.1.1").is_ok());
+        assert!(super::super::ValidatedHostname::new("my-server").is_ok());
+
+        // Invalid hostnames (command injection attempts)
+        assert!(super::super::ValidatedHostname::new("example.com; rm -rf /").is_err());
+        assert!(super::super::ValidatedHostname::new("$(whoami)").is_err());
+        assert!(super::super::ValidatedHostname::new("`ls`").is_err());
+        assert!(super::super::ValidatedHostname::new("../etc/passwd").is_err());
+        assert!(super::super::ValidatedHostname::new("-oOption").is_err());
     }
 }

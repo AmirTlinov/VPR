@@ -238,9 +238,13 @@ struct Args {
     #[arg(long, default_value = "root")]
     ssh_user: String,
 
-    /// SSH password (prefer SSH keys for security)
+    /// SSH password (DEPRECATED - use SSH keys for security)
     #[arg(long)]
     ssh_password: Option<String>,
+
+    /// SSH private key path (recommended over password)
+    #[arg(long)]
+    ssh_key: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -308,15 +312,18 @@ async fn main() -> Result<()> {
         let server_ip: std::net::IpAddr = server_ip.parse()?;
         let server_port: u16 = server_port.parse()?;
 
-        // Build SSH config if provided
+        // Build SSH config if provided (using secure key-based auth only)
         let ssh_config = if let Some(ssh_host) = args.ssh_host.as_ref() {
-            Some(SshConfig {
-                host: ssh_host.clone(),
-                ssh_port: args.ssh_port,
-                user: args.ssh_user.clone(),
-                password: args.ssh_password.clone(),
-                ssh_key: None, // TODO: Add --ssh-key flag
-            })
+            // Security: Password auth is deprecated, use SSH key or agent
+            if args.ssh_password.is_some() {
+                tracing::warn!("SSH password authentication is deprecated for security reasons. Use --ssh-key instead.");
+            }
+            Some(SshConfig::new(
+                ssh_host,
+                args.ssh_port,
+                &args.ssh_user,
+                args.ssh_key.clone(),
+            )?)
         } else {
             None
         };

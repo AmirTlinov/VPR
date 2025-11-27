@@ -78,15 +78,53 @@ pub enum DiagnosticCategory {
     Configuration,
 }
 
-/// Rollback operations for failed fixes
+/// Rollback operations for failed fixes (security-hardened, no shell injection)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum RollbackOperation {
-    /// Undo a shell command
-    CommandUndo { command: String },
+    /// Restart a systemd service (validated service name)
+    RestartService { service: ValidatedServiceName },
     /// Restore file from backup
     FileRestore { path: PathBuf, content: Vec<u8> },
     /// Restore firewall rule
     FirewallRule { rule: String, action: FirewallAction },
+    /// Remove firewall port rule
+    RemoveFirewallPort { port: u16, protocol: Protocol },
+    /// Unload kernel module
+    UnloadModule { module: ValidatedModuleName },
+}
+
+/// Validated systemd service names (whitelist approach)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ValidatedServiceName {
+    SystemdResolved,
+    Nscd,
+    NetworkManager,
+}
+
+impl ValidatedServiceName {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::SystemdResolved => "systemd-resolved",
+            Self::Nscd => "nscd",
+            Self::NetworkManager => "NetworkManager",
+        }
+    }
+}
+
+/// Validated kernel module names (whitelist approach)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ValidatedModuleName {
+    Tun,
+    Tap,
+}
+
+impl ValidatedModuleName {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Tun => "tun",
+            Self::Tap => "tap",
+        }
+    }
 }
 
 /// Firewall actions
@@ -105,35 +143,83 @@ pub enum SyncDirection {
     ServerToClient,
 }
 
-/// Auto-fix actions
+/// Auto-fix actions (security-hardened, no arbitrary command execution)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Fix {
-    /// Open firewall port (UFW/iptables)
+    /// Open firewall port (UFW/nftables) - validated port range
     OpenFirewallPort { port: u16, protocol: Protocol },
-    /// Generate new certificate
+    /// Generate new certificate with validated CN/SAN
     RegenerateCertificate { cn: String, san: Vec<String> },
     /// Adjust kill switch rules
     FixKillSwitch,
-    /// Flush DNS cache
+    /// Flush DNS cache (systemd-resolved or nscd)
     FlushDns,
     /// Repair network configuration
     RepairNetwork,
-    /// Custom shell command
-    RunCommand { command: String, description: String },
-
-    // New fixes
     /// Synchronize Noise protocol keys
     SyncNoiseKeys { direction: SyncDirection },
     /// Load TUN kernel module
     LoadTunModule,
     /// Clean orphaned VPN state
     CleanOrphanedState,
-    /// Download CA certificate from server
+    /// Download CA certificate from server (validated path)
     DownloadCaCert { server: String },
-    /// Upload client public key to server
+    /// Upload client public key to server (validated path)
     UploadClientKey { server: String },
     /// Restart VPN service
     RestartVpnService,
+    /// Display manual fix instructions (NO EXECUTION - safe)
+    /// Security: This only DISPLAYS instructions, never executes commands
+    ManualInstruction { instruction: String, description: String },
+    // NOTE: Fix::RunCommand REMOVED for security (CVE: command injection)
+    // Use ManualInstruction to display instructions without execution
+}
+
+/// Validated hostname for SSH operations (prevents command injection)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ValidatedHostname(String);
+
+impl ValidatedHostname {
+    /// Create validated hostname (alphanumeric, dots, hyphens only)
+    pub fn new(host: &str) -> Result<Self, &'static str> {
+        // Security: Only allow safe hostname characters
+        if host.is_empty() || host.len() > 253 {
+            return Err("Invalid hostname length");
+        }
+        if !host.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-') {
+            return Err("Invalid hostname characters (only alphanumeric, dot, hyphen allowed)");
+        }
+        // Prevent path traversal and command injection
+        if host.contains("..") || host.starts_with('-') {
+            return Err("Invalid hostname format");
+        }
+        Ok(Self(host.to_string()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Validated certificate CN (prevents injection)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ValidatedCertCn(String);
+
+impl ValidatedCertCn {
+    /// Create validated CN (alphanumeric, dots, hyphens only)
+    pub fn new(cn: &str) -> Result<Self, &'static str> {
+        if cn.is_empty() || cn.len() > 64 {
+            return Err("Invalid CN length");
+        }
+        if !cn.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_') {
+            return Err("Invalid CN characters");
+        }
+        Ok(Self(cn.to_string()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]

@@ -76,8 +76,8 @@ fn check_noise_keys_exist(_config: &DiagnosticConfig) -> Result<DiagnosticResult
             )
         },
         fix: if !all_exist {
-            Some(Fix::RunCommand {
-                command: "vpn-client-keygen".to_string(),
+            Some(Fix::ManualInstruction {
+                instruction: "vpn-client-keygen".to_string(),
                 description: "Generate new Noise protocol keys".to_string(),
             })
         } else {
@@ -101,8 +101,8 @@ fn check_ca_cert_exists(_config: &DiagnosticConfig) -> Result<DiagnosticResult> 
             "Server CA certificate not found (will use --insecure or webpki roots)".to_string()
         },
         fix: if !exists {
-            Some(Fix::RunCommand {
-                command: "scp server:/path/to/server.crt secrets/".to_string(),
+            Some(Fix::ManualInstruction {
+                instruction: "scp server:/path/to/server.crt secrets/".to_string(),
                 description: "Download server certificate".to_string(),
             })
         } else {
@@ -127,8 +127,8 @@ fn check_server_tcp_reachable(server: IpAddr, port: u16) -> DiagnosticResult {
             format!("Server {}:{} is NOT reachable via TCP (firewall/routing issue?)", server, port)
         },
         fix: if !reachable {
-            Some(Fix::RunCommand {
-                command: format!("ssh server 'ufw allow {}/tcp'", port),
+            Some(Fix::ManualInstruction {
+                instruction: format!("ssh server 'ufw allow {}/tcp'", port),
                 description: format!("Open TCP port {} on server", port),
             })
         } else {
@@ -231,8 +231,8 @@ fn check_root_privileges() -> DiagnosticResult {
             "NOT running as root (required for TUN/firewall operations)".to_string()
         },
         fix: if !is_root {
-            Some(Fix::RunCommand {
-                command: "sudo vpn-client ...".to_string(),
+            Some(Fix::ManualInstruction {
+                instruction: "sudo vpn-client ...".to_string(),
                 description: "Re-run with sudo".to_string(),
             })
         } else {
@@ -259,8 +259,8 @@ fn check_tun_support() -> Result<DiagnosticResult> {
                 "/dev/net/tun not found (kernel module missing?)".to_string()
             },
             fix: if !exists {
-                Some(Fix::RunCommand {
-                    command: "modprobe tun".to_string(),
+                Some(Fix::ManualInstruction {
+                    instruction: "modprobe tun".to_string(),
                     description: "Load TUN kernel module".to_string(),
                 })
             } else {

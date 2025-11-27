@@ -32,8 +32,8 @@ fn check_noise_key_sync() -> Result<DiagnosticResult> {
             passed: false,
             severity: Severity::Critical,
             message: "Client public key not found locally".to_string(),
-            fix: Some(Fix::RunCommand {
-                command: "vpr-keygen client".to_string(),
+            fix: Some(Fix::ManualInstruction {
+                instruction: "vpr-keygen client".to_string(),
                 description: "Generate client Noise keys".to_string(),
             }),
             auto_fixable: true,
@@ -100,8 +100,8 @@ fn check_time_skew(
             )
         },
         fix: if !passed {
-            Some(Fix::RunCommand {
-                command: "ntpdate -s time.nist.gov || chronyd -q".to_string(),
+            Some(Fix::ManualInstruction {
+                instruction: "ntpdate -s time.nist.gov || chronyd -q".to_string(),
                 description: "Sync time with NTP server".to_string(),
             })
         } else {

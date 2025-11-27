@@ -70,8 +70,8 @@ fn check_noise_server_key_exists(_config: &DiagnosticConfig) -> Result<Diagnosti
             )
         },
         fix: if !all_exist {
-            Some(Fix::RunCommand {
-                command: "vpr-keygen server".to_string(),
+            Some(Fix::ManualInstruction {
+                instruction: "vpr-keygen server".to_string(),
                 description: "Generate new server Noise protocol keys".to_string(),
             })
         } else {
@@ -291,8 +291,8 @@ fn check_ip_forwarding_enabled() -> Result<DiagnosticResult> {
                 "IPv4 forwarding is DISABLED (VPN routing will not work)".to_string()
             },
             fix: if !enabled {
-                Some(Fix::RunCommand {
-                    command: "sysctl -w net.ipv4.ip_forward=1".to_string(),
+                Some(Fix::ManualInstruction {
+                    instruction: "sysctl -w net.ipv4.ip_forward=1".to_string(),
                     description: "Enable IP forwarding".to_string(),
                 })
             } else {
@@ -335,8 +335,8 @@ fn check_nat_masquerade_configured() -> Result<DiagnosticResult> {
                     "NAT masquerade NOT configured (VPN clients can't reach internet)".to_string()
                 },
                 fix: if !has_masquerade {
-                    Some(Fix::RunCommand {
-                        command: "nft add rule ip nat postrouting oifname eth0 masquerade".to_string(),
+                    Some(Fix::ManualInstruction {
+                        instruction: "nft add rule ip nat postrouting oifname eth0 masquerade".to_string(),
                         description: "Add NAT masquerade rule".to_string(),
                     })
                 } else {
@@ -367,8 +367,8 @@ fn check_client_keys_in_storage() -> Result<DiagnosticResult> {
             passed: false,
             severity: Severity::Warning,
             message: "Secrets directory does not exist".to_string(),
-            fix: Some(Fix::RunCommand {
-                command: "mkdir -p secrets".to_string(),
+            fix: Some(Fix::ManualInstruction {
+                instruction: "mkdir -p secrets".to_string(),
                 description: "Create secrets directory".to_string(),
             }),
             auto_fixable: true,
@@ -394,8 +394,8 @@ fn check_client_keys_in_storage() -> Result<DiagnosticResult> {
         severity: Severity::Info,
         message: format!("Found {} client public key(s) in storage", client_keys),
         fix: if client_keys == 0 {
-            Some(Fix::RunCommand {
-                command: "echo 'Clients need to upload their public keys via SCP'".to_string(),
+            Some(Fix::ManualInstruction {
+                instruction: "echo 'Clients need to upload their public keys via SCP'".to_string(),
                 description: "Waiting for client keys".to_string(),
             })
         } else {
