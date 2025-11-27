@@ -683,3 +683,214 @@ SCORE: 92/100
 | **Overall Crypto** | **94/100** |
 
 Implementation meets stated requirements and is ready for production use.
+
+---
+
+# Security Audit: VPR-SEC-001 through VPR-SEC-009 Verification
+
+**Date:** 2025-11-27
+**Auditor:** Claude Opus 4.5
+**Scope:** Full codebase security review including verification of previously identified vulnerabilities
+
+---
+
+## Security Summary
+
+Comprehensive security audit of the VPR VPN project. All previously identified vulnerabilities (VPR-SEC-001 through VPR-SEC-009) have been properly remediated. The codebase demonstrates excellent security practices with type-safe validated inputs, whitelist-based command execution, and proper credential handling.
+
+## Security Verdict: **ACCEPT**
+
+---
+
+## Security Risk Assessment Table
+
+| Category | Risk Level | Status |
+|----------|------------|--------|
+| Command Injection | LOW | All entry points protected |
+| Path Traversal | LOW | Validated types enforce bounds |
+| Credential Exposure | LOW | No logging of secrets |
+| TLS Security | LOW | Production builds protected |
+| Race Conditions | LOW | Atomic operations, state persistence |
+
+---
+
+## Previously Identified Vulnerabilities - Verification
+
+### VPR-SEC-001: Command Injection in Diagnostics
+**Status:** FIXED
+
+**Evidence:**
+- `src/masque-core/src/diagnostics/fixes.rs:103` - `Fix::RunCommand` REMOVED
+- `src/masque-core/src/diagnostics/fixes.rs:645-647` - Comment explicitly states this was CVE-level vulnerability
+- All command execution now uses typed `SshOperation` enum with hardcoded command templates
+
+**Code Reference:**
+```rust
+// NOTE: Fix::RunCommand REMOVED - was a critical security vulnerability (CVE: command injection)
+// All fixes must use typed, validated operations with no shell string execution.
+// See: SECURITY_AUDIT_REPORT.md VPR-SEC-001
+```
+
+### VPR-SEC-002: Path Traversal in Diagnostics
+**Status:** FIXED
+
+**Evidence:**
+- `src/masque-core/src/diagnostics/ssh_client.rs:48-75` - `ValidatedRemotePath` type
+- Path traversal blocked: `if path.contains("..") { return Err("Path traversal not allowed"); }`
+- Shell metacharacters blocked: `;`, `$`, backtick, `|`, `&`, `\n`, `\r`, `\0`
+
+### VPR-SEC-003: Password Exposure in SSH Logs
+**Status:** FIXED
+
+**Evidence:**
+- `src/vpr-app/src/deployer.rs:382-389` - Password auth deprecated with warning
+- `src/vpr-app/src/deployer.rs:389` - Explicitly bails: "SSH key authentication required"
+- `src/masque-core/src/bin/vpn_client.rs:318-319` - Warning for deprecated password auth
+- No logging of passwords found anywhere in codebase (grep verified)
+
+### VPR-SEC-004: Arbitrary File Read in Diagnostics
+**Status:** FIXED
+
+**Evidence:**
+- `src/vpr-app/src/deployer.rs:97-131` - `ValidatedRemotePath` requires paths within `/opt/vpr`
+- Test at line 848-854 confirms `/etc/passwd` and `~/.ssh/authorized_keys` are blocked
+- SSH client uses predefined `SshOperation` enum - no arbitrary file access
+
+### VPR-SEC-005/006/007: Command Injection in Deployer
+**Status:** FIXED
+
+**Evidence:**
+- `src/vpr-app/src/deployer.rs:133-166` - `SshOperation` enum whitelist approach
+- `src/vpr-app/src/deployer.rs:168-260` - All commands are hardcoded templates
+- `src/vpr-app/src/deployer.rs:34-72` - `ValidatedHost` prevents shell metacharacters
+- `src/vpr-app/src/deployer.rs:74-95` - `ValidatedUser` prevents injection
+- Tests at lines 807-871 verify injection patterns are rejected
+
+**Validated Types:**
+- `ValidatedHost` - blocks `;`, `$`, backtick, `|`, `&`, `'`, `"`, `\`, `\n`
+- `ValidatedUser` - alphanumeric, underscore, hyphen only
+- `ValidatedRemotePath` - within `/opt/vpr`, no traversal
+
+### VPR-SEC-008: Kill Switch Race Condition
+**Status:** FIXED
+
+**Evidence:**
+- `src/masque-core/src/network_guard.rs:77-83` - `NetworkStateGuard` struct
+- `src/masque-core/src/network_guard.rs:311-330` - Atomic persist with temp file rename
+- `src/masque-core/src/network_guard.rs:463-472` - Drop trait ensures cleanup
+- `src/masque-core/src/network_guard.rs:152-205` - `restore_from_crash()` for recovery
+
+**Design:**
+- Write-Ahead Log pattern for network changes
+- PID tracking to detect orphaned state
+- LIFO rollback order for correct restoration
+
+### VPR-SEC-009: TLS Insecure Mode in Production
+**Status:** FIXED
+
+**Evidence:**
+- `src/masque-core/src/bin/vpn_client.rs:494-519` - Clear warning banner
+- `src/masque-core/src/bin/vpn_client.rs:504-518` - Release build protection:
+```rust
+#[cfg(not(debug_assertions))]
+{
+    let allow_insecure = std::env::var("VPR_ALLOW_INSECURE")
+        .map(|v| v == "1" || v.to_lowercase() == "true")
+        .unwrap_or(false);
+
+    if !allow_insecure {
+        anyhow::bail!(
+            "Insecure mode is disabled in release builds for security.\n\
+             If you understand the risks and need this for testing, set:\n\
+             VPR_ALLOW_INSECURE=1"
+        );
+    }
+}
+```
+
+---
+
+## New Findings
+
+### Finding 1: E2E Test Deployer Still Uses Password Auth
+**Priority:** Minor
+**File:** `src/vpr-e2e/src/deployer.rs`
+**Status:** ACKNOWLEDGED (E2E testing only)
+
+The E2E test deployer still supports password authentication via `sshpass`. This is explicitly documented as testing-only code with warning comments at the file header.
+
+**Risk:** Low - isolated to E2E test code, not production
+**Recommendation:** Consider migrating E2E tests to SSH key auth
+
+### Finding 2: Health Harness --insecure_tls Flag
+**Priority:** Informational
+**File:** `src/health-harness/src/main.rs:41`
+
+The health-harness CLI accepts `--insecure_tls` flag without the same release-build protection as vpn-client.
+
+**Risk:** Very Low - health-harness is a debugging/testing tool, not production VPN
+**Recommendation:** Consider adding VPR_ALLOW_INSECURE check for consistency
+
+### Finding 3: Unsafe Blocks - All Safe
+**Priority:** Informational
+
+All `unsafe` blocks in the codebase are for safe libc calls:
+- `libc::geteuid()` - read-only syscall, no parameters, cannot fail
+- `libc::kill(pid, 0)` - signal 0 only checks process existence
+
+Each has proper SAFETY comments explaining why the usage is safe.
+
+---
+
+## Security Checklist
+
+| Check | Status |
+|-------|--------|
+| Command Injection Prevention | PASS |
+| Path Traversal Prevention | PASS |
+| Credential Exposure Prevention | PASS |
+| TLS Security in Production | PASS |
+| Race Condition Prevention | PASS |
+| Input Validation | PASS |
+| Unsafe Code Review | PASS |
+| SQL Injection (N/A - no SQL) | N/A |
+| Insecure Defaults | PASS |
+
+---
+
+## Files Reviewed in Security Audit
+
+### Critical Security Modules (Full Review)
+- `src/masque-core/src/diagnostics/mod.rs`
+- `src/masque-core/src/diagnostics/engine.rs`
+- `src/masque-core/src/diagnostics/fixes.rs`
+- `src/masque-core/src/diagnostics/ssh_client.rs`
+- `src/masque-core/src/diagnostics/client.rs`
+- `src/masque-core/src/network_guard.rs`
+- `src/masque-core/src/bin/vpn_client.rs`
+- `src/vpr-app/src/deployer.rs`
+- `src/vpr-app/src/killswitch.rs`
+- `src/vpr-e2e/src/deployer.rs`
+
+### Grepped Patterns (Full Project)
+- `Command::new` - All usages reviewed (safe typed execution)
+- `unsafe` - All usages reviewed (libc syscalls with SAFETY comments)
+- Password/credential logging - None found
+- Shell metacharacter handling - Properly blocked via validated types
+- TLS insecure flags - Properly guarded with release-build protection
+
+---
+
+## Security Conclusion
+
+The VPR codebase demonstrates **excellent security practices**:
+
+1. **Defense in Depth:** Multiple layers of validation
+2. **Type-Safe Security:** Validated wrapper types prevent injection
+3. **Whitelist Approach:** Only predefined operations allowed
+4. **Fail-Safe Defaults:** Insecure options disabled in production
+5. **Crash Recovery:** Network changes are transactional with rollback
+
+All previously identified vulnerabilities (VPR-SEC-001 through VPR-SEC-009) have been properly remediated with comprehensive fixes and tests.
+
+**Security Verdict: ACCEPT** - No blockers identified.
