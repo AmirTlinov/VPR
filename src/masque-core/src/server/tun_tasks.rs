@@ -1,4 +1,8 @@
 //! TUN device read/write tasks for VPN server.
+//!
+//! # Privacy
+//! This module intentionally does NOT log IP addresses to protect user privacy.
+//! Only error counts and protocol types are logged for debugging.
 
 use super::ServerState;
 use bytes::Bytes;
@@ -25,28 +29,31 @@ pub async fn tun_reader_task(mut tun_reader: TunReader, state: Arc<RwLock<Server
             Ok(packet) => match IpPacketInfo::parse(&packet) {
                 Ok(info) => {
                     // Dual-stack: route by IPv4 or IPv6 destination
+                    // Privacy: Do NOT log IP addresses
                     if let Some(dst_ipv4) = info.dst_addr.as_ipv4() {
                         let st = state.read().await;
                         if let Some(session) = st.clients.get(&dst_ipv4) {
                             if session.tx.send(packet).await.is_err() {
-                                debug!(dst = %dst_ipv4, "Client channel closed");
+                                // Privacy: Log only that channel closed, not which IP
+                                debug!("Client channel closed (IPv4)");
                             }
                         } else {
-                            debug!(dst = %dst_ipv4, "No client for destination");
+                            // Privacy: Don't log destination IP, just count for metrics
+                            trace!(protocol = "ipv4", "Packet for unknown client dropped");
                         }
                     } else if let Some(dst_ipv6) = info.dst_addr.as_ipv6() {
                         // IPv6 packet - lookup in clients_v6
                         let st = state.read().await;
                         if let Some(tx) = st.clients_v6.get(&dst_ipv6) {
                             if tx.send(packet).await.is_err() {
-                                debug!(dst = %dst_ipv6, "Client channel closed (IPv6)");
+                                // Privacy: Log only that channel closed, not which IP
+                                debug!("Client channel closed (IPv6)");
                             }
                         } else {
-                            // Link-local and multicast IPv6 are common, log at trace
+                            // Privacy: Don't log destination IP, just protocol for debugging
                             trace!(
-                                dst = %dst_ipv6,
                                 protocol = %info.protocol_name(),
-                                "No client for IPv6 destination"
+                                "Packet for unknown client dropped (IPv6)"
                             );
                         }
                     }

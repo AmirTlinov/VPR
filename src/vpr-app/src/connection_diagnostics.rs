@@ -1183,12 +1183,23 @@ fn generate_summary(checks: &[DiagnosticCheck]) -> (String, Option<String>) {
 
 /// Конфигурация SSH для серверной диагностики
 #[derive(Clone)]
+/// SSH configuration for secure server connections.
+///
+/// # Security
+/// Password authentication is intentionally NOT supported because:
+/// - Passwords passed via CLI args are visible in process lists (`ps aux`)
+/// - SSH keys provide stronger authentication
+/// - Key-based auth enables automation without credential exposure
+///
+/// Use `ssh-keygen` to generate keys and `ssh-copy-id` to install them.
 pub struct SshConfig {
     pub host: String,
     pub port: u16,
     pub user: String,
-    pub password: Option<String>,
-    pub key_path: Option<PathBuf>,
+    /// Path to SSH private key (required for authentication)
+    pub key_path: PathBuf,
+    /// Path to known_hosts file (default: ~/.ssh/known_hosts)
+    pub known_hosts_path: Option<PathBuf>,
 }
 
 /// Результат серверной диагностики
@@ -1328,18 +1339,25 @@ pub async fn run_remote_server_diagnostics(
 }
 
 fn build_ssh_command(ssh: &SshConfig) -> String {
-    let mut cmd = String::new();
+    let mut cmd = String::from("ssh");
 
-    // Используем sshpass если есть пароль
-    if let Some(ref password) = ssh.password {
-        cmd.push_str(&format!("sshpass -p '{}' ", password.replace('\'', "'\\''")));
+    // Security: Use StrictHostKeyChecking=accept-new to:
+    // - Accept new hosts automatically (for first connection)
+    // - Reject changed host keys (prevents MITM attacks)
+    // Note: StrictHostKeyChecking=no is dangerous as it allows MITM attacks
+    cmd.push_str(" -o StrictHostKeyChecking=accept-new");
+
+    // Use proper known_hosts file for security
+    if let Some(ref known_hosts) = ssh.known_hosts_path {
+        cmd.push_str(&format!(" -o UserKnownHostsFile='{}'", known_hosts.display()));
     }
+    // Otherwise use system default ~/.ssh/known_hosts
 
-    cmd.push_str("ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10");
+    cmd.push_str(" -o ConnectTimeout=10");
+    cmd.push_str(" -o BatchMode=yes"); // Disable password prompts, fail if key auth fails
 
-    if let Some(ref key_path) = ssh.key_path {
-        cmd.push_str(&format!(" -i '{}'", key_path.display()));
-    }
+    // SSH key is required (password auth removed for security)
+    cmd.push_str(&format!(" -i '{}'", ssh.key_path.display()));
 
     cmd.push_str(&format!(" -p {} {}@{}", ssh.port, ssh.user, ssh.host));
 

@@ -626,14 +626,23 @@ impl CapsuleBuffer {
 ///
 /// Manages allocation and lifecycle of context IDs for different capsule types.
 /// Each CONNECT-UDP session can have multiple contexts (e.g., different UDP targets).
+///
+/// # Security
+/// - Recycles released IDs to prevent exhaustion attacks
+/// - Tracks active IDs to prevent reuse of active contexts
+/// - Limits maximum contexts per session
 #[derive(Debug, Clone)]
 pub struct ContextIdManager {
     /// Base context ID for this session
     base_id: u64,
-    /// Next available context ID
+    /// Next available context ID (for fresh allocations)
     next_id: u64,
     /// Maximum context IDs per session
     max_contexts: u64,
+    /// Pool of released IDs available for reuse
+    recycled_ids: Vec<u64>,
+    /// Currently active context IDs (for validation)
+    active_ids: std::collections::HashSet<u64>,
 }
 
 impl ContextIdManager {
@@ -648,22 +657,58 @@ impl ContextIdManager {
             base_id,
             next_id: base_id,
             max_contexts,
+            recycled_ids: Vec::new(),
+            active_ids: std::collections::HashSet::new(),
         }
     }
 
     /// Allocate a new context ID
     ///
-    /// Returns None if maximum contexts reached
+    /// Returns None if maximum contexts reached.
+    /// Prefers recycled IDs over fresh allocations.
     pub fn allocate(&mut self) -> Option<u64> {
-        if self.next_id - self.base_id >= self.max_contexts {
+        // First, try to reuse a recycled ID
+        if let Some(id) = self.recycled_ids.pop() {
+            self.active_ids.insert(id);
+            return Some(id);
+        }
+
+        // Check if we can allocate a new ID
+        if self.active_ids.len() as u64 >= self.max_contexts {
             return None;
         }
+
+        // Allocate fresh ID
         let id = self.next_id;
         self.next_id += 1;
+        self.active_ids.insert(id);
         Some(id)
     }
 
-    /// Check if a context ID is valid for this manager
+    /// Release a context ID for recycling
+    ///
+    /// # Security
+    /// Only releases IDs that were previously allocated by this manager.
+    /// Prevents double-release attacks.
+    pub fn release(&mut self, context_id: u64) -> bool {
+        if self.active_ids.remove(&context_id) {
+            // Only recycle if within our allocation range
+            if context_id >= self.base_id && context_id < self.next_id {
+                self.recycled_ids.push(context_id);
+            }
+            true
+        } else {
+            // ID was not active - potential double-release or invalid ID
+            false
+        }
+    }
+
+    /// Check if a context ID is currently active
+    pub fn is_active(&self, context_id: u64) -> bool {
+        self.active_ids.contains(&context_id)
+    }
+
+    /// Check if a context ID is valid (was ever allocated by this manager)
     pub fn is_valid(&self, context_id: u64) -> bool {
         context_id >= self.base_id && context_id < self.next_id
     }
@@ -673,7 +718,17 @@ impl ContextIdManager {
         self.base_id
     }
 
-    /// Get number of allocated contexts
+    /// Get number of currently active contexts
+    pub fn active_count(&self) -> usize {
+        self.active_ids.len()
+    }
+
+    /// Get number of recycled IDs available
+    pub fn recycled_count(&self) -> usize {
+        self.recycled_ids.len()
+    }
+
+    /// Get total number of allocated contexts (active + recycled)
     pub fn allocated_count(&self) -> u64 {
         self.next_id - self.base_id
     }
@@ -682,6 +737,8 @@ impl ContextIdManager {
     #[cfg(test)]
     pub fn reset(&mut self) {
         self.next_id = self.base_id;
+        self.recycled_ids.clear();
+        self.active_ids.clear();
     }
 }
 

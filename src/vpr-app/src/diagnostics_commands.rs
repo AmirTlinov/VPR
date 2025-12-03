@@ -102,32 +102,32 @@ impl From<DiagnosticContext> for SerializableReport {
 }
 
 /// SSH configuration for diagnostics
+///
+/// # Security
+/// Password authentication is NOT supported because:
+/// - Passwords passed via CLI args are visible in process lists (`ps aux`)
+/// - SSH keys provide stronger authentication
+/// - Key-based auth enables automation without credential exposure
+///
+/// Use `ssh-keygen -t ed25519` to generate keys and `ssh-copy-id` to install them.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SshConfig {
     pub host: String,
     pub port: u16,
     pub user: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[deprecated(note = "Password auth is insecure, use SSH key instead")]
-    pub password: Option<String>,
-    pub key_path: Option<String>,
+    /// Path to SSH private key (required for authentication)
+    pub key_path: String,
 }
 
 impl TryFrom<SshConfig> for CoreSshConfig {
     type Error = anyhow::Error;
 
-    #[allow(deprecated)]
     fn try_from(config: SshConfig) -> Result<Self, Self::Error> {
-        // Security: Password auth is deprecated, warn user
-        if config.password.is_some() {
-            tracing::warn!("SSH password authentication is deprecated. Use SSH key instead.");
-        }
-
         CoreSshConfig::new(
             &config.host,
             config.port,
             &config.user,
-            config.key_path.map(|p| p.into()),
+            Some(config.key_path.into()),
         )
     }
 }
@@ -325,6 +325,11 @@ use crate::connection_diagnostics::{
 use std::path::PathBuf;
 
 /// Run comprehensive flagship diagnostics (all checks in one call)
+///
+/// # Security
+/// SSH key authentication is required for remote server diagnostics.
+/// Password authentication is not supported due to security concerns
+/// (passwords visible in process lists).
 #[tauri::command]
 pub async fn run_comprehensive_diagnostics(
     app: AppHandle,
@@ -333,7 +338,7 @@ pub async fn run_comprehensive_diagnostics(
     secrets_dir: Option<String>,
     ssh_host: Option<String>,
     ssh_user: Option<String>,
-    ssh_password: Option<String>,
+    ssh_key_path: Option<String>,
     ssh_port: Option<u16>,
 ) -> Result<ComprehensiveDiagnosticResult, String> {
     tracing::info!(
@@ -362,14 +367,14 @@ pub async fn run_comprehensive_diagnostics(
         tun_name: "vpr0".to_string(),
     };
 
-    // Build SSH config if provided
-    let ssh_config = if let (Some(host), Some(user)) = (ssh_host, ssh_user) {
+    // Build SSH config if provided (key path required for SSH)
+    let ssh_config = if let (Some(host), Some(user), Some(key_path)) = (ssh_host, ssh_user, ssh_key_path) {
         Some(ConnSshConfig {
             host,
             port: ssh_port.unwrap_or(22),
             user,
-            password: ssh_password,
-            key_path: None,
+            key_path: PathBuf::from(key_path),
+            known_hosts_path: None,
         })
     } else {
         None
@@ -443,13 +448,16 @@ pub async fn diagnose_quic_connection(
 }
 
 /// Run remote server diagnostics via SSH
+///
+/// # Security
+/// SSH key authentication is required. Password authentication is not supported
+/// due to security concerns (passwords visible in process lists via `ps aux`).
 #[tauri::command]
 pub async fn run_server_diagnostics(
     host: String,
     ssh_port: Option<u16>,
     user: String,
-    password: Option<String>,
-    key_path: Option<String>,
+    key_path: String,
     vpn_port: u16,
 ) -> Result<ServerDiagnosticResult, String> {
     tracing::info!(host = %host, vpn_port = vpn_port, "Running remote server diagnostics");
@@ -458,8 +466,8 @@ pub async fn run_server_diagnostics(
         host,
         port: ssh_port.unwrap_or(22),
         user,
-        password,
-        key_path: key_path.map(PathBuf::from),
+        key_path: PathBuf::from(key_path),
+        known_hosts_path: None,
     };
 
     let result = connection_diagnostics::run_remote_server_diagnostics(&ssh_config, vpn_port).await;

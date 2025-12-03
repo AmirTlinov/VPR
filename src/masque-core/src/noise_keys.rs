@@ -23,14 +23,11 @@ pub fn load_public(pub_path: &Path) -> Result<Vec<u8>> {
 }
 
 pub fn x25519_public(sk: &[u8]) -> Result<Vec<u8>> {
-    if sk.len() != 32 {
-        bail!("private key must be 32 bytes");
-    }
-    let mut pk = [0u8; 32];
-    // Safety: length validated above, try_into guaranteed to succeed
-    let sk_array: [u8; 32] = sk.try_into().expect("length checked above");
-    let out = x25519_dalek::x25519(sk_array, x25519_dalek::X25519_BASEPOINT_BYTES);
-    pk.copy_from_slice(&out);
+    // Convert slice to array, returning error if wrong length
+    let sk_array: [u8; 32] = sk
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("private key must be 32 bytes, got {}", sk.len()))?;
+    let pk = x25519_dalek::x25519(sk_array, x25519_dalek::X25519_BASEPOINT_BYTES);
     Ok(pk.to_vec())
 }
 

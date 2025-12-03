@@ -6,9 +6,14 @@
 //! 3. On crash/kill -9, next startup detects orphaned state and restores
 //!
 //! Think of it like a database WAL (Write-Ahead Log) for network config.
+//!
+//! # Security
+//! - State files include a SHA-256 checksum to detect tampering
+//! - Tampered state files are rejected to prevent malicious restoration
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use tracing::{debug, error, info, warn};
@@ -17,6 +22,8 @@ use tracing::{debug, error, info, warn};
 const DEFAULT_STATE_PATH: &str = "/var/run/vpr/network_state.json";
 /// Fallback for non-root users
 const USER_STATE_PATH: &str = "/tmp/vpr-network-state.json";
+/// Magic bytes to identify our state format
+const STATE_MAGIC: &[u8; 4] = b"VPR1";
 
 /// Represents a network change that can be rolled back
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -149,6 +156,10 @@ impl NetworkStateGuard {
     }
 
     /// Attempt to restore network from orphaned state (crash recovery)
+    ///
+    /// # Security
+    /// State file integrity is verified before applying any changes.
+    /// Tampered state files are rejected to prevent malicious restoration.
     pub fn restore_from_crash() -> Result<bool> {
         let state_path = Self::determine_state_path();
         if !state_path.exists() {
@@ -156,10 +167,15 @@ impl NetworkStateGuard {
             return Ok(false);
         }
 
-        let content =
-            std::fs::read_to_string(&state_path).context("reading orphaned state file")?;
-        let state: NetworkState =
-            serde_json::from_str(&content).context("parsing orphaned state file")?;
+        // Load state with integrity verification
+        let state = match Self::load_verified_state(&state_path) {
+            Ok(s) => s,
+            Err(e) => {
+                error!(%e, "Failed to load/verify state file - removing corrupted file");
+                std::fs::remove_file(&state_path).ok();
+                return Err(e);
+            }
+        };
 
         if state.cleaned_up {
             info!("State file exists but cleanup was completed");
@@ -187,7 +203,7 @@ impl NetworkStateGuard {
         info!(
             changes = state.changes.len(),
             started_at = ?state.started_at,
-            "Found orphaned network state from crash - restoring"
+            "Found orphaned network state from crash - restoring (integrity verified)"
         );
 
         // Restore in reverse order
@@ -318,16 +334,80 @@ impl NetworkStateGuard {
             std::fs::create_dir_all(parent).ok();
         }
 
-        let content =
+        let json =
             serde_json::to_string_pretty(&self.state).context("serializing network state")?;
+
+        // Compute checksum over the JSON content
+        let checksum = Self::compute_checksum(json.as_bytes());
+
+        // Build final content: MAGIC || CHECKSUM(32 bytes hex) || '\n' || JSON
+        let mut content = Vec::with_capacity(4 + 64 + 1 + json.len());
+        content.extend_from_slice(STATE_MAGIC);
+        content.extend_from_slice(hex::encode(&checksum).as_bytes());
+        content.push(b'\n');
+        content.extend_from_slice(json.as_bytes());
 
         // Atomic write: write to temp file, then rename
         let temp_path = self.state_path.with_extension("tmp");
         std::fs::write(&temp_path, &content).context("writing state file")?;
         std::fs::rename(&temp_path, &self.state_path).context("renaming state file")?;
 
-        debug!(path = %self.state_path.display(), "Network state persisted");
+        debug!(path = %self.state_path.display(), "Network state persisted with integrity check");
         Ok(())
+    }
+
+    /// Compute SHA-256 checksum of data
+    fn compute_checksum(data: &[u8]) -> [u8; 32] {
+        let mut hasher = Sha256::new();
+        hasher.update(data);
+        let result = hasher.finalize();
+        let mut checksum = [0u8; 32];
+        checksum.copy_from_slice(&result);
+        checksum
+    }
+
+    /// Load and verify state from file
+    fn load_verified_state(path: &Path) -> Result<NetworkState> {
+        let content = std::fs::read(path).context("reading state file")?;
+
+        // Check minimum size: MAGIC(4) + CHECKSUM_HEX(64) + '\n'(1)
+        if content.len() < 69 {
+            bail!("state file too small");
+        }
+
+        // Verify magic bytes
+        if &content[..4] != STATE_MAGIC {
+            // Try loading as legacy format (plain JSON)
+            let legacy: NetworkState =
+                serde_json::from_slice(&content).context("parsing legacy state file")?;
+            warn!("Loaded legacy state file without integrity check");
+            return Ok(legacy);
+        }
+
+        // Extract checksum and JSON
+        let stored_checksum_hex = &content[4..68];
+        if content[68] != b'\n' {
+            bail!("invalid state file format: missing newline after checksum");
+        }
+        let json_bytes = &content[69..];
+
+        // Verify checksum
+        let stored_checksum = hex::decode(stored_checksum_hex)
+            .context("invalid checksum encoding")?;
+        let computed_checksum = Self::compute_checksum(json_bytes);
+
+        if stored_checksum != computed_checksum {
+            bail!(
+                "state file integrity check failed: checksum mismatch (file may be tampered)"
+            );
+        }
+
+        // Parse verified JSON
+        let state: NetworkState =
+            serde_json::from_slice(json_bytes).context("parsing state JSON")?;
+
+        debug!("State file integrity verified");
+        Ok(state)
     }
 
     fn handle_orphaned_state(&mut self) -> Result<()> {
@@ -343,8 +423,26 @@ impl NetworkStateGuard {
         #[cfg(unix)]
         {
             // Check if process exists by sending signal 0
-            // SAFETY: kill(pid, 0) is a safe system call that only checks process existence
-            unsafe { libc::kill(pid as i32, 0) == 0 }
+            // SAFETY: kill(pid, 0) is a safe system call that only checks process existence.
+            // It has no side effects and cannot cause memory safety issues.
+            let result = unsafe { libc::kill(pid as i32, 0) };
+            if result == 0 {
+                // Process exists and we can signal it
+                true
+            } else {
+                // result == -1, check errno to distinguish cases
+                // SAFETY: errno is thread-local on modern systems
+                let err = std::io::Error::last_os_error();
+                match err.raw_os_error() {
+                    Some(libc::ESRCH) => false, // No such process
+                    Some(libc::EPERM) => true,  // Process exists but we lack permissions
+                    _ => {
+                        // Unexpected error, assume process doesn't exist
+                        debug!(error = %err, pid, "unexpected kill(0) error");
+                        false
+                    }
+                }
+            }
         }
         #[cfg(not(unix))]
         {

@@ -268,6 +268,10 @@ impl ManifestPayload {
 }
 
 /// Signed manifest with Ed25519 signature
+///
+/// # Security
+/// Uses 256-bit (32-byte) cryptographic nonce for replay protection.
+/// The nonce is generated from OsRng and must be unique per manifest.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SignedManifest {
     /// The manifest payload (JSON encoded)
@@ -276,24 +280,34 @@ pub struct SignedManifest {
     pub signature: String,
     /// Signer's public key (hex encoded)
     pub signer_pubkey: String,
-    /// Nonce to prevent replay; generated from OsRng
-    pub nonce: u64,
+    /// 256-bit nonce to prevent replay attacks (hex encoded)
+    ///
+    /// # Security
+    /// - 256-bit provides collision resistance matching Ed25519 security level
+    /// - Generated from OsRng for cryptographic randomness
+    /// - Must be unique per manifest to prevent replay attacks
+    pub nonce: String,
 }
 
 impl SignedManifest {
     /// Sign a manifest payload
+    ///
+    /// Generates a cryptographically random 256-bit nonce using OsRng.
     pub fn sign(payload: &ManifestPayload, keypair: &SigningKeypair) -> Result<Self> {
         let payload_json = serde_json::to_string(payload).context("serializing payload")?;
         let payload_bytes = payload_json.as_bytes();
 
         let signature = keypair.sign(payload_bytes);
-        let nonce = OsRng.next_u64();
+
+        // Generate 256-bit (32-byte) cryptographic nonce
+        let mut nonce_bytes = [0u8; 32];
+        OsRng.fill_bytes(&mut nonce_bytes);
 
         Ok(Self {
             payload: payload_json,
             signature: hex::encode(signature),
             signer_pubkey: hex::encode(keypair.public_bytes()),
-            nonce,
+            nonce: hex::encode(nonce_bytes),
         })
     }
 
@@ -321,9 +335,18 @@ impl SignedManifest {
             .verify(self.payload.as_bytes(), &signature)
             .context("signature verification failed")?;
 
-        // Nonce must be non-zero (enforces OsRng use on signer side)
-        if self.nonce == 0 {
-            bail!("manifest nonce invalid (zero)");
+        // Validate 256-bit nonce
+        // - Must be 64 hex characters (32 bytes)
+        // - Must not be all zeros (enforces OsRng use on signer side)
+        let nonce_bytes = hex::decode(&self.nonce).context("decoding nonce")?;
+        if nonce_bytes.len() != 32 {
+            bail!(
+                "manifest nonce invalid length: {} bytes (expected 32)",
+                nonce_bytes.len()
+            );
+        }
+        if nonce_bytes.iter().all(|&b| b == 0) {
+            bail!("manifest nonce invalid (all zeros)");
         }
 
         // Parse payload
@@ -448,12 +471,24 @@ mod tests {
     }
 
     #[test]
-    fn manifest_nonce_non_zero() {
+    fn manifest_nonce_256bit() {
         let kp = test_keypair();
         let payload =
             ManifestPayload::new(vec![ServerEndpoint::new("srv1", "1.2.3.4", 443, "key1")]);
         let signed = SignedManifest::sign(&payload, &kp).expect("test: failed to sign manifest");
-        assert!(signed.nonce != 0, "nonce must be non-zero");
+
+        // Nonce should be 64 hex characters (32 bytes = 256 bits)
+        assert_eq!(signed.nonce.len(), 64, "nonce must be 64 hex chars (256 bits)");
+
+        // Nonce should be valid hex
+        let nonce_bytes = hex::decode(&signed.nonce).expect("nonce must be valid hex");
+        assert_eq!(nonce_bytes.len(), 32, "nonce must be 32 bytes");
+
+        // Nonce should not be all zeros
+        assert!(
+            !nonce_bytes.iter().all(|&b| b == 0),
+            "nonce must not be all zeros"
+        );
     }
 
     #[test]
@@ -804,11 +839,41 @@ mod tests {
         let payload = ManifestPayload::new(servers);
 
         let mut signed = SignedManifest::sign(&payload, &keypair).unwrap();
-        signed.nonce = 0; // Invalid
+        // Set nonce to all zeros (64 hex chars = 32 bytes of zeros)
+        signed.nonce = "0".repeat(64);
 
         let result = signed.verify(&keypair.public_bytes());
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("nonce"));
+    }
+
+    #[test]
+    fn test_signed_manifest_verify_invalid_nonce_length() {
+        let keypair = test_keypair();
+        let servers = vec![ServerEndpoint::new("srv1", "1.2.3.4", 443, "key1")];
+        let payload = ManifestPayload::new(servers);
+
+        let mut signed = SignedManifest::sign(&payload, &keypair).unwrap();
+        // Set nonce to wrong length (16 bytes instead of 32)
+        signed.nonce = "aabbccdd".repeat(4); // 32 hex chars = 16 bytes
+
+        let result = signed.verify(&keypair.public_bytes());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("nonce"));
+    }
+
+    #[test]
+    fn test_signed_manifest_verify_invalid_nonce_hex() {
+        let keypair = test_keypair();
+        let servers = vec![ServerEndpoint::new("srv1", "1.2.3.4", 443, "key1")];
+        let payload = ManifestPayload::new(servers);
+
+        let mut signed = SignedManifest::sign(&payload, &keypair).unwrap();
+        // Set nonce to invalid hex
+        signed.nonce = "zzzz".repeat(16); // Invalid hex
+
+        let result = signed.verify(&keypair.public_bytes());
+        assert!(result.is_err());
     }
 
     #[test]

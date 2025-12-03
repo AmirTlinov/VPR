@@ -7,6 +7,7 @@
 //! - **Atomic activation**: No window where traffic can leak during setup
 //! - **Input validation**: All IPs and ports are validated before use
 //! - **Command array args**: No string concatenation to prevent injection
+//! - **Secure temp files**: Uses O_EXCL to prevent symlink attacks
 //! - Policy-based: only specified IPs/ports are allowed
 //! - Fail-safe: errors are logged, not silently ignored
 //! - Idempotent: can be called multiple times safely
@@ -16,11 +17,19 @@
 //! - All firewall commands use argument arrays, not string formatting
 //! - IP addresses are validated before being passed to commands
 //! - Port numbers are validated to be in valid range (1-65535)
+//! - Temp files are created securely with unpredictable names
 
 use anyhow::{bail, Context, Result};
-use std::net::Ipv4Addr;
+use std::net::{Ipv4Addr, Ipv6Addr};
 use std::process::Command;
 use tracing::{debug, info, warn};
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use std::io::Write;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use std::os::unix::fs::OpenOptionsExt;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use std::fs::OpenOptions;
 
 /// Maximum allowed port number
 const MAX_PORT: u16 = 65535;
@@ -52,10 +61,24 @@ fn validate_ipv4(ip: &Ipv4Addr) -> Result<()> {
     Ok(())
 }
 
+/// Validate IPv6 address is suitable for firewall rules
+fn validate_ipv6(ip: &Ipv6Addr) -> Result<()> {
+    if ip.is_unspecified() {
+        bail!(":: is not allowed as VPN server IP");
+    }
+    if ip.is_multicast() {
+        bail!("Multicast IPv6 addresses not allowed");
+    }
+    if ip.is_loopback() {
+        bail!("Loopback IPv6 addresses not allowed");
+    }
+    Ok(())
+}
+
 /// Validate entire policy before applying
 fn validate_policy(policy: &KillSwitchPolicy) -> Result<()> {
-    if policy.allow_ipv4.is_empty() {
-        bail!("At least one VPN server IP must be specified");
+    if policy.allow_ipv4.is_empty() && policy.allow_ipv6.is_empty() {
+        bail!("At least one VPN server IP (v4 or v6) must be specified");
     }
     if policy.allow_tcp_ports.is_empty() && policy.allow_udp_ports.is_empty() {
         bail!("At least one allowed port must be specified");
@@ -63,6 +86,9 @@ fn validate_policy(policy: &KillSwitchPolicy) -> Result<()> {
 
     for ip in &policy.allow_ipv4 {
         validate_ipv4(ip)?;
+    }
+    for ip in &policy.allow_ipv6 {
+        validate_ipv6(ip)?;
     }
     for port in &policy.allow_tcp_ports {
         validate_port(*port)?;
@@ -74,11 +100,47 @@ fn validate_policy(policy: &KillSwitchPolicy) -> Result<()> {
     Ok(())
 }
 
+/// Create a secure temporary file with unpredictable name.
+///
+/// # Security
+/// - Uses O_CREAT | O_EXCL to prevent TOCTOU race conditions
+/// - Uses O_NOFOLLOW to prevent symlink attacks
+/// - Generates random suffix to prevent predictable paths
+/// - Restrictive 0600 permissions
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn create_secure_temp_file(prefix: &str, extension: &str) -> Result<(std::path::PathBuf, std::fs::File)> {
+    use rand::Rng;
+
+    let temp_dir = std::env::temp_dir();
+
+    // Generate a random suffix
+    let mut rng = rand::rng();
+    let suffix: u64 = rng.random();
+    let filename = format!("{}.{:016x}.{}", prefix, suffix, extension);
+    let path = temp_dir.join(&filename);
+
+    // Remove any existing file at this path (should not exist, but be safe)
+    let _ = std::fs::remove_file(&path);
+
+    // Create file with O_CREAT | O_EXCL | O_NOFOLLOW to prevent TOCTOU
+    let file = OpenOptions::new()
+        .write(true)
+        .create_new(true) // O_CREAT | O_EXCL: fail if file exists
+        .custom_flags(libc::O_NOFOLLOW) // Don't follow symlinks
+        .mode(0o600) // Restrictive permissions
+        .open(&path)
+        .context("creating secure temp file")?;
+
+    Ok((path, file))
+}
+
 /// Traffic policy for kill switch - what to allow through
 #[derive(Debug, Default, Clone)]
 pub struct KillSwitchPolicy {
     /// IPv4 addresses to allow (VPN server IPs)
     pub allow_ipv4: Vec<Ipv4Addr>,
+    /// IPv6 addresses to allow (VPN server IPs)
+    pub allow_ipv6: Vec<Ipv6Addr>,
     /// TCP destination ports to allow
     pub allow_tcp_ports: Vec<u16>,
     /// UDP destination ports to allow (QUIC uses UDP 443)
@@ -135,6 +197,7 @@ pub async fn enable(policy: KillSwitchPolicy) -> Result<()> {
 
     info!(
         ipv4_count = policy.allow_ipv4.len(),
+        ipv6_count = policy.allow_ipv6.len(),
         tcp_ports = ?policy.allow_tcp_ports,
         udp_ports = ?policy.allow_udp_ports,
         "enabling kill switch"
@@ -224,6 +287,12 @@ const NFT_PRIORITY: &str = "-100";
 ///
 /// Creates a complete nftables ruleset that can be loaded atomically
 /// using `nft -f`, preventing any window where traffic could leak.
+///
+/// # Security Features
+/// - Blocks both IPv4 and IPv6 traffic (dual-stack protection)
+/// - Explicitly rejects ICMP/ICMPv6 to prevent reconnaissance
+/// - Uses `inet` family for unified IPv4/IPv6 handling
+/// - Atomic loading prevents leak window during rule changes
 #[cfg(target_os = "linux")]
 fn generate_nft_script(policy: &KillSwitchPolicy) -> String {
     let mut script = String::new();
@@ -248,7 +317,11 @@ fn generate_nft_script(policy: &KillSwitchPolicy) -> String {
     // TUN interfaces
     script.push_str("    oifname \"vpr*\" accept\n");
 
-    // VPN server rules
+    // Explicitly reject ICMP/ICMPv6 to prevent reconnaissance
+    script.push_str("    ip protocol icmp reject with icmp type admin-prohibited\n");
+    script.push_str("    ip6 nexthdr icmpv6 reject with icmpv6 type admin-prohibited\n");
+
+    // VPN server rules - IPv4
     for ip in &policy.allow_ipv4 {
         for port in &policy.allow_tcp_ports {
             script.push_str(&format!(
@@ -259,6 +332,22 @@ fn generate_nft_script(policy: &KillSwitchPolicy) -> String {
         for port in &policy.allow_udp_ports {
             script.push_str(&format!(
                 "    ip daddr {} udp dport {} accept\n",
+                ip, port
+            ));
+        }
+    }
+
+    // VPN server rules - IPv6
+    for ip in &policy.allow_ipv6 {
+        for port in &policy.allow_tcp_ports {
+            script.push_str(&format!(
+                "    ip6 daddr {} tcp dport {} accept\n",
+                ip, port
+            ));
+        }
+        for port in &policy.allow_udp_ports {
+            script.push_str(&format!(
+                "    ip6 daddr {} udp dport {} accept\n",
                 ip, port
             ));
         }
@@ -283,7 +372,11 @@ fn generate_nft_script(policy: &KillSwitchPolicy) -> String {
     // TUN interfaces
     script.push_str("    iifname \"vpr*\" accept\n");
 
-    // VPN server rules
+    // Explicitly reject ICMP/ICMPv6 to prevent reconnaissance
+    script.push_str("    ip protocol icmp reject with icmp type admin-prohibited\n");
+    script.push_str("    ip6 nexthdr icmpv6 reject with icmpv6 type admin-prohibited\n");
+
+    // VPN server rules - IPv4
     for ip in &policy.allow_ipv4 {
         for port in &policy.allow_tcp_ports {
             script.push_str(&format!(
@@ -299,6 +392,22 @@ fn generate_nft_script(policy: &KillSwitchPolicy) -> String {
         }
     }
 
+    // VPN server rules - IPv6
+    for ip in &policy.allow_ipv6 {
+        for port in &policy.allow_tcp_ports {
+            script.push_str(&format!(
+                "    ip6 saddr {} tcp sport {} accept\n",
+                ip, port
+            ));
+        }
+        for port in &policy.allow_udp_ports {
+            script.push_str(&format!(
+                "    ip6 saddr {} udp sport {} accept\n",
+                ip, port
+            ));
+        }
+    }
+
     script.push_str("  }\n"); // close input chain
     script.push_str("}\n"); // close table
 
@@ -307,20 +416,15 @@ fn generate_nft_script(policy: &KillSwitchPolicy) -> String {
 
 #[cfg(target_os = "linux")]
 async fn enable_nftables(policy: &KillSwitchPolicy) -> Result<()> {
-    use std::io::Write;
-
     // Generate complete nftables script
     let script = generate_nft_script(policy);
 
-    // Write script to temp file
-    let script_path = std::env::temp_dir().join("vpr_killswitch.nft");
-    {
-        let mut file = std::fs::File::create(&script_path)
-            .context("creating nftables script file")?;
-        file.write_all(script.as_bytes())
-            .context("writing nftables script")?;
-        file.sync_all()?;
-    }
+    // Write script to secure temp file (prevents symlink attacks)
+    let (script_path, mut file) = create_secure_temp_file("vpr_killswitch", "nft")?;
+    file.write_all(script.as_bytes())
+        .context("writing nftables script")?;
+    file.sync_all()?;
+    drop(file); // Close file before passing to nft
 
     let script_path_str = script_path
         .to_str()
@@ -532,55 +636,88 @@ async fn disable_iptables() -> Result<()> {
 #[cfg(target_os = "macos")]
 const PF_ANCHOR: &str = "com.vpr.killswitch";
 
+/// Generate macOS pf rules
+///
+/// # Security Features
+/// - Blocks all traffic by default (IPv4 and IPv6)
+/// - Only allows VPN server IPs on specified ports
+/// - Blocks ICMP/ICMPv6 for reconnaissance prevention
+/// - NO permissive "pass out quick" rules that would bypass restrictions
 #[cfg(target_os = "macos")]
 async fn enable_macos(policy: &KillSwitchPolicy) -> Result<()> {
     use std::io::Write;
 
-    // Build pf rules
+    // Build pf rules - strict order matters!
     let mut rules = String::new();
 
-    // Block all by default
+    // Block all by default (both IPv4 and IPv6)
     rules.push_str("block drop all\n");
+
+    // Block ICMP/ICMPv6 explicitly with rejection
+    rules.push_str("block drop quick proto icmp all\n");
+    rules.push_str("block drop quick proto icmp6 all\n");
 
     // Allow loopback
     rules.push_str("pass quick on lo0 all\n");
 
-    // Allow established connections
-    rules.push_str("pass out quick proto { tcp, udp } keep state\n");
-
-    // Allow TUN interface (utun* on macOS)
+    // Allow TUN interfaces (utun* on macOS)
+    // These must be BEFORE VPN server rules
     rules.push_str("pass quick on utun0 all\n");
     rules.push_str("pass quick on utun1 all\n");
     rules.push_str("pass quick on utun2 all\n");
+    rules.push_str("pass quick on utun3 all\n");
 
-    // Allow VPN server IPs
+    // Allow VPN server IPs - IPv4
+    // NOTE: We only allow outbound to VPN server, inbound is handled by state
     for ip in &policy.allow_ipv4 {
         for port in &policy.allow_tcp_ports {
             rules.push_str(&format!(
-                "pass out quick proto tcp to {} port {}\n",
+                "pass out quick proto tcp to {} port {} keep state\n",
                 ip, port
             ));
         }
         for port in &policy.allow_udp_ports {
             rules.push_str(&format!(
-                "pass out quick proto udp to {} port {}\n",
+                "pass out quick proto udp to {} port {} keep state\n",
                 ip, port
             ));
         }
     }
 
-    // Write rules to temp file
-    let rules_path = std::env::temp_dir().join("vpr_killswitch.pf");
-    let mut file = std::fs::File::create(&rules_path).context("creating pf rules file")?;
+    // Allow VPN server IPs - IPv6
+    for ip in &policy.allow_ipv6 {
+        for port in &policy.allow_tcp_ports {
+            rules.push_str(&format!(
+                "pass out quick proto tcp to {} port {} keep state\n",
+                ip, port
+            ));
+        }
+        for port in &policy.allow_udp_ports {
+            rules.push_str(&format!(
+                "pass out quick proto udp to {} port {} keep state\n",
+                ip, port
+            ));
+        }
+    }
+
+    // Write rules to secure temp file (prevents symlink attacks)
+    let (rules_path, mut file) = create_secure_temp_file("vpr_killswitch", "pf")?;
     file.write_all(rules.as_bytes())
         .context("writing pf rules")?;
+    file.sync_all()?;
+    drop(file); // Close file before passing to pfctl
 
     let rules_path_str = rules_path
         .to_str()
         .ok_or_else(|| anyhow::anyhow!("invalid path"))?;
 
     // Load rules into anchor
-    exec_require("pfctl", &["-a", PF_ANCHOR, "-f", rules_path_str])?;
+    let result = exec_require("pfctl", &["-a", PF_ANCHOR, "-f", rules_path_str]);
+
+    // Clean up temp file
+    let _ = std::fs::remove_file(&rules_path);
+
+    result?;
 
     // Enable pf if not already
     let _ = exec("pfctl", &["-e"]);
@@ -745,19 +882,110 @@ mod tests {
     fn policy_default_is_empty() {
         let policy = KillSwitchPolicy::default();
         assert!(policy.allow_ipv4.is_empty());
+        assert!(policy.allow_ipv6.is_empty());
         assert!(policy.allow_tcp_ports.is_empty());
         assert!(policy.allow_udp_ports.is_empty());
     }
 
     #[test]
-    fn policy_with_server() {
+    fn policy_with_ipv4_server() {
         let policy = KillSwitchPolicy {
             allow_ipv4: vec![Ipv4Addr::new(1, 2, 3, 4)],
+            allow_ipv6: vec![],
             allow_tcp_ports: vec![443, 8053],
             allow_udp_ports: vec![53, 443],
         };
         assert_eq!(policy.allow_ipv4.len(), 1);
         assert!(policy.allow_tcp_ports.contains(&443));
         assert!(policy.allow_udp_ports.contains(&443)); // QUIC
+    }
+
+    #[test]
+    fn policy_with_ipv6_server() {
+        let policy = KillSwitchPolicy {
+            allow_ipv4: vec![],
+            allow_ipv6: vec![Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1)],
+            allow_tcp_ports: vec![443],
+            allow_udp_ports: vec![443],
+        };
+        assert_eq!(policy.allow_ipv6.len(), 1);
+        assert!(validate_policy(&policy).is_ok());
+    }
+
+    #[test]
+    fn policy_with_dual_stack() {
+        let policy = KillSwitchPolicy {
+            allow_ipv4: vec![Ipv4Addr::new(1, 2, 3, 4)],
+            allow_ipv6: vec![Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1)],
+            allow_tcp_ports: vec![443],
+            allow_udp_ports: vec![443],
+        };
+        assert!(validate_policy(&policy).is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_no_ips() {
+        let policy = KillSwitchPolicy {
+            allow_ipv4: vec![],
+            allow_ipv6: vec![],
+            allow_tcp_ports: vec![443],
+            allow_udp_ports: vec![],
+        };
+        assert!(validate_policy(&policy).is_err());
+    }
+
+    #[test]
+    fn validate_rejects_special_ipv4() {
+        // Broadcast
+        assert!(validate_ipv4(&Ipv4Addr::BROADCAST).is_err());
+        // Multicast
+        assert!(validate_ipv4(&Ipv4Addr::new(224, 0, 0, 1)).is_err());
+        // Loopback
+        assert!(validate_ipv4(&Ipv4Addr::LOCALHOST).is_err());
+        // Unspecified
+        assert!(validate_ipv4(&Ipv4Addr::UNSPECIFIED).is_err());
+    }
+
+    #[test]
+    fn validate_rejects_special_ipv6() {
+        // Loopback
+        assert!(validate_ipv6(&Ipv6Addr::LOCALHOST).is_err());
+        // Unspecified
+        assert!(validate_ipv6(&Ipv6Addr::UNSPECIFIED).is_err());
+    }
+
+    #[test]
+    fn validate_accepts_valid_ipv6() {
+        // Normal unicast
+        assert!(validate_ipv6(&Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1)).is_ok());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn nft_script_contains_ipv6_rules() {
+        let policy = KillSwitchPolicy {
+            allow_ipv4: vec![Ipv4Addr::new(1, 2, 3, 4)],
+            allow_ipv6: vec![Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1)],
+            allow_tcp_ports: vec![443],
+            allow_udp_ports: vec![443],
+        };
+        let script = generate_nft_script(&policy);
+        assert!(script.contains("ip daddr 1.2.3.4"));
+        assert!(script.contains("ip6 daddr 2001:db8::1"));
+        assert!(script.contains("icmpv6"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn nft_script_blocks_icmp() {
+        let policy = KillSwitchPolicy {
+            allow_ipv4: vec![Ipv4Addr::new(1, 2, 3, 4)],
+            allow_ipv6: vec![],
+            allow_tcp_ports: vec![443],
+            allow_udp_ports: vec![],
+        };
+        let script = generate_nft_script(&policy);
+        assert!(script.contains("ip protocol icmp reject"));
+        assert!(script.contains("ip6 nexthdr icmpv6 reject"));
     }
 }

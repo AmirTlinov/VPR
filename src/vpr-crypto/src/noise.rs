@@ -61,12 +61,15 @@ impl HybridMlKemSecret {
         }
     }
 
-    pub fn decapsulate(&self, ct: &mlkem768::Ciphertext) -> mlkem768::SharedSecret {
-        // Reconstruct secret key from stored bytes for each decapsulation.
-        // This avoids keeping the library secret key in memory long-term.
+    /// Attempt decapsulation. Returns error if secret key bytes are corrupted.
+    ///
+    /// # Security
+    /// This reconstructs the secret key from stored bytes for each decapsulation.
+    /// This avoids keeping the library secret key in memory long-term.
+    pub fn decapsulate(&self, ct: &mlkem768::Ciphertext) -> Result<mlkem768::SharedSecret> {
         let sk = mlkem768::SecretKey::from_bytes(&self.bytes)
-            .expect("stored ML-KEM secret bytes must be valid");
-        mlkem768::decapsulate(ct, &sk)
+            .map_err(|_| CryptoError::InvalidKey("ML-KEM secret key corrupted".into()))?;
+        Ok(mlkem768::decapsulate(ct, &sk))
     }
 
     #[cfg(test)]
@@ -119,7 +122,7 @@ impl HybridKeypair {
         // ML-KEM decapsulation
         let ct = mlkem768::Ciphertext::from_bytes(mlkem_ciphertext)
             .map_err(|_| CryptoError::Decrypt("invalid ML-KEM ciphertext".into()))?;
-        let mlkem_shared = self.mlkem_secret.decapsulate(&ct);
+        let mlkem_shared = self.mlkem_secret.decapsulate(&ct)?;
 
         Ok(HybridSecret::combine(
             &x25519_shared,
@@ -193,19 +196,71 @@ pub struct HybridSecret {
 
 impl HybridSecret {
     /// Combine X25519 and ML-KEM shared secrets using HKDF
+    ///
+    /// Uses a static domain separator. For session-bound secrets, use
+    /// [`combine_with_context`] instead.
     pub fn combine(x25519: &[u8; 32], mlkem: &[u8]) -> Self {
+        Self::combine_with_context(x25519, mlkem, &[])
+    }
+
+    /// Combine secrets with session context binding
+    ///
+    /// # Security
+    /// The `context` parameter should include session-specific data such as:
+    /// - Ephemeral public keys from both parties
+    /// - Session identifiers or timestamps
+    /// - Protocol version/identifiers
+    ///
+    /// This prevents cross-session attacks where an attacker might try to
+    /// replay or transplant secrets between different sessions.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let context = build_session_context(
+    ///     initiator_ephemeral_pub,
+    ///     responder_ephemeral_pub,
+    ///     session_timestamp,
+    /// );
+    /// let secret = HybridSecret::combine_with_context(&x25519, &mlkem, &context);
+    /// ```
+    pub fn combine_with_context(x25519: &[u8; 32], mlkem: &[u8], context: &[u8]) -> Self {
         // Use Zeroizing to ensure intermediate key material is cleared
         let mut ikm: Zeroizing<Vec<u8>> = Zeroizing::new(Vec::with_capacity(32 + mlkem.len()));
         ikm.extend_from_slice(x25519);
         ikm.extend_from_slice(mlkem);
 
-        let hk = Hkdf::<Sha256>::new(Some(b"VPR-Hybrid-KEM"), &ikm);
+        // Build info string with optional context
+        // Format: "hybrid-secret" || len(context) as u16 BE || context
+        let mut info = Zeroizing::new(Vec::with_capacity(13 + 2 + context.len()));
+        info.extend_from_slice(b"hybrid-secret");
+        if !context.is_empty() {
+            // Append length-prefixed context for domain separation
+            let len = (context.len() as u16).to_be_bytes();
+            info.extend_from_slice(&len);
+            info.extend_from_slice(context);
+        }
+
+        let hk = Hkdf::<Sha256>::new(Some(b"VPR-Hybrid-KEM-v2"), &ikm);
         let mut combined = [0u8; 32];
-        hk.expand(b"hybrid-secret", &mut combined)
+        hk.expand(&info, &mut combined)
             .expect("32 bytes is valid output length");
 
-        // ikm is zeroized when dropped here
+        // ikm and info are zeroized when dropped here
         Self { combined }
+    }
+
+    /// Build a session context from handshake ephemeral public keys
+    ///
+    /// This helper constructs a proper session binding context from the
+    /// ephemeral keys exchanged during the Noise handshake.
+    pub fn build_context(
+        initiator_ephemeral: &[u8; 32],
+        responder_ephemeral: &[u8; 32],
+    ) -> [u8; 64] {
+        let mut ctx = [0u8; 64];
+        ctx[..32].copy_from_slice(initiator_ephemeral);
+        ctx[32..].copy_from_slice(responder_ephemeral);
+        ctx
     }
 }
 
@@ -637,6 +692,56 @@ mod tests {
 
         let secret1 = HybridSecret::combine(&x25519_1, &mlkem);
         let secret2 = HybridSecret::combine(&x25519_2, &mlkem);
+
+        assert_ne!(secret1.combined, secret2.combined);
+    }
+
+    #[test]
+    fn test_hybrid_secret_with_context() {
+        let x25519 = [1u8; 32];
+        let mlkem = [2u8; 32];
+        let context1 = [3u8; 64];
+        let context2 = [4u8; 64];
+
+        // Same inputs without context should match combine()
+        let no_ctx = HybridSecret::combine(&x25519, &mlkem);
+        let empty_ctx = HybridSecret::combine_with_context(&x25519, &mlkem, &[]);
+        assert_eq!(no_ctx.combined, empty_ctx.combined);
+
+        // Different contexts should produce different secrets
+        let ctx1 = HybridSecret::combine_with_context(&x25519, &mlkem, &context1);
+        let ctx2 = HybridSecret::combine_with_context(&x25519, &mlkem, &context2);
+        assert_ne!(ctx1.combined, ctx2.combined);
+
+        // Context should be different from no context
+        assert_ne!(no_ctx.combined, ctx1.combined);
+    }
+
+    #[test]
+    fn test_hybrid_secret_build_context() {
+        let init_eph = [1u8; 32];
+        let resp_eph = [2u8; 32];
+
+        let ctx = HybridSecret::build_context(&init_eph, &resp_eph);
+
+        assert_eq!(ctx.len(), 64);
+        assert_eq!(&ctx[..32], &init_eph);
+        assert_eq!(&ctx[32..], &resp_eph);
+    }
+
+    #[test]
+    fn test_hybrid_secret_context_order_matters() {
+        let x25519 = [1u8; 32];
+        let mlkem = [2u8; 32];
+        let eph1 = [3u8; 32];
+        let eph2 = [4u8; 32];
+
+        // Order of ephemeral keys in context should matter
+        let ctx1 = HybridSecret::build_context(&eph1, &eph2);
+        let ctx2 = HybridSecret::build_context(&eph2, &eph1);
+
+        let secret1 = HybridSecret::combine_with_context(&x25519, &mlkem, &ctx1);
+        let secret2 = HybridSecret::combine_with_context(&x25519, &mlkem, &ctx2);
 
         assert_ne!(secret1.combined, secret2.combined);
     }

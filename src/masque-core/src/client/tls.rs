@@ -19,6 +19,7 @@ use std::fmt::Debug;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
+use vpr_crypto::ct_eq;
 use x509_parser::prelude::*;
 
 use crate::tls_fingerprint::TlsProfile;
@@ -237,6 +238,7 @@ fn validate_certificate_basic(cert: &CertificateDer<'_>) -> Result<()> {
 ///
 /// # Security
 /// - Validates certificate structure and expiration
+/// - Verifies OCSP stapled response if present (RFC 6960)
 /// - Verifies signatures using standard TLS 1.3 schemes
 /// - Pins to specific public key (not full certificate, allowing rotation)
 ///
@@ -251,12 +253,25 @@ fn validate_certificate_basic(cert: &CertificateDer<'_>) -> Result<()> {
 pub struct PublicKeyPinVerifier {
     /// Expected public key in DER format (SPKI - Subject Public Key Info)
     expected_pubkey: Vec<u8>,
+    /// Whether to require OCSP stapling (strict mode)
+    require_ocsp: bool,
 }
 
 impl PublicKeyPinVerifier {
     /// Create a new verifier that pins to the given public key
     pub fn new(expected_pubkey: Vec<u8>) -> Self {
-        Self { expected_pubkey }
+        Self {
+            expected_pubkey,
+            require_ocsp: false,
+        }
+    }
+
+    /// Create a verifier that requires OCSP stapling
+    pub fn with_ocsp_required(expected_pubkey: Vec<u8>) -> Self {
+        Self {
+            expected_pubkey,
+            require_ocsp: true,
+        }
     }
 
     /// Extract public key from certificate
@@ -289,6 +304,124 @@ impl PublicKeyPinVerifier {
 
         Ok(())
     }
+
+    /// Verify OCSP stapled response (RFC 6960)
+    ///
+    /// # Security
+    /// - Validates OCSP response is well-formed
+    /// - Checks certificate status is "good" (not revoked or unknown)
+    /// - Validates response freshness (thisUpdate/nextUpdate)
+    ///
+    /// Returns Ok(()) if OCSP response is valid and certificate is not revoked.
+    /// Returns Err if certificate is revoked, response is malformed, or expired.
+    fn verify_ocsp_response(
+        ocsp_response: &[u8],
+        _cert: &CertificateDer<'_>,
+    ) -> Result<(), rustls::Error> {
+        use x509_parser::prelude::*;
+
+        if ocsp_response.is_empty() {
+            // No OCSP response provided - caller decides if this is an error
+            return Ok(());
+        }
+
+        // Parse OCSP response (DER encoded)
+        let (_, ocsp) = match OcspResponse::from_der(ocsp_response) {
+            Ok(parsed) => parsed,
+            Err(e) => {
+                tracing::warn!(?e, "Failed to parse OCSP response");
+                return Err(rustls::Error::InvalidCertificate(
+                    rustls::CertificateError::BadEncoding,
+                ));
+            }
+        };
+
+        // Check response status
+        match ocsp.response_status {
+            OcspResponseStatus::Successful => {}
+            status => {
+                tracing::warn!(?status, "OCSP response status not successful");
+                return Err(rustls::Error::InvalidCertificate(
+                    rustls::CertificateError::Revoked,
+                ));
+            }
+        }
+
+        // Get the response bytes
+        let response_bytes = match ocsp.response_bytes {
+            Some(ref bytes) => bytes,
+            None => {
+                tracing::warn!("OCSP response missing response bytes");
+                return Err(rustls::Error::InvalidCertificate(
+                    rustls::CertificateError::BadEncoding,
+                ));
+            }
+        };
+
+        // Parse BasicOCSPResponse
+        let (_, basic_response) = match BasicOcspResponse::from_der(&response_bytes.response) {
+            Ok(parsed) => parsed,
+            Err(e) => {
+                tracing::warn!(?e, "Failed to parse BasicOCSPResponse");
+                return Err(rustls::Error::InvalidCertificate(
+                    rustls::CertificateError::BadEncoding,
+                ));
+            }
+        };
+
+        // Check each SingleResponse for certificate status
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        for single_response in &basic_response.tbs_response_data.responses {
+            // Check certificate status
+            match single_response.cert_status {
+                OcspCertStatus::Good => {
+                    tracing::debug!("OCSP: Certificate status is good");
+                }
+                OcspCertStatus::Revoked(ref info) => {
+                    tracing::warn!(
+                        revocation_time = ?info.revocation_time,
+                        "OCSP: Certificate has been revoked"
+                    );
+                    return Err(rustls::Error::InvalidCertificate(
+                        rustls::CertificateError::Revoked,
+                    ));
+                }
+                OcspCertStatus::Unknown => {
+                    tracing::warn!("OCSP: Certificate status is unknown");
+                    // Treat unknown as potentially revoked for security
+                    return Err(rustls::Error::InvalidCertificate(
+                        rustls::CertificateError::Revoked,
+                    ));
+                }
+            }
+
+            // Validate response freshness
+            let this_update = single_response.this_update.timestamp();
+            if now < this_update {
+                tracing::warn!("OCSP response thisUpdate is in the future");
+                return Err(rustls::Error::InvalidCertificate(
+                    rustls::CertificateError::BadEncoding,
+                ));
+            }
+
+            if let Some(next_update) = &single_response.next_update {
+                let next_update_ts = next_update.timestamp();
+                if now > next_update_ts {
+                    tracing::warn!("OCSP response has expired (past nextUpdate)");
+                    return Err(rustls::Error::InvalidCertificate(
+                        rustls::CertificateError::Expired,
+                    ));
+                }
+            }
+        }
+
+        tracing::debug!("OCSP validation successful");
+        Ok(())
+    }
 }
 
 impl ServerCertVerifier for PublicKeyPinVerifier {
@@ -297,35 +430,31 @@ impl ServerCertVerifier for PublicKeyPinVerifier {
         end_entity: &CertificateDer<'_>,
         _intermediates: &[CertificateDer<'_>],
         _server_name: &ServerName<'_>,
-        _ocsp_response: &[u8],
+        ocsp_response: &[u8],
         _now: UnixTime,
     ) -> Result<ServerCertVerified, rustls::Error> {
         // Verify certificate is valid (not expired)
         Self::verify_cert_valid(end_entity)?;
 
+        // Verify OCSP stapled response if present or required
+        if self.require_ocsp && ocsp_response.is_empty() {
+            tracing::warn!("OCSP stapling required but no response provided");
+            return Err(rustls::Error::InvalidCertificate(
+                rustls::CertificateError::Revoked,
+            ));
+        }
+
+        if !ocsp_response.is_empty() {
+            Self::verify_ocsp_response(ocsp_response, end_entity)?;
+        }
+
         // Extract and compare public key
         let actual_pubkey = Self::extract_pubkey(end_entity)?;
 
         // Constant-time comparison to prevent timing attacks
-        if actual_pubkey.len() != self.expected_pubkey.len() {
-            tracing::warn!(
-                expected_len = self.expected_pubkey.len(),
-                actual_len = actual_pubkey.len(),
-                "Public key length mismatch"
-            );
-            return Err(rustls::Error::InvalidCertificate(
-                rustls::CertificateError::BadSignature,
-            ));
-        }
-
-        // Use subtle crate for constant-time comparison if available
-        // For now, use byte-by-byte XOR to avoid early exit
-        let mut diff = 0u8;
-        for (a, b) in actual_pubkey.iter().zip(self.expected_pubkey.iter()) {
-            diff |= a ^ b;
-        }
-
-        if diff != 0 {
+        // Using vpr_crypto::ct_eq which uses the `subtle` crate internally
+        if !ct_eq(&actual_pubkey, &self.expected_pubkey) {
+            // Log only that verification failed, not the details (timing-safe)
             tracing::warn!("Public key does not match pinned key");
             return Err(rustls::Error::InvalidCertificate(
                 rustls::CertificateError::BadSignature,

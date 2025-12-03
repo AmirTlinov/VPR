@@ -44,6 +44,8 @@ pub enum ReplayError {
     DuplicateMessage,
     /// Internal cache error (lock poisoned due to panic in another thread)
     CacheCorrupted,
+    /// Cache is at hard limit capacity (potential DoS attack)
+    CacheFull,
 }
 
 impl std::fmt::Display for ReplayError {
@@ -51,6 +53,7 @@ impl std::fmt::Display for ReplayError {
         match self {
             Self::DuplicateMessage => write!(f, "duplicate message detected (replay attack)"),
             Self::CacheCorrupted => write!(f, "replay protection cache corrupted (lock poisoned)"),
+            Self::CacheFull => write!(f, "replay protection cache full (potential DoS attack)"),
         }
     }
 }
@@ -66,6 +69,8 @@ pub struct ReplayMetrics {
     pub replays_blocked: AtomicU64,
     /// Number of expired entries cleaned up
     pub entries_expired: AtomicU64,
+    /// Number of messages rejected due to cache being full (DoS protection)
+    pub cache_full_rejections: AtomicU64,
 }
 
 impl ReplayMetrics {
@@ -75,6 +80,7 @@ impl ReplayMetrics {
             messages_processed: self.messages_processed.load(Ordering::Relaxed),
             replays_blocked: self.replays_blocked.load(Ordering::Relaxed),
             entries_expired: self.entries_expired.load(Ordering::Relaxed),
+            cache_full_rejections: self.cache_full_rejections.load(Ordering::Relaxed),
         }
     }
 
@@ -88,12 +94,15 @@ impl ReplayMetrics {
                 "# TYPE {p}_replays_blocked counter\n",
                 "{p}_replays_blocked {rb}\n",
                 "# TYPE {p}_entries_expired counter\n",
-                "{p}_entries_expired {ee}\n"
+                "{p}_entries_expired {ee}\n",
+                "# TYPE {p}_cache_full_rejections counter\n",
+                "{p}_cache_full_rejections {cf}\n"
             ),
             p = prefix,
             mp = snap.messages_processed,
             rb = snap.replays_blocked,
-            ee = snap.entries_expired
+            ee = snap.entries_expired,
+            cf = snap.cache_full_rejections
         )
     }
 }
@@ -104,7 +113,13 @@ pub struct ReplayMetricsSnapshot {
     pub messages_processed: u64,
     pub replays_blocked: u64,
     pub entries_expired: u64,
+    pub cache_full_rejections: u64,
 }
+
+/// Hard limit on cache entries to prevent memory exhaustion (DoS protection)
+/// This is an absolute ceiling - no new entries are accepted when reached.
+/// Set at 2x soft limit to allow burst capacity while protecting memory.
+const HARD_MAX_ENTRIES: usize = 100_000;
 
 /// Thread-safe nonce cache for replay protection
 pub struct NonceCache {
@@ -118,8 +133,10 @@ pub struct NonceCache {
     last_cleanup: RwLock<Instant>,
     /// Cleanup interval (clean expired entries every N seconds)
     cleanup_interval: Duration,
-    /// Soft ceiling on entries to prevent unbounded growth
+    /// Soft ceiling on entries (triggers cleanup/eviction)
     max_entries: usize,
+    /// Hard ceiling on entries (rejects new messages when reached)
+    hard_max_entries: usize,
 }
 
 impl NonceCache {
@@ -137,6 +154,21 @@ impl NonceCache {
             last_cleanup: RwLock::new(Instant::now()),
             cleanup_interval: Duration::from_secs(60),
             max_entries: 50_000,
+            hard_max_entries: HARD_MAX_ENTRIES,
+        }
+    }
+
+    /// Create a new nonce cache with custom limits (for testing)
+    #[cfg(test)]
+    pub fn with_limits(ttl: Duration, soft_limit: usize, hard_limit: usize) -> Self {
+        Self {
+            cache: RwLock::new(HashMap::new()),
+            ttl,
+            metrics: ReplayMetrics::default(),
+            last_cleanup: RwLock::new(Instant::now()),
+            cleanup_interval: Duration::from_secs(60),
+            max_entries: soft_limit,
+            hard_max_entries: hard_limit,
         }
     }
 
@@ -204,6 +236,24 @@ impl NonceCache {
 
             if cache.len() >= self.max_entries {
                 self.evict_oldest(&mut cache, now);
+            }
+
+            // SECURITY: Hard limit check after all cleanup/eviction attempts
+            // This prevents memory exhaustion from DoS attacks sending unique messages
+            if cache.len() >= self.hard_max_entries {
+                let rejections = self
+                    .metrics
+                    .cache_full_rejections
+                    .fetch_add(1, Ordering::Relaxed)
+                    + 1;
+                warn!(
+                    target: "telemetry.replay",
+                    cache_size = cache.len(),
+                    hard_limit = self.hard_max_entries,
+                    total_rejections = rejections,
+                    "cache at hard limit, rejecting new message (potential DoS)"
+                );
+                return Err(ReplayError::CacheFull);
             }
 
             // Insert new entry
@@ -509,6 +559,7 @@ mod tests {
         assert!(prom.contains("replay_messages_processed"));
         assert!(prom.contains("replay_replays_blocked"));
         assert!(prom.contains("replay_entries_expired"));
+        assert!(prom.contains("replay_cache_full_rejections"));
     }
 
     #[test]
@@ -518,13 +569,18 @@ mod tests {
 
         let err = ReplayError::CacheCorrupted;
         assert!(err.to_string().contains("corrupted"));
+
+        let err = ReplayError::CacheFull;
+        assert!(err.to_string().contains("cache full"));
     }
 
     #[test]
     fn test_replay_error_equality() {
         assert_eq!(ReplayError::DuplicateMessage, ReplayError::DuplicateMessage);
         assert_eq!(ReplayError::CacheCorrupted, ReplayError::CacheCorrupted);
+        assert_eq!(ReplayError::CacheFull, ReplayError::CacheFull);
         assert_ne!(ReplayError::DuplicateMessage, ReplayError::CacheCorrupted);
+        assert_ne!(ReplayError::DuplicateMessage, ReplayError::CacheFull);
     }
 
     #[test]
@@ -540,6 +596,7 @@ mod tests {
         assert_eq!(snap.messages_processed, 0);
         assert_eq!(snap.replays_blocked, 0);
         assert_eq!(snap.entries_expired, 0);
+        assert_eq!(snap.cache_full_rejections, 0);
     }
 
     #[test]
@@ -957,5 +1014,100 @@ mod tests {
 
         // First batch should be expired, second batch might still be valid
         assert!(cache.len() <= 10);
+    }
+
+    #[test]
+    fn test_hard_limit_rejects_new_messages() {
+        // Create cache with small limits for testing
+        let cache = NonceCache::with_limits(
+            Duration::from_secs(300), // Long TTL so entries don't expire
+            5,                        // Soft limit
+            10,                       // Hard limit
+        );
+
+        // Fill up to hard limit
+        for i in 0..10 {
+            let msg = format!("msg_{}", i);
+            assert!(cache.check_and_record(msg.as_bytes()).is_ok());
+        }
+        assert_eq!(cache.len(), 10);
+
+        // Next message should be rejected
+        let result = cache.check_and_record(b"overflow_msg");
+        assert_eq!(result, Err(ReplayError::CacheFull));
+
+        // Check metrics
+        let snap = cache.metrics().snapshot();
+        assert_eq!(snap.cache_full_rejections, 1);
+        assert_eq!(snap.messages_processed, 10);
+    }
+
+    #[test]
+    fn test_hard_limit_allows_after_expiration() {
+        // Create cache with small limits and short TTL
+        let cache = NonceCache::with_limits(
+            Duration::from_millis(30), // Short TTL
+            5,                         // Soft limit
+            10,                        // Hard limit
+        );
+
+        // Fill up to hard limit
+        for i in 0..10 {
+            let msg = format!("msg_{}", i);
+            assert!(cache.check_and_record(msg.as_bytes()).is_ok());
+        }
+
+        // Verify cache is full
+        assert_eq!(
+            cache.check_and_record(b"overflow"),
+            Err(ReplayError::CacheFull)
+        );
+
+        // Wait for entries to expire
+        std::thread::sleep(Duration::from_millis(60));
+
+        // Now new messages should be accepted (cleanup happens on check_and_record)
+        assert!(cache.check_and_record(b"after_expiry").is_ok());
+    }
+
+    #[test]
+    fn test_cache_full_error_display() {
+        let err = ReplayError::CacheFull;
+        let display = format!("{}", err);
+        assert!(display.contains("cache full"));
+        assert!(display.contains("DoS"));
+    }
+
+    #[test]
+    fn test_cache_full_error_clone() {
+        let err = ReplayError::CacheFull;
+        let cloned = err.clone();
+        assert_eq!(err, cloned);
+    }
+
+    #[test]
+    fn test_hard_limit_metrics_increment() {
+        let cache = NonceCache::with_limits(Duration::from_secs(300), 3, 5);
+
+        // Fill cache
+        for i in 0..5 {
+            let msg = format!("fill_{}", i);
+            cache.check_and_record(msg.as_bytes()).unwrap();
+        }
+
+        // Try to add 3 more (all should be rejected)
+        for i in 0..3 {
+            let msg = format!("reject_{}", i);
+            let _ = cache.check_and_record(msg.as_bytes());
+        }
+
+        let snap = cache.metrics().snapshot();
+        assert_eq!(snap.cache_full_rejections, 3);
+        assert_eq!(snap.messages_processed, 5);
+    }
+
+    #[test]
+    fn test_hard_limit_constant() {
+        assert_eq!(HARD_MAX_ENTRIES, 100_000);
     }
 }

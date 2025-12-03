@@ -264,7 +264,8 @@ impl ProbeProtector {
             if let Some(banned_until) = entry.banned_until {
                 if Instant::now() < banned_until {
                     self.metrics.probes_blocked.fetch_add(1, Ordering::Relaxed);
-                    return ProbeDetection::Blocked(format!("IP {} is banned", ip));
+                    // Privacy: Do not include IP address in error messages
+                    return ProbeDetection::Blocked("Connection blocked due to policy".to_string());
                 }
             }
 
@@ -273,10 +274,10 @@ impl ProbeProtector {
                 self.metrics
                     .suspicious_detected
                     .fetch_add(1, Ordering::Relaxed);
-                return ProbeDetection::Suspicious(format!(
-                    "IP {} has {} failed attempts",
-                    ip, entry.failed_attempts
-                ));
+                // Privacy: Do not include IP address in error messages
+                return ProbeDetection::Suspicious(
+                    "Connection flagged due to repeated failures".to_string(),
+                );
             }
         }
 
@@ -297,7 +298,8 @@ impl ProbeProtector {
         if entry.failed_attempts >= self.config.max_failed_attempts {
             entry.banned_until = Some(Instant::now() + self.config.ban_duration);
             self.metrics.banned_ips.fetch_add(1, Ordering::Relaxed);
-            warn!(%ip, attempts = entry.failed_attempts, "IP banned due to failed attempts");
+            // Privacy: Do not log IP addresses - only log aggregate metrics
+            warn!(attempts = entry.failed_attempts, "Connection blocked due to repeated failures");
         }
     }
 

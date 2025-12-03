@@ -10,7 +10,12 @@
 //! - **Recovery**: Automatic rollback on failure
 
 use anyhow::{bail, Context, Result};
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::net::IpAddr;
+#[cfg(unix)]
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+#[cfg(not(unix))]
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -238,10 +243,35 @@ impl DnsProtection {
         }
 
         // Atomic write: write to temp file, then rename
+        // Security: Use O_NOFOLLOW to prevent symlink attacks (TOCTOU)
         let temp_path = resolv_path.with_extension("tmp.vpr");
 
-        std::fs::write(&temp_path, &content)
-            .context("writing temporary resolv.conf")?;
+        // Remove existing temp file if present (prevent symlink attack)
+        let _ = std::fs::remove_file(&temp_path);
+
+        #[cfg(unix)]
+        {
+            // Open with O_NOFOLLOW to prevent symlink attacks
+            // Also use O_EXCL to ensure we create a new file
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true) // Fail if file exists (O_EXCL)
+                .custom_flags(libc::O_NOFOLLOW)
+                .open(&temp_path)
+                .context("creating temporary resolv.conf (O_NOFOLLOW)")?;
+
+            file.write_all(content.as_bytes())
+                .context("writing temporary resolv.conf")?;
+
+            file.sync_all()
+                .context("syncing temporary resolv.conf")?;
+        }
+
+        #[cfg(not(unix))]
+        {
+            std::fs::write(&temp_path, &content)
+                .context("writing temporary resolv.conf")?;
+        }
 
         // Rename is atomic on POSIX
         std::fs::rename(&temp_path, resolv_path)
