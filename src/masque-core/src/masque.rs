@@ -11,6 +11,19 @@ use tracing::warn;
 /// Maximum UDP payload size per RFC 9298
 pub const MAX_UDP_PAYLOAD: usize = 65_527;
 
+/// Maximum hostname length (DNS limit)
+const MAX_HOSTNAME_LEN: usize = 255;
+
+/// Maximum label length in hostname (DNS limit)
+const MAX_LABEL_LEN: usize = 63;
+
+/// Blocked ports to prevent abuse (SMTP, etc.)
+const BLOCKED_PORTS: &[u16] = &[
+    25,  // SMTP
+    465, // SMTPS
+    587, // SMTP Submission
+];
+
 /// CONNECT-UDP Context ID for raw UDP payloads (RFC 9298)
 pub const CONTEXT_ID_UDP: u64 = 0;
 
@@ -66,9 +79,37 @@ impl ConnectUdpTarget {
     }
 
     /// Validate target is safe to proxy to
+    ///
+    /// # Security Checks
+    /// - Port must be valid (1-65535) and not blocked (SMTP ports)
+    /// - Hostname length must be within DNS limits (255 chars, labels 63 chars)
+    /// - Hostname must contain only valid characters
+    /// - IP addresses must not be in forbidden ranges (localhost, private, link-local)
+    /// - Localhost by name is rejected
     pub fn validate(&self) -> Result<()> {
+        // Port validation
         if self.port == 0 {
             bail!("port 0 is not allowed");
+        }
+
+        // Block dangerous ports (SMTP to prevent spam relay)
+        if BLOCKED_PORTS.contains(&self.port) {
+            bail!(
+                "port {} is blocked to prevent abuse (SMTP/mail relay protection)",
+                self.port
+            );
+        }
+
+        // Hostname length validation (DNS limits)
+        if self.host.is_empty() {
+            bail!("hostname cannot be empty");
+        }
+        if self.host.len() > MAX_HOSTNAME_LEN {
+            bail!(
+                "hostname exceeds DNS limit of {} bytes: {} bytes",
+                MAX_HOSTNAME_LEN,
+                self.host.len()
+            );
         }
 
         // Try to parse as IP address to check for forbidden ranges
@@ -76,6 +117,9 @@ impl ConnectUdpTarget {
             if is_forbidden_ip(&ip) {
                 bail!("target IP {} is forbidden", ip);
             }
+        } else {
+            // Validate hostname format (DNS name)
+            validate_hostname(&self.host)?;
         }
 
         // Block localhost by name
@@ -94,6 +138,52 @@ impl ConnectUdpTarget {
     pub fn to_socket_addr_str(&self) -> String {
         format!("{}:{}", self.host, self.port)
     }
+}
+
+/// Validate hostname format according to DNS rules
+///
+/// Checks:
+/// - Labels are 1-63 characters
+/// - Labels contain only alphanumeric and hyphen
+/// - Labels don't start or end with hyphen
+/// - Total length is within DNS limit
+fn validate_hostname(host: &str) -> Result<()> {
+    if host.is_empty() {
+        bail!("hostname cannot be empty");
+    }
+
+    for label in host.split('.') {
+        if label.is_empty() {
+            bail!("hostname contains empty label (double dots)");
+        }
+        if label.len() > MAX_LABEL_LEN {
+            bail!(
+                "hostname label exceeds {} bytes: '{}'",
+                MAX_LABEL_LEN,
+                label
+            );
+        }
+        if label.starts_with('-') || label.ends_with('-') {
+            bail!("hostname label cannot start or end with hyphen: '{}'", label);
+        }
+
+        // Check all characters are valid
+        for ch in label.chars() {
+            if !ch.is_ascii_alphanumeric() && ch != '-' {
+                // Allow underscore for SRV records compatibility
+                if ch == '_' {
+                    continue;
+                }
+                bail!(
+                    "hostname contains invalid character '{}' in label '{}'",
+                    ch,
+                    label
+                );
+            }
+        }
+    }
+
+    Ok(())
 }
 
 /// Check if IP is in forbidden range (localhost, link-local, multicast, broadcast)

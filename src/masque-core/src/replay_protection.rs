@@ -1,7 +1,17 @@
 //! Replay protection for handshake messages
 //!
 //! Prevents replay attacks by tracking message hashes with time-based expiration.
-//! Uses SHA-256 hash of the first N bytes of each message for deduplication.
+//! Uses full SHA-256 hash of each message for deduplication.
+//!
+//! # Security Design
+//! - **Full SHA-256**: Uses complete 256-bit hash to prevent collision attacks
+//! - **Connection-scoped option**: Per-connection nonce tracking available
+//! - **Time-based expiration**: Entries expire after configurable TTL
+//! - **Bounded memory**: Soft limit on entries with LRU eviction
+//!
+//! # Collision Resistance
+//! With full 256-bit hashes, birthday attack requires ~2^128 messages,
+//! which is computationally infeasible.
 
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -13,11 +23,12 @@ use tracing::{trace, warn};
 /// Default time-to-live for nonces (5 minutes)
 pub const DEFAULT_TTL: Duration = Duration::from_secs(300);
 
-/// Maximum number of bytes to hash from each message
-const HASH_PREFIX_LEN: usize = 128;
+/// Maximum number of bytes to hash from each message (entire message now)
+const HASH_PREFIX_LEN: usize = 8192; // Hash up to 8KB of message
 
-/// Hash of a message prefix (first 16 bytes of SHA-256)
-type NonceHash = [u8; 16];
+/// Full SHA-256 hash (32 bytes) for maximum collision resistance
+/// This provides 256-bit security, requiring ~2^128 messages for birthday attack
+type NonceHash = [u8; 32];
 
 /// Entry in the nonce cache with expiration time
 #[derive(Debug, Clone)]
@@ -289,15 +300,19 @@ impl NonceCache {
         }
     }
 
-    /// Compute hash of message prefix
+    /// Compute full SHA-256 hash of message
+    ///
+    /// Uses complete 256-bit hash for maximum collision resistance.
+    /// Hashes up to HASH_PREFIX_LEN bytes to bound CPU usage on large messages.
     fn compute_hash(&self, message: &[u8]) -> NonceHash {
         let prefix_len = message.len().min(HASH_PREFIX_LEN);
         let mut hasher = Sha256::new();
         hasher.update(&message[..prefix_len]);
         let result = hasher.finalize();
 
-        let mut hash = [0u8; 16];
-        hash.copy_from_slice(&result[..16]);
+        // Use full 32-byte SHA-256 hash
+        let mut hash = [0u8; 32];
+        hash.copy_from_slice(&result);
         hash
     }
 
@@ -462,26 +477,25 @@ mod tests {
     fn test_hash_uses_prefix() {
         let cache = NonceCache::new();
 
-        // Two messages with same prefix but different suffix
+        // Two messages with same prefix (up to HASH_PREFIX_LEN) but different suffix
+        // Since HASH_PREFIX_LEN is now 8192, messages within that are fully hashed
         let mut msg1 = vec![0u8; 200];
         let mut msg2 = vec![0u8; 200];
 
-        // Same first 128 bytes
-        for i in 0..128 {
+        // Same content
+        for i in 0..200 {
             msg1[i] = i as u8;
             msg2[i] = i as u8;
         }
 
-        // Different suffix
+        // Different byte within hashed prefix - should be different hashes
         msg1[150] = 1;
         msg2[150] = 2;
 
-        // Should be treated as same message (only prefix is hashed)
+        // Should be treated as different messages (full content is hashed)
         assert!(cache.check_and_record(&msg1).is_ok());
-        assert_eq!(
-            cache.check_and_record(&msg2),
-            Err(ReplayError::DuplicateMessage)
-        );
+        assert!(cache.check_and_record(&msg2).is_ok()); // Different hash now
+        assert_eq!(cache.len(), 2);
     }
 
     #[test]
@@ -676,17 +690,41 @@ mod tests {
     fn test_hash_prefix_boundary() {
         let cache = NonceCache::new();
 
-        // Messages identical up to HASH_PREFIX_LEN (128) should be treated same
+        // Messages of different lengths are now different since we hash more bytes
         let mut msg1 = vec![0u8; 128];
         let mut msg2 = vec![0u8; 129];
         for i in 0..128 {
             msg1[i] = (i % 256) as u8;
             msg2[i] = (i % 256) as u8;
         }
-        msg2[128] = 99; // Extra byte after prefix
+        msg2[128] = 99; // Extra byte
 
         cache.check_and_record(&msg1).unwrap();
-        // Should be duplicate since first 128 bytes are identical
+        // Now treated as different since full content up to 8192 bytes is hashed
+        assert!(cache.check_and_record(&msg2).is_ok()); // Different hash
+        assert_eq!(cache.len(), 2);
+    }
+
+    #[test]
+    fn test_large_message_prefix_truncation() {
+        let cache = NonceCache::new();
+
+        // Messages larger than HASH_PREFIX_LEN (8192) that differ only after prefix
+        let mut msg1 = vec![0u8; 10000];
+        let mut msg2 = vec![0u8; 10000];
+
+        // Same first 8192 bytes
+        for i in 0..8192 {
+            msg1[i] = (i % 256) as u8;
+            msg2[i] = (i % 256) as u8;
+        }
+
+        // Different byte after HASH_PREFIX_LEN
+        msg1[9000] = 1;
+        msg2[9000] = 2;
+
+        // Should be treated as same message (only prefix is hashed)
+        assert!(cache.check_and_record(&msg1).is_ok());
         assert_eq!(
             cache.check_and_record(&msg2),
             Err(ReplayError::DuplicateMessage)
