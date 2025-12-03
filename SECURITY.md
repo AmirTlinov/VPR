@@ -1,61 +1,68 @@
 # Security Policy
 
-## Supported Versions
+## Reporting Vulnerabilities
 
-| Version | Supported          |
-| ------- | ------------------ |
-| 0.x.x   | :white_check_mark: |
-
-## Reporting a Vulnerability
-
-**Do NOT report security vulnerabilities through public GitHub issues.**
+**Do NOT report security vulnerabilities through public channels.**
 
 ### Contact
 
-For security-related issues, please use GitHub's private vulnerability reporting feature
-or contact the maintainers directly.
+For security-related issues, please contact our security team:
+
+- **Email**: [security@vpr.tech](mailto:security@vpr.tech)
+- **PGP Key**: Available at [vpr.tech/security/pgp](https://vpr.tech/security/pgp)
 
 ### Response Timeline
 
-- **Initial response**: 48 hours
-- **Status update**: 7 days
-- **Critical fixes**: 24-48 hours
+| Severity | Initial Response | Resolution Target |
+|----------|------------------|-------------------|
+| Critical | 4 hours | 24 hours |
+| High | 24 hours | 72 hours |
+| Medium | 48 hours | 7 days |
+| Low | 7 days | 30 days |
 
-## Security Measures
+Enterprise customers with SLA receive priority response times.
+
+## Security Architecture
 
 ### Cryptography
 
-- **Key Exchange**: ML-KEM768 + X25519 hybrid (post-quantum resistant)
-- **Symmetric Encryption**: ChaCha20-Poly1305
-- **Random Number Generation**: OsRng (cryptographically secure)
-- **Key Derivation**: HKDF with SHA-256
+| Component | Algorithm | Standard |
+|-----------|-----------|----------|
+| Key Exchange | ML-KEM768 + X25519 | NIST FIPS 203 + RFC 7748 |
+| Session Encryption | ChaCha20-Poly1305 | RFC 8439 |
+| Key Derivation | HKDF-SHA256 | RFC 5869 |
+| Random Generation | OS CSPRNG | Platform native |
 
 ### Protocol Security
 
-- **Noise Protocol Framework**: IK pattern for mutual authentication
-- **TLS Fingerprint Randomization**: Evades deep packet inspection
-- **Replay Protection**: Sliding window with bloom filter
-- **Probe Protection**: DoS mitigation for malformed packets
+- **Noise Protocol Framework**: IK pattern with mutual authentication
+- **Forward Secrecy**: Ephemeral keys with 60s/1GB rotation
+- **Replay Protection**: Sliding window with 100K entry hard limit
+- **Probe Protection**: Challenge-response against active probing
 
 ### Memory Safety
 
-- **Zeroizing**: All secret keys are zeroized on drop
-- **Unsafe Blocks**: Documented and minimized
-- **Rust Memory Safety**: No use-after-free, no buffer overflows
+- **Secret Zeroization**: All keys zeroized on drop
+- **Rust Memory Safety**: No buffer overflows, no use-after-free
+- **Unsafe Minimization**: All unsafe blocks audited and documented
 
 ### Network Security
 
-- **QUIC/MASQUE**: Modern transport with built-in encryption
-- **DoH/ODoH**: Encrypted DNS queries
-- **Kill Switch**: Prevents traffic leaks when VPN disconnects
+- **QUIC/MASQUE**: RFC 9298 compliant HTTP/3 tunneling
+- **TLS Fingerprinting**: Browser profile mimicry
+- **Kill Switch**: Atomic firewall rules with crash recovery
+- **DNS Security**: DoH/ODoH/DoQ encrypted queries
 
-## Dependencies
+## Bug Bounty
 
-Security-critical dependencies are pinned to known-good versions:
+VPR operates a private bug bounty program for security researchers.
 
-- `snow` = "0.9.6" (Noise Protocol)
-- `ml-kem` = "0.1" (Post-quantum KEM)
-- `x25519-dalek` = "2" (Elliptic curve DH)
-- `chacha20poly1305` = "0.10" (AEAD cipher)
+Contact [security@vpr.tech](mailto:security@vpr.tech) for program details and scope.
 
-Run `cargo audit` regularly to check for known vulnerabilities.
+## Compliance
+
+VPR undergoes regular security audits. Enterprise customers can request audit reports under NDA.
+
+---
+
+Copyright (c) 2025 VPR Technologies. All Rights Reserved.

@@ -11,3 +11,11 @@ members = [
   "src/vpr-ai",
   "src/vpr-e2e"
 ]
+
+[workspace.package]
+version = "1.0.0"
+edition = "2021"
+license = "LicenseRef-Proprietary"
+repository = "https://github.com/VPR-Technologies/VPR"
+homepage = "https://vpr.tech"
+authors = ["VPR Technologies <contact@vpr.tech>"]

@@ -1,55 +1,43 @@
 # Changelog
 
-Все значимые изменения в проекте VPR будут документироваться в этом файле.
+All notable changes to VPR will be documented in this file.
 
-Формат основан на [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
-и проект следует [Semantic Versioning](https://semver.org/lang/ru/).
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.0.0] - 2025-12-03
 
 ### Added
-- Полная документация проекта в flagship состоянии
-- CONTRIBUTING.md - руководство для разработчиков
-- CHANGELOG.md - история изменений
-- Конфигурационные файлы (rustfmt.toml, .clippy.toml, .editorconfig)
-- LICENSE файл
+- Post-quantum hybrid cryptography (Noise IK + ML-KEM768 + X25519)
+- MASQUE/QUIC transport (RFC 9298 compliant)
+- TLS fingerprint mimicry (Chrome/Firefox profiles)
+- AI Traffic Morpher for pattern obfuscation
+- DoH/ODoH/DoQ gateway
+- Cross-platform Kill Switch (Linux nftables, macOS pf, Windows WFP)
+- TUI with ASCII Earth visualization
+- Desktop application (Tauri-based)
+- Health monitoring and diagnostics
+- Probe protection and replay protection
+- Automatic key rotation (60s/1GB)
 
-### Changed
-- Обновлена структура документации
-- Удалены устаревшие audit файлы
-- Улучшена консистентность между документами
-
-### Fixed
-- Исправлены ссылки между документами
-- Обновлен .gitignore для полноты
+### Security
+- Replay cache hard limit to prevent memory exhaustion DoS
+- Secure temp file creation with O_EXCL and O_NOFOLLOW flags
+- State file integrity verification with SHA-256 checksums
+- Fixed errno checking in process existence verification
+- Session context binding for hybrid cryptographic secrets
+- Panic-free key parsing with proper Result handling
+- TOCTOU prevention in DNS configuration
+- Integer overflow protection in IP pool allocation
 
 ## [0.1.0] - 2025-01-27
 
 ### Added
-- Гибридная постквантовая криптография (Noise + ML-KEM768)
-- MASQUE/QUIC транспорт
-- TLS fingerprint customization
-- DoH/ODoH/DoQ gateway
-- Health monitoring
-- TUI с ASCII Earth
-- Desktop клиент (базовая функциональность)
-- Kill switch и process manager
-- Probe protection и replay protection
-- Key rotation
-- AI Traffic Morpher (базовая версия)
-
-### Security
-- Реализованы security policies (CRIT-001, CRIT-002, CRIT-003)
-- Документированы все unsafe блоки
-- Улучшена обработка ошибок
+- Initial development release
+- Core VPN functionality
+- Basic cryptographic implementation
+- Prototype MASQUE transport
 
 ---
 
-## Типы изменений
-
-- `Added` - новые функции
-- `Changed` - изменения в существующей функциональности
-- `Deprecated` - функции, которые скоро будут удалены
-- `Removed` - удаленные функции
-- `Fixed` - исправления багов
-- `Security` - исправления уязвимостей
+Copyright (c) 2025 VPR Technologies. All Rights Reserved.

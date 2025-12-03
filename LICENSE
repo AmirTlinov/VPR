@@ -1,21 +1,131 @@
-MIT License
+VPR PROPRIETARY SOFTWARE LICENSE AGREEMENT
 
-Copyright (c) 2025 VPR Project Contributors
+Copyright (c) 2025 VPR Technologies. All Rights Reserved.
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+IMPORTANT: READ THIS LICENSE AGREEMENT CAREFULLY BEFORE USING THIS SOFTWARE.
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+1. DEFINITIONS
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+"Software" means the VPR VPN software, including all source code, object code,
+documentation, and any updates or modifications provided by Licensor.
+
+"Licensor" means VPR Technologies and its affiliates.
+
+"Licensee" means the individual or entity that has purchased a valid subscription
+to use the Software.
+
+"Subscription" means the paid license granting time-limited access to the Software.
+
+2. GRANT OF LICENSE
+
+Subject to the terms of this Agreement and payment of applicable subscription fees,
+Licensor grants Licensee a non-exclusive, non-transferable, limited license to:
+
+a) Use the Software for personal or internal business purposes only
+b) Install the Software on devices owned or controlled by Licensee
+c) Access updates and security patches during the active subscription period
+
+3. RESTRICTIONS
+
+Licensee SHALL NOT:
+
+a) Copy, modify, adapt, translate, reverse engineer, decompile, disassemble, or
+   create derivative works based on the Software
+b) Distribute, sublicense, lease, rent, loan, or otherwise transfer the Software
+   to any third party
+c) Remove or alter any proprietary notices, labels, or marks on the Software
+d) Use the Software to provide services to third parties (SaaS, hosting, etc.)
+   without a separate commercial license agreement
+e) Use the Software for any illegal purpose or in violation of any applicable laws
+f) Circumvent or disable any security features or license verification mechanisms
+g) Share subscription credentials or allow unauthorized access to the Software
+
+4. SUBSCRIPTION AND PAYMENT
+
+a) Access to the Software requires an active paid subscription
+b) Subscription fees are billed in advance on a monthly or annual basis
+c) Subscriptions automatically renew unless cancelled before the renewal date
+d) No refunds will be provided for partial subscription periods
+e) Licensor reserves the right to modify pricing with 30 days advance notice
+
+5. SUBSCRIPTION TIERS
+
+- Personal: Single user, up to 5 devices
+- Professional: Single user, up to 10 devices, priority support
+- Team: Up to 10 users, up to 50 devices, dedicated support
+- Enterprise: Unlimited users and devices, SLA, custom deployment
+
+Contact sales@vpr.tech for enterprise licensing.
+
+6. INTELLECTUAL PROPERTY
+
+The Software and all copies thereof are proprietary to Licensor and title thereto
+remains exclusively with Licensor. All rights in the Software not specifically
+granted in this Agreement are reserved to Licensor.
+
+The Software contains trade secrets and proprietary information of Licensor.
+Licensee agrees to maintain the confidentiality of the Software.
+
+7. TERM AND TERMINATION
+
+a) This license is effective until terminated
+b) Licensor may terminate this license immediately if Licensee breaches any term
+c) Upon termination, Licensee must destroy all copies of the Software
+d) Subscription termination does not entitle Licensee to any refund
+
+8. DISCLAIMER OF WARRANTIES
+
+THE SOFTWARE IS PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE, AND NONINFRINGEMENT.
+
+LICENSOR DOES NOT WARRANT THAT THE SOFTWARE WILL BE ERROR-FREE, UNINTERRUPTED,
+OR FREE OF VIRUSES OR OTHER HARMFUL COMPONENTS.
+
+9. LIMITATION OF LIABILITY
+
+IN NO EVENT SHALL LICENSOR BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL,
+EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT
+OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+LICENSOR'S TOTAL LIABILITY SHALL NOT EXCEED THE AMOUNT PAID BY LICENSEE FOR THE
+SUBSCRIPTION IN THE TWELVE (12) MONTHS PRECEDING THE CLAIM.
+
+10. PRIVACY AND DATA COLLECTION
+
+a) The Software does not collect or transmit personal data without consent
+b) Usage analytics may be collected in anonymized form for product improvement
+c) See Privacy Policy at https://vpr.tech/privacy for details
+
+11. EXPORT COMPLIANCE
+
+Licensee agrees to comply with all applicable export laws and regulations.
+The Software may not be exported to countries subject to trade sanctions.
+
+12. GOVERNING LAW
+
+This Agreement shall be governed by and construed in accordance with the laws
+of the jurisdiction in which Licensor is incorporated, without regard to its
+conflict of law provisions.
+
+13. ENTIRE AGREEMENT
+
+This Agreement constitutes the entire agreement between the parties concerning
+the subject matter hereof and supersedes all prior or contemporaneous oral or
+written agreements.
+
+14. CONTACT INFORMATION
+
+VPR Technologies
+Email: legal@vpr.tech
+Website: https://vpr.tech
+
+---
+
+BY USING THIS SOFTWARE, YOU ACKNOWLEDGE THAT YOU HAVE READ THIS AGREEMENT,
+UNDERSTAND IT, AND AGREE TO BE BOUND BY ITS TERMS AND CONDITIONS.
+
+Last Updated: December 2025

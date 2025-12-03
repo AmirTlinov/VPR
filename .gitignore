@@ -1,14 +1,8 @@
 # Build artifacts
 /target/
 **/target/
-Cargo.lock
 /dist/
 /build/
-/__pycache__/
-*.pyc
-*.pyo
-*.pyd
-.Python
 
 # Secrets & configs
 secrets/**
@@ -26,8 +20,6 @@ config/*.yaml
 logs/
 *.log
 *.log.*
-.vscode/
-.idea/
 .vpr/
 *.swp
 *.swo
@@ -44,10 +36,10 @@ Thumbs.db
 desktop.ini
 
 # IDE
-*.sublime-project
-*.sublime-workspace
 .vscode/
 .idea/
+*.sublime-project
+*.sublime-workspace
 *.iml
 
 # Test artifacts
@@ -59,6 +51,7 @@ coverage/
 # Temporary files
 tmp/
 temp/
+.tmp/
 *.tmp
 *.bak
 *.backup
@@ -93,17 +86,21 @@ __pycache__/
 env/
 venv/
 ENV/
-env.bak/
-venv.bak/
 .pytest_cache/
 .mypy_cache/
-.dmypy.json
-dmypy.json
 
 # Jupyter
 .ipynb_checkpoints
-*.ipynb
 
-# Data directories (may contain large files)
+# Data directories
 data/outbox/*
 !data/outbox/.gitkeep
+
+# Development tools (not for production)
+.context-finder/
+.apply_task_projects.yaml
+.last
+.agents/
+.serena/
+.tasks/
+.claude/
