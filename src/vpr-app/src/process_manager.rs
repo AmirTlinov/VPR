@@ -386,86 +386,81 @@ impl VpnProcessManager {
             .await;
         });
 
-        // Обновить статус на Running через небольшую задержку,
-        // НО только если процесс всё ещё жив И TUN устройство создано
-        let status_clone = self.status.clone();
-        let status_tx_clone = self.status_tx.clone();
-        let statistics_clone = self.statistics.clone();
-        let process_for_check = self.process.clone();
+        // Ждём до 15 секунд пока TUN устройство появится (СИНХРОННО)
         let tun_name = config.tun_name.clone();
-        tokio::spawn(async move {
-            // Ждём до 10 секунд пока TUN устройство появится
-            let mut tun_created = false;
-            for i in 0..20 {
-                sleep(Duration::from_millis(500)).await;
+        let mut tun_created = false;
 
-                // Проверяем что процесс всё ещё жив
-                let process_alive = {
-                    let mut process_guard = process_for_check.write().await;
-                    if let Some(child) = process_guard.as_mut() {
-                        match child.try_wait() {
-                            Ok(Some(exit_status)) => {
-                                error!(
-                                    exit_code = ?exit_status.code(),
-                                    "VPN client process exited"
-                                );
-                                false
-                            }
-                            Ok(None) => true,
-                            Err(e) => {
-                                error!(%e, "Failed to check process status");
-                                false
-                            }
+        for i in 0..30 {
+            sleep(Duration::from_millis(500)).await;
+
+            // Проверяем что процесс всё ещё жив
+            let process_alive = {
+                let mut process_guard = self.process.write().await;
+                if let Some(child) = process_guard.as_mut() {
+                    match child.try_wait() {
+                        Ok(Some(exit_status)) => {
+                            error!(
+                                exit_code = ?exit_status.code(),
+                                "VPN client process exited prematurely"
+                            );
+                            false
                         }
-                    } else {
-                        false
+                        Ok(None) => true,
+                        Err(e) => {
+                            error!(%e, "Failed to check process status");
+                            false
+                        }
                     }
-                };
-
-                if !process_alive {
-                    let mut status = status_clone.write().await;
-                    *status = ProcessStatus::Error;
-                    let _ = status_tx_clone.send(ProcessStatus::Error);
-                    error!("VPN client process died");
-                    return;
-                }
-
-                // Проверяем TUN устройство
-                let tun_check = std::process::Command::new("ip")
-                    .args(["link", "show", &tun_name])
-                    .output();
-
-                if let Ok(output) = tun_check {
-                    if output.status.success() {
-                        tun_created = true;
-                        info!(tun = %tun_name, attempt = i + 1, "TUN device created");
-                        break;
-                    }
-                }
-
-                if i % 4 == 0 {
-                    info!(tun = %tun_name, attempt = i + 1, "Waiting for TUN device...");
-                }
-            }
-
-            let mut status = status_clone.write().await;
-            if *status == ProcessStatus::Starting {
-                if tun_created {
-                    *status = ProcessStatus::Running;
-                    let _ = status_tx_clone.send(ProcessStatus::Running);
-
-                    let mut stats = statistics_clone.write().await;
-                    stats.connected_at = Some(chrono::Utc::now());
-                    info!("VPN connected successfully");
                 } else {
-                    *status = ProcessStatus::Error;
-                    let _ = status_tx_clone.send(ProcessStatus::Error);
-                    error!("VPN connection failed - TUN device not created within 10s");
+                    false
+                }
+            };
+
+            if !process_alive {
+                let mut status = self.status.write().await;
+                *status = ProcessStatus::Error;
+                let _ = self.status_tx.send(ProcessStatus::Error);
+                return Err(anyhow::anyhow!("VPN client process died during startup"));
+            }
+
+            // Проверяем TUN устройство
+            let tun_check = std::process::Command::new("ip")
+                .args(["link", "show", &tun_name])
+                .output();
+
+            if let Ok(output) = tun_check {
+                if output.status.success() {
+                    tun_created = true;
+                    info!(tun = %tun_name, attempt = i + 1, "TUN device created");
+                    break;
                 }
             }
-        });
 
-        Ok(())
+            if i % 4 == 0 {
+                info!(tun = %tun_name, attempt = i + 1, "Waiting for TUN device...");
+            }
+        }
+
+        if tun_created {
+            let mut status = self.status.write().await;
+            *status = ProcessStatus::Running;
+            let _ = self.status_tx.send(ProcessStatus::Running);
+
+            let mut stats = self.statistics.write().await;
+            stats.connected_at = Some(chrono::Utc::now());
+            info!("VPN connected successfully");
+            Ok(())
+        } else {
+            // Убить процесс если TUN не создался
+            if let Some(mut child) = self.process.write().await.take() {
+                let _ = child.kill().await;
+            }
+
+            let mut status = self.status.write().await;
+            *status = ProcessStatus::Error;
+            let _ = self.status_tx.send(ProcessStatus::Error);
+            Err(anyhow::anyhow!("VPN connection failed - TUN device '{}' not created within 15s. Check vpn-client logs.", tun_name))
+        }
     }
 
     /// Остановить VPN клиент
@@ -559,6 +554,14 @@ impl VpnProcessManager {
         statistics_tx: broadcast::Sender<VpnStatistics>,
         config: Arc<RwLock<Option<VpnClientConfig>>>,
     ) {
+        // Get TUN name from config for reading statistics
+        let tun_name = config
+            .read()
+            .await
+            .as_ref()
+            .map(|c| c.tun_name.clone())
+            .unwrap_or_else(|| "vpr0".to_string());
+
         loop {
             sleep(Duration::from_secs(1)).await;
 
@@ -611,9 +614,45 @@ impl VpnProcessManager {
                         .signed_duration_since(connected_at)
                         .num_seconds() as u64;
                 }
+
+                // Read network statistics from TUN interface via sysfs
+                let (tx_bytes, rx_bytes, tx_packets, rx_packets) =
+                    Self::read_tun_statistics(&tun_name);
+                stats.bytes_sent = tx_bytes;
+                stats.bytes_received = rx_bytes;
+                stats.packets_sent = tx_packets;
+                stats.packets_received = rx_packets;
+
                 let _ = statistics_tx.send(stats.clone());
             }
         }
+    }
+
+    /// Read network statistics from TUN interface via /sys/class/net/<tun>/statistics/
+    fn read_tun_statistics(tun_name: &str) -> (u64, u64, u64, u64) {
+        let base_path = format!("/sys/class/net/{}/statistics", tun_name);
+
+        let tx_bytes = std::fs::read_to_string(format!("{}/tx_bytes", base_path))
+            .ok()
+            .and_then(|s| s.trim().parse().ok())
+            .unwrap_or(0);
+
+        let rx_bytes = std::fs::read_to_string(format!("{}/rx_bytes", base_path))
+            .ok()
+            .and_then(|s| s.trim().parse().ok())
+            .unwrap_or(0);
+
+        let tx_packets = std::fs::read_to_string(format!("{}/tx_packets", base_path))
+            .ok()
+            .and_then(|s| s.trim().parse().ok())
+            .unwrap_or(0);
+
+        let rx_packets = std::fs::read_to_string(format!("{}/rx_packets", base_path))
+            .ok()
+            .and_then(|s| s.trim().parse().ok())
+            .unwrap_or(0);
+
+        (tx_bytes, rx_bytes, tx_packets, rx_packets)
     }
 
     /// Включить kill switch

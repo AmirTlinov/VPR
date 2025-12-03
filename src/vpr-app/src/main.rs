@@ -1,10 +1,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod connection_diagnostics;
 mod deployer;
 mod diagnostics_commands;
 mod killswitch;
 mod process_manager;
-mod tui_bridge;
 
 use process_manager::{VpnClientConfig, VpnProcessManager};
 use serde::{Deserialize, Serialize};
@@ -12,7 +12,7 @@ use std::fs;
 use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::net::lookup_host;
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
@@ -20,6 +20,13 @@ use tokio::time::Duration;
 
 #[cfg(unix)]
 use caps::{CapSet, Capability};
+
+/// Get the Silentway config directory (~/.silentway)
+fn silentway_config_dir() -> PathBuf {
+    std::env::var("HOME")
+        .map(|h| PathBuf::from(h).join(".silentway"))
+        .unwrap_or_else(|_| PathBuf::from(".silentway"))
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 enum VpnStatus {
@@ -76,7 +83,24 @@ struct Config {
     killswitch: bool,
     #[serde(default)]
     insecure: bool,
+    /// Legacy single VPS config for backward compatibility
     #[serde(default)]
+    vps: deployer::VpsConfig,
+    /// List of saved servers
+    #[serde(default)]
+    servers: Vec<SavedServer>,
+    /// Currently selected server index
+    #[serde(default)]
+    selected_server: Option<usize>,
+}
+
+/// Saved server configuration with display name
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SavedServer {
+    /// Display name for the server
+    name: String,
+    /// VPS configuration
+    #[serde(flatten)]
     vps: deployer::VpsConfig,
 }
 
@@ -110,16 +134,15 @@ impl Default for Config {
             killswitch: false,
             insecure: false,
             vps: deployer::VpsConfig::default(),
+            servers: Vec::new(),
+            selected_server: None,
         }
     }
 }
 
 impl Config {
     fn path() -> PathBuf {
-        directories::ProjectDirs::from("com", "vpr", "client")
-            .map(|d| d.config_dir().to_path_buf())
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("config.json")
+        silentway_config_dir().join("config.json")
     }
 
     fn load() -> Self {
@@ -148,7 +171,6 @@ impl Config {
 struct AppState {
     vpn_manager: Arc<VpnProcessManager>,
     state: Arc<Mutex<VpnState>>,
-    tui: Arc<tui_bridge::TuiState>,
     diagnostic_state: Arc<Mutex<diagnostics_commands::DiagnosticState>>,
 }
 
@@ -203,6 +225,7 @@ async fn connect(
     _username: String,
     _password: String,
     _mode: String,
+    app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     // Проверить текущий статус
@@ -257,9 +280,8 @@ async fn connect(
             })
         })
         .or_else(|| {
-            directories::ProjectDirs::from("com", "vpr", "client")
-                .map(|d| d.config_dir().join("secrets"))
-                .filter(|p| p.exists())
+            let p = silentway_config_dir().join("secrets");
+            if p.exists() { Some(p) } else { None }
         })
         .unwrap_or_else(|| PathBuf::from("secrets"));
 
@@ -267,6 +289,37 @@ async fn connect(
 
     // Построить конфигурацию VPN клиента
     let port_num: u16 = port.parse().map_err(|e| format!("Invalid port: {}", e))?;
+
+    // === АВТОМАТИЧЕСКАЯ ДИАГНОСТИКА ПЕРЕД ПОДКЛЮЧЕНИЕМ ===
+    let diag_params = connection_diagnostics::DiagnosticParams {
+        server: server.clone(),
+        port: port_num,
+        secrets_dir: secrets_dir.clone(),
+        timeout_ms: 5000,
+        tun_name: "vpr0".to_string(),
+    };
+
+    let diag_result = connection_diagnostics::run_pre_connection_diagnostics(&diag_params).await;
+
+    // Отправляем результаты диагностики в UI
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.emit("diagnostic_result", &diag_result);
+    }
+
+    // Если критические проверки не прошли - возвращаем понятную ошибку
+    if diag_result.status == connection_diagnostics::DiagnosticStatus::Failed {
+        let mut vpn_state = state.state.lock().await;
+        vpn_state.status = VpnStatus::Error;
+        vpn_state.error = Some(diag_result.summary.clone());
+
+        let error_msg = if let Some(action) = &diag_result.action {
+            format!("{}\n\nRecommended action: {}", diag_result.summary, action)
+        } else {
+            diag_result.summary
+        };
+
+        return Err(error_msg);
+    }
 
     // Enable insecure mode if configured or for localhost
     let is_localhost = server == "localhost" || server == "127.0.0.1" || server.starts_with("127.");
@@ -335,12 +388,42 @@ async fn connect(
                 let _ = state.vpn_manager.disable_killswitch().await;
             }
 
+            // === ДИАГНОСТИКА ПОСЛЕ НЕУДАЧНОГО ПОДКЛЮЧЕНИЯ ===
+            let error_str = e.to_string();
+            let failure_diag = connection_diagnostics::diagnose_connection_failure(
+                &error_str,
+                &server,
+                port_num,
+            );
+
+            // Отправляем диагностику в UI
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.emit("diagnostic_result", &failure_diag);
+            }
+
+            // Формируем понятное сообщение об ошибке
+            let failed_details: Vec<&str> = failure_diag.checks.iter()
+                .filter(|c| c.status == connection_diagnostics::DiagnosticStatus::Failed)
+                .filter_map(|c| c.details.as_deref())
+                .collect();
+
+            let detailed_error = if let Some(action) = &failure_diag.action {
+                format!(
+                    "{}\n\n{}\n\nRecommended: {}",
+                    failure_diag.summary,
+                    failed_details.join("\n"),
+                    action
+                )
+            } else {
+                format!("{}\n\n{}", failure_diag.summary, error_str)
+            };
+
             // Обновить состояние с ошибкой
             let mut vpn_state = state.state.lock().await;
             vpn_state.status = VpnStatus::Error;
-            vpn_state.error = Some(e.to_string());
+            vpn_state.error = Some(detailed_error.clone());
             vpn_state.killswitch_active = false;
-            Err(format!("Failed to start VPN client: {}", e))
+            Err(detailed_error)
         }
     }
 }
@@ -547,6 +630,106 @@ fn get_vps_config() -> deployer::VpsConfig {
     Config::load().vps
 }
 
+// ============================================================================
+// Server List Commands
+// ============================================================================
+
+/// Get list of saved servers
+#[tauri::command]
+fn get_servers() -> Vec<SavedServer> {
+    let config = Config::load();
+    // Migrate legacy config if servers list is empty
+    if config.servers.is_empty() {
+        // Check vps.host first, then fall back to legacy server field
+        let legacy_host = if !config.vps.host.is_empty() {
+            config.vps.host.clone()
+        } else if !config.server.is_empty() {
+            config.server.clone()
+        } else {
+            return Vec::new();
+        };
+
+        vec![SavedServer {
+            name: legacy_host.clone(),
+            vps: deployer::VpsConfig {
+                host: legacy_host,
+                ssh_port: config.vps.ssh_port,
+                ssh_user: config.vps.ssh_user.clone(),
+                deployed: config.vps.deployed,
+                ..Default::default()
+            },
+        }]
+    } else {
+        config.servers
+    }
+}
+
+/// Get selected server index
+#[tauri::command]
+fn get_selected_server() -> Option<usize> {
+    Config::load().selected_server
+}
+
+/// Set selected server index
+#[tauri::command]
+fn set_selected_server(index: Option<usize>) -> Result<(), String> {
+    let mut config = Config::load();
+    config.selected_server = index;
+    config.save()
+}
+
+/// Add a new server to the list
+#[tauri::command]
+fn add_server(name: String, vps: deployer::VpsConfig) -> Result<usize, String> {
+    let mut config = Config::load();
+    let index = config.servers.len();
+    config.servers.push(SavedServer { name, vps });
+    config.selected_server = Some(index);
+    config.save()?;
+    Ok(index)
+}
+
+/// Update an existing server in the list
+#[tauri::command]
+fn update_server(index: usize, name: String, vps: deployer::VpsConfig) -> Result<(), String> {
+    let mut config = Config::load();
+    if index >= config.servers.len() {
+        return Err("Server index out of bounds".into());
+    }
+    config.servers[index] = SavedServer { name, vps };
+    config.save()
+}
+
+/// Remove a server from the list
+#[tauri::command]
+fn remove_server(index: usize) -> Result<(), String> {
+    let mut config = Config::load();
+    if index >= config.servers.len() {
+        return Err("Server index out of bounds".into());
+    }
+    config.servers.remove(index);
+    // Adjust selected_server if needed
+    if let Some(selected) = config.selected_server {
+        if selected == index {
+            config.selected_server = None;
+        } else if selected > index {
+            config.selected_server = Some(selected - 1);
+        }
+    }
+    config.save()
+}
+
+/// Get server by index
+#[tauri::command]
+fn get_server(index: usize) -> Result<SavedServer, String> {
+    let config = Config::load();
+    config
+        .servers
+        .get(index)
+        .cloned()
+        .ok_or_else(|| "Server not found".into())
+}
+
 /// Test SSH connection to VPS
 #[tauri::command]
 async fn test_vps_connection(vps: deployer::VpsConfig) -> Result<(), String> {
@@ -658,29 +841,6 @@ async fn get_vps_logs(vps: deployer::VpsConfig, lines: u32) -> Result<String, St
         .map_err(|e| format!("Failed to get logs: {}", e))
 }
 
-// ============================================================================
-// TUI Commands
-// ============================================================================
-
-/// Render TUI frame as ANSI string for xterm.js
-#[tauri::command]
-async fn tui_render(width: u16, height: u16, state: State<'_, AppState>) -> Result<String, String> {
-    Ok(state.tui.render_frame(width, height).await)
-}
-
-/// Handle keyboard input for TUI
-#[tauri::command]
-async fn tui_key(key: String, state: State<'_, AppState>) -> Result<bool, String> {
-    Ok(state.tui.handle_key(&key).await)
-}
-
-/// Advance TUI animation by one tick
-#[tauri::command]
-async fn tui_tick(state: State<'_, AppState>) -> Result<(), String> {
-    state.tui.tick().await;
-    Ok(())
-}
-
 /// Find server binaries for deployment
 fn find_server_binaries() -> Result<(PathBuf, PathBuf), String> {
     let exe_dir = std::env::current_exe()
@@ -733,8 +893,7 @@ fn find_secrets_dir() -> PathBuf {
     // Try standard locations
     let candidates = [
         std::env::var("VPR_SECRETS_DIR").ok().map(PathBuf::from),
-        directories::ProjectDirs::from("com", "vpr", "client")
-            .map(|d| d.config_dir().join("secrets")),
+        Some(silentway_config_dir().join("secrets")),
         Some(PathBuf::from("secrets")),
     ];
 
@@ -771,7 +930,6 @@ fn main() {
     let app_state = AppState {
         vpn_manager: vpn_manager.clone(),
         state: Arc::new(Mutex::new(VpnState::default())),
-        tui: Arc::new(tui_bridge::TuiState::new()),
         diagnostic_state: Arc::new(Mutex::new(diagnostics_commands::DiagnosticState::default())),
     };
 
@@ -934,15 +1092,41 @@ fn main() {
             start_vps_server,
             uninstall_server,
             get_vps_logs,
-            // TUI commands
-            tui_render,
-            tui_key,
-            tui_tick,
+            // Server list commands
+            get_servers,
+            get_selected_server,
+            set_selected_server,
+            add_server,
+            update_server,
+            remove_server,
+            get_server,
             // Diagnostics commands
             diagnostics_commands::run_diagnostics,
             diagnostics_commands::apply_auto_fixes,
             diagnostics_commands::get_diagnostic_state,
-            diagnostics_commands::cancel_diagnostics
+            diagnostics_commands::cancel_diagnostics,
+            // Extended flagship diagnostics
+            diagnostics_commands::run_comprehensive_diagnostics,
+            diagnostics_commands::measure_connection_quality,
+            diagnostics_commands::diagnose_quic_connection,
+            diagnostics_commands::run_server_diagnostics,
+            diagnostics_commands::check_health_endpoint,
+            diagnostics_commands::get_available_fixes,
+            diagnostics_commands::apply_specific_fix,
+            diagnostics_commands::is_retryable_error,
+            diagnostics_commands::get_retry_config,
+            diagnostics_commands::calculate_retry_state,
+            diagnostics_commands::check_local_certificate,
+            // Ultimate flagship diagnostics
+            diagnostics_commands::analyze_network_path,
+            diagnostics_commands::detect_dpi,
+            diagnostics_commands::test_dns_leak,
+            diagnostics_commands::test_ipv6_leak,
+            diagnostics_commands::estimate_bandwidth,
+            diagnostics_commands::verify_kill_switch,
+            diagnostics_commands::probe_multiple_paths,
+            diagnostics_commands::run_ultimate_diagnostics,
+            diagnostics_commands::get_reconnect_strategy
         ])
         .run(tauri::generate_context!())
         .map_err(|e| {

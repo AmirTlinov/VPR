@@ -1,382 +1,287 @@
+/**
+ * VPR - Flagship Premium VPN
+ *
+ * Flow:
+ * 1. User enters server IP + SSH credentials
+ * 2. Click "Connect" -> Auto-deploy VPN server if needed -> Connect
+ * 3. Done!
+ *
+ * Features:
+ * - Interactive particle globe with shaders
+ * - State-based animations
+ * - Glassmorphism UI with micro-animations
+ * - Smooth transitions and countup animations
+ */
+
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 
-// Elements
+// =============================================================================
+// DOM Elements
+// =============================================================================
+
 const mainView = document.getElementById('main-view');
 const settingsView = document.getElementById('settings-view');
 const settingsBtn = document.getElementById('settings-btn');
 const backBtn = document.getElementById('back-btn');
-const saveBtn = document.getElementById('save-btn');
-const connectBtn = document.getElementById('connect-btn');
-const btnText = document.getElementById('btn-text');
-const btnLoader = document.getElementById('btn-loader');
-const asciiArt = document.getElementById('ascii-art');
-const statusDot = document.getElementById('status-dot');
-const statusText = document.getElementById('status-text');
-const targetAddr = document.getElementById('target-addr');
-const healthDot = document.getElementById('health-dot');
-const healthText = document.getElementById('health-text');
-const probeBtn = document.getElementById('probe-btn');
-const statsBox = document.getElementById('stats-box');
+
+// Globe
+const globeCard = document.getElementById('globe-card');
+const globeContainer = document.getElementById('globe-container');
+
+// Status
+const statusIcon = document.getElementById('status-icon');
+const statusLabel = document.getElementById('status-label');
+const statusDetails = document.getElementById('status-details');
+
+// Setup
+const setupCard = document.getElementById('setup-card');
+const serverSelect = document.getElementById('server-select');
+const headerServerSelect = document.getElementById('header-server-select');
+const deleteServerBtn = document.getElementById('delete-server-btn');
+
+// Custom Dropdown
+const serverDropdown = document.getElementById('server-dropdown');
+const dropdownTrigger = document.getElementById('dropdown-trigger');
+const dropdownValue = document.getElementById('dropdown-value');
+const dropdownMenu = document.getElementById('dropdown-menu');
+const newServerForm = document.getElementById('new-server-form');
+const serverInput = document.getElementById('server-input');
+const userInput = document.getElementById('user-input');
+const portInput = document.getElementById('port-input');
+const passInput = document.getElementById('pass-input');
+const setupTitle = document.getElementById('setup-title');
+
+// Stats
+const statsCard = document.getElementById('stats-card');
 const statTime = document.getElementById('stat-time');
 const statUp = document.getElementById('stat-up');
 const statDown = document.getElementById('stat-down');
-const errorEl = document.getElementById('error');
 
-// Config inputs
-const cfgServer = document.getElementById('cfg-server');
-const cfgPort = document.getElementById('cfg-port');
-const cfgUsername = document.getElementById('cfg-username');
-const cfgPassword = document.getElementById('cfg-password');
-const cfgMode = document.getElementById('cfg-mode');
-const cfgDoh = document.getElementById('cfg-doh');
-const cfgAutoconnect = document.getElementById('cfg-autoconnect');
+// Progress
+const progressCard = document.getElementById('progress-card');
+const progressFill = document.getElementById('progress-fill');
+const progressText = document.getElementById('progress-text');
+const logArea = document.getElementById('log-area');
+
+// Log Card
+const logCard = document.getElementById('log-card');
+const connectionLog = document.getElementById('connection-log');
+const logToggleBtn = document.getElementById('log-toggle-btn');
+
+// Button
+const mainBtn = document.getElementById('main-btn');
+const btnText = document.getElementById('btn-text');
+const btnLoader = document.getElementById('btn-loader');
+
+// Error
+const errorBox = document.getElementById('error-box');
+const errorText = document.getElementById('error-text');
+const errorClose = document.getElementById('error-close');
+
+// Settings
 const cfgKillswitch = document.getElementById('cfg-killswitch');
+const cfgAutoconnect = document.getElementById('cfg-autoconnect');
 const cfgInsecure = document.getElementById('cfg-insecure');
+const cfgVpnPort = document.getElementById('cfg-vpn-port');
+const cfgMode = document.getElementById('cfg-mode');
+const reinstallBtn = document.getElementById('reinstall-btn');
+const uninstallBtn = document.getElementById('uninstall-btn');
 
+// =============================================================================
 // State
-let currentStatus = 'Disconnected';
+// =============================================================================
+
+let currentState = 'disconnected'; // disconnected, deploying, connecting, connected, error
 let connectTime = null;
-let bytesUp = 0;
-let bytesDown = 0;
 let statsInterval = null;
-let healthTimer = null;
-let tunnelTimer = null;
+let serverDeployed = false;
+let servers = []; // List of saved servers
+let selectedServerIndex = null; // Currently selected server index
+let globe = null; // Canvas particle globe instance
 
-// ASCII Art variants
+// Stats animation values
+let animatedStats = {
+  bytesUp: 0,
+  bytesDown: 0,
+  targetUp: 0,
+  targetDown: 0
+};
 
-// Pirate skull for OFFLINE
-const ASCII_OFFLINE = `
-        ___________
-       /           \\
-      /  _       _  \\
-     |  (o)     (o)  |
-     |       V       |
-      \\   \\═════/   /
-       \\___________/
-          │ │ │ │
-     ═════╧═╧═╧═╧═════
-        \\│/   \\│/
-         X     X
-        /│\\   /│\\`;
+// =============================================================================
+// Icons (legacy fallback)
+// =============================================================================
 
-// Earth Globe Renderer
-const globe = new GlobeRenderer(asciiArt, 50, 25);
+const ICONS = {
+  shield: `<svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+  </svg>`,
+  shieldCheck: `<svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+    <polyline points="9 12 11 14 15 10"></polyline>
+  </svg>`,
+  shieldX: `<svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+    <line x1="9" y1="9" x2="15" y2="15"></line>
+    <line x1="15" y1="9" x2="9" y2="15"></line>
+  </svg>`
+};
 
-// Connecting animation frames
-const CONNECTING_FRAMES = [
-  `
-        ╭──────────╮
-      ╭─┤░░░░░░░░░░├─╮
-     │  │░░░░░░░░░░│  │
-     │  │░░░░░░░░░░│  │
-     │  │░░░░░░░░░░│  │
-     │  │░░░░░░░░░░│  │
-      ╰─┤░░░░░░░░░░├─╯
-        ╰──────────╯
-        LINKING...`,
-  `
-        ╭──────────╮
-      ╭─┤▒░░░░░░░░░├─╮
-     │  │▒▒░░░░░░░░│  │
-     │  │░▒▒░░░░░░░│  │
-     │  │░░▒▒░░░░░░│  │
-     │  │░░░▒▒░░░░░│  │
-      ╰─┤░░░░▒░░░░░├─╯
-        ╰──────────╯
-        LINKING..`,
-  `
-        ╭──────────╮
-      ╭─┤▓▒░░░░░░░░├─╮
-     │  │▓▓▒░░░░░░░│  │
-     │  │▒▓▓▒░░░░░░│  │
-     │  │░▒▓▓▒░░░░░│  │
-     │  │░░▒▓▓▒░░░░│  │
-      ╰─┤░░░▒▓▒░░░░├─╯
-        ╰──────────╯
-        LINKING.`,
-  `
-        ╭──────────╮
-      ╭─┤█▓▒░░░░░░░├─╮
-     │  │██▓▒░░░░░░│  │
-     │  │▓██▓▒░░░░░│  │
-     │  │▒▓██▓▒░░░░│  │
-     │  │░▒▓██▓▒░░░│  │
-      ╰─┤░░▒▓█▓▒░░░├─╯
-        ╰──────────╯
-        LINKING...`
-];
+// =============================================================================
+// UI Updates
+// =============================================================================
 
-let earthFrame = 0;
-let connectingFrame = 0;
-let animationInterval = null;
+function updateUI(state, details = {}) {
+  currentState = state;
 
-// Navigation
-settingsBtn.addEventListener('click', () => {
-  mainView.classList.add('hidden');
-  settingsView.classList.remove('hidden');
-});
-
-// TUI Mode - Switch to terminal interface
-const tuiBtn = document.getElementById('tui-btn');
-if (tuiBtn) {
-  tuiBtn.addEventListener('click', () => {
-    // Navigate to TUI page
-    window.location.href = 'tui.html';
-  });
-}
-
-backBtn.addEventListener('click', () => {
-  settingsView.classList.add('hidden');
-  mainView.classList.remove('hidden');
-  // Перепроверим сервер при выходе из настроек
-  probeServer();
-});
-
-// Load config
-async function loadConfig() {
-  try {
-    const cfg = await invoke('get_config');
-    cfgServer.value = cfg.server || '';
-    cfgPort.value = cfg.port || '443';
-    cfgUsername.value = cfg.username || '';
-    cfgMode.value = cfg.mode || 'masque';
-    cfgDoh.value = cfg.doh_endpoint || '/dns-query';
-    cfgAutoconnect.checked = cfg.autoconnect || false;
-    cfgKillswitch.checked = cfg.killswitch || false;
-    cfgInsecure.checked = cfg.insecure || false;
-  } catch (e) {
-    console.error('Config load failed:', e);
+  // Update canvas particle globe state
+  if (globe) {
+    if (state === 'connecting' || state === 'deploying') {
+      globe.setState('connecting');
+    } else if (state === 'connected') {
+      globe.setState('connected');
+    } else if (state === 'error') {
+      globe.setState('error');
+    } else {
+      globe.setState('disconnected');
+    }
   }
-}
 
-// Save config - handler moved to VPS section at bottom of file
-
-// Пробивка сервера
-probeBtn.addEventListener('click', () => probeServer());
-
-// Animation control
-function startAnimation(type) {
-  stopAnimation();
-
-  if (type === 'earth') {
-    globe.start();
-  } else if (type === 'connecting') {
-    connectingFrame = 0;
-    animationInterval = setInterval(() => {
-      asciiArt.textContent = CONNECTING_FRAMES[connectingFrame];
-      connectingFrame = (connectingFrame + 1) % CONNECTING_FRAMES.length;
-    }, 200); // Fast animation
+  // Update globe-card classes for CSS styling
+  if (globeCard) {
+    globeCard.classList.remove('connecting', 'connected', 'error');
+    if (state === 'connecting' || state === 'deploying') {
+      globeCard.classList.add('connecting');
+    } else if (state === 'connected') {
+      globeCard.classList.add('connected');
+    } else if (state === 'error') {
+      globeCard.classList.add('error');
+    }
   }
-}
 
-function stopAnimation() {
-  globe.stop();
-  if (animationInterval) {
-    clearInterval(animationInterval);
-    animationInterval = null;
-  }
-}
-
-// Update UI
-function updateUI(status, error = null) {
-  currentStatus = status;
-
-  // Reset classes
-  asciiArt.classList.remove('active', 'connecting');
-  statusDot.classList.remove('active', 'connecting');
-  connectBtn.classList.remove('active');
-  statsBox.classList.remove('active');
+  // Reset all states
+  statusIcon.classList.remove('connected', 'connecting', 'error');
+  mainBtn.classList.remove('connected');
+  // Don't touch setupCard/statsCard here - managed by selectServer/showNewServerForm
+  progressCard.classList.add('hidden');
+  logCard.classList.add('hidden');
   btnText.classList.remove('hidden');
   btnLoader.classList.add('hidden');
-
-  switch (status) {
-    case 'Disconnected':
-      startAnimation('earth');
-      statusDot.textContent = '●';
-      statusText.textContent = 'OFFLINE';
-      targetAddr.textContent = 'none';
-      btnText.textContent = '[ INITIATE ]';
-      connectBtn.disabled = false;
-      stopStats();
-      setHealth('unknown');
-      stopTunnelChecks();
-      break;
-
-    case 'Connecting':
-      asciiArt.classList.add('connecting');
-      statusDot.classList.add('connecting');
-      startAnimation('connecting');
-      statusText.textContent = 'LINKING...';
-      targetAddr.textContent = cfgServer.value || '...';
-      btnText.classList.add('hidden');
-      btnLoader.classList.remove('hidden');
-      connectBtn.disabled = true;
-      break;
-
-    case 'Connected':
-      asciiArt.classList.add('active');
-      statusDot.classList.add('active');
-      connectBtn.classList.add('active');
-      statsBox.classList.add('active');
-      startAnimation('earth');
-      statusDot.textContent = '◉';
-      statusText.textContent = 'ONLINE';
-      targetAddr.textContent = `${cfgServer.value}:${cfgPort.value}`;
-      btnText.textContent = '[ TERMINATE ]';
-      connectBtn.disabled = false;
-      startStats();
-      scheduleTunnelChecks();
-      scheduleHealthChecks();
-      break;
-
-    case 'Disconnecting':
-      stopAnimation();
-      asciiArt.textContent = CONNECTING_FRAMES[0];
-      statusText.textContent = 'CLOSING...';
-      btnText.classList.add('hidden');
-      btnLoader.classList.remove('hidden');
-      connectBtn.disabled = true;
-      stopStats();
-      stopHealthChecks();
-      stopTunnelChecks();
-      break;
-
-    case 'Error':
-      startAnimation('earth');
-      statusDot.textContent = '×';
-      statusDot.classList.add('health-bad');
-      statusText.textContent = 'ERROR';
-      btnText.textContent = '[ RETRY ]';
-      connectBtn.disabled = false;
-      stopStats();
-      setHealth('bad', 'connection failed');
-      stopTunnelChecks();
-      break;
-  }
-
-  if (error) showError(error);
-}
-
-function showError(msg) {
-  if (msg) {
-    errorEl.textContent = `> err: ${msg}`;
-    errorEl.classList.remove('hidden');
-  } else {
-    errorEl.classList.add('hidden');
-  }
-}
-
-// Health indicator helpers
-function setHealth(state, details = '') {
-  healthDot.classList.remove('health-ok', 'health-bad', 'health-unknown');
-  healthText.classList.remove('health-ok', 'health-bad', 'health-unknown');
+  mainBtn.disabled = false;
 
   switch (state) {
-    case 'ok':
-      healthDot.classList.add('health-ok');
-      healthText.classList.add('health-ok');
-      healthDot.textContent = '◉';
-      healthText.textContent = details || 'reachable';
+    case 'disconnected':
+      statusIcon.innerHTML = ICONS.shield;
+      statusLabel.textContent = 'Not Connected';
+      if (selectedServerIndex !== null && servers[selectedServerIndex]) {
+        const s = servers[selectedServerIndex];
+        statusDetails.textContent = s.deployed
+          ? `Server ready: ${s.name || s.host}`
+          : 'Configure server below';
+      } else {
+        statusDetails.textContent = 'Add a server to get started';
+      }
+      btnText.textContent = 'Connect';
       break;
-    case 'warn':
-      healthDot.classList.add('health-unknown');
-      healthText.classList.add('health-unknown');
-      healthDot.textContent = '●';
-      healthText.textContent = details || 'check tunnel';
+
+    case 'deploying':
+      statusIcon.classList.add('connecting');
+      statusIcon.innerHTML = ICONS.shield;
+      statusLabel.textContent = 'Setting Up...';
+      statusDetails.textContent = details.message || 'Installing VPN server';
+      setupCard.classList.add('hidden');
+      progressCard.classList.remove('hidden');
+      btnText.classList.add('hidden');
+      btnLoader.classList.remove('hidden');
+      mainBtn.disabled = true;
       break;
-    case 'bad':
-      healthDot.classList.add('health-bad');
-      healthText.classList.add('health-bad');
-      healthDot.textContent = '×';
-      healthText.textContent = details || 'unreachable';
+
+    case 'connecting':
+      statusIcon.classList.add('connecting');
+      statusIcon.innerHTML = ICONS.shield;
+      statusLabel.textContent = 'Connecting...';
+      statusDetails.textContent = `Establishing secure tunnel to ${serverInput.value}`;
+      setupCard.classList.add('hidden');
+      btnText.classList.add('hidden');
+      btnLoader.classList.remove('hidden');
+      mainBtn.disabled = true;
       break;
-    default:
-      healthDot.classList.add('health-unknown');
-      healthText.classList.add('health-unknown');
-      healthDot.textContent = '●';
-      healthText.textContent = details || 'unknown';
+
+    case 'connected':
+      statusIcon.classList.add('connected');
+      statusIcon.innerHTML = ICONS.shieldCheck;
+      statusLabel.textContent = 'Protected';
+      statusDetails.textContent = `Connected to ${serverInput.value}`;
+      setupCard.classList.add('hidden');
+      statsCard.classList.remove('hidden');
+      // Keep log collapsed by default, user can toggle
+      mainBtn.classList.add('connected');
+      btnText.textContent = 'Disconnect';
+      startStats();
+      break;
+
+    case 'error':
+      statusIcon.classList.add('error');
+      statusIcon.innerHTML = ICONS.shieldX;
+      statusLabel.textContent = 'Connection Failed';
+      statusDetails.textContent = details.message || 'Check your settings and try again';
+      // Show log on error
+      logCard.classList.remove('hidden', 'collapsed');
+      logToggleBtn.classList.add('active');
+      btnText.textContent = 'Retry';
+      stopStats();
+      break;
   }
 }
 
-async function checkTunnel() {
-  try {
-    const res = await invoke('check_tunnel');
-    if (!res.tun_present) {
-      setHealth('bad', 'vpr0 missing');
-      return;
-    }
-    if (!res.default_via_tun || res.route_dev_to_inet !== 'vpr0') {
-      setHealth('bad', 'no default via tun');
-      return;
-    }
-    if (res.warnings && res.warnings.length > 0) {
-      setHealth('warn', res.warnings[0]);
-    } else {
-      setHealth('ok', res.route_src_ip ? `src ${res.route_src_ip}` : 'tunnel ok');
-    }
-  } catch (e) {
-    setHealth('bad', e.toString());
-  }
+function showError(message) {
+  errorText.textContent = message;
+  errorBox.classList.remove('hidden');
 }
 
-function scheduleTunnelChecks() {
-  stopTunnelChecks();
-  checkTunnel();
-  tunnelTimer = setInterval(checkTunnel, 15000);
+function hideError() {
+  errorBox.classList.add('hidden');
 }
 
-function stopTunnelChecks() {
-  if (tunnelTimer) {
-    clearInterval(tunnelTimer);
-    tunnelTimer = null;
-  }
+function updateProgress(percent, message) {
+  progressFill.style.width = `${percent}%`;
+  progressText.textContent = message;
 }
 
-async function probeServer() {
-  const server = cfgServer.value.trim();
-  const port = cfgPort.value.trim() || '443';
-
-  if (!server) {
-    setHealth('unknown', 'set server');
-    return;
-  }
-
-  setHealth('unknown', 'checking...');
-
-  try {
-    const res = await invoke('probe_server', { server, port });
-    if (res.reachable) {
-      const latency = res.latency_ms ? `${res.latency_ms} ms` : '';
-      const ip = res.ip ? `@${res.ip}` : '';
-      setHealth('ok', `${latency} ${ip}`.trim());
-    } else {
-      setHealth('bad', res.error || 'no route');
-    }
-  } catch (e) {
-    setHealth('bad', e.toString());
-  }
+function clearLog() {
+  logArea.innerHTML = '';
+  connectionLog.innerHTML = '';
 }
 
-function scheduleHealthChecks() {
-  stopHealthChecks();
-  healthTimer = setInterval(probeServer, 30000);
+function addLog(message, type = 'info') {
+  const time = new Date().toLocaleTimeString('en-US', { hour12: false });
+  const text = `[${time}] ${message}`;
+
+  // Add to progress log area
+  const line1 = document.createElement('div');
+  line1.className = `log-line log-${type}`;
+  line1.textContent = text;
+  logArea.appendChild(line1);
+  logArea.scrollTop = logArea.scrollHeight;
+
+  // Add to persistent connection log
+  const line2 = document.createElement('div');
+  line2.className = `log-line log-${type}`;
+  line2.textContent = text;
+  connectionLog.appendChild(line2);
+  connectionLog.scrollTop = connectionLog.scrollHeight;
 }
 
-function stopHealthChecks() {
-  if (healthTimer) {
-    clearInterval(healthTimer);
-    healthTimer = null;
-  }
-}
-
+// =============================================================================
 // Stats
+// =============================================================================
+
 function startStats() {
   connectTime = Date.now();
-  bytesUp = 0;
-  bytesDown = 0;
+  animatedStats = { bytesUp: 0, bytesDown: 0, targetUp: 0, targetDown: 0 };
   updateStats();
   statsInterval = setInterval(updateStats, 1000);
+  requestAnimationFrame(animateStatsFrame);
 }
 
 function stopStats() {
@@ -384,9 +289,9 @@ function stopStats() {
     clearInterval(statsInterval);
     statsInterval = null;
   }
-  statTime.textContent = '--:--:--';
-  statUp.textContent = '0';
-  statDown.textContent = '0';
+  statTime.textContent = '00:00:00';
+  statUp.textContent = '0 B';
+  statDown.textContent = '0 B';
 }
 
 async function updateStats() {
@@ -396,21 +301,43 @@ async function updateStats() {
   const h = Math.floor(elapsed / 3600);
   const m = Math.floor((elapsed % 3600) / 60);
   const s = elapsed % 60;
-  statTime.textContent = `${pad(h)}:${pad(m)}:${pad(s)}`;
 
-  // Get real statistics from backend
+  // Animate time digits
+  animateValue(statTime, `${pad(h)}:${pad(m)}:${pad(s)}`);
+
   try {
     const stats = await invoke('get_statistics');
     if (stats) {
-      statUp.textContent = formatBytes(stats.bytes_sent || 0);
-      statDown.textContent = formatBytes(stats.bytes_received || 0);
+      animatedStats.targetUp = stats.bytes_sent || 0;
+      animatedStats.targetDown = stats.bytes_received || 0;
     }
   } catch (e) {
-    // Fallback to simulated traffic if backend fails
-    bytesUp += Math.random() * 5000;
-    bytesDown += Math.random() * 15000;
-    statUp.textContent = formatBytes(bytesUp);
-    statDown.textContent = formatBytes(bytesDown);
+    // Keep last values
+  }
+}
+
+// Smooth countup animation for stats
+function animateStatsFrame() {
+  if (currentState !== 'connected') return;
+
+  // Lerp towards target values
+  const lerpFactor = 0.15;
+  animatedStats.bytesUp += (animatedStats.targetUp - animatedStats.bytesUp) * lerpFactor;
+  animatedStats.bytesDown += (animatedStats.targetDown - animatedStats.bytesDown) * lerpFactor;
+
+  statUp.textContent = formatBytes(Math.floor(animatedStats.bytesUp));
+  statDown.textContent = formatBytes(Math.floor(animatedStats.bytesDown));
+
+  requestAnimationFrame(animateStatsFrame);
+}
+
+function animateValue(element, newValue) {
+  if (element.textContent !== newValue) {
+    element.style.transform = 'scale(1.05)';
+    element.textContent = newValue;
+    setTimeout(() => {
+      element.style.transform = 'scale(1)';
+    }, 100);
   }
 }
 
@@ -419,347 +346,829 @@ function pad(n) {
 }
 
 function formatBytes(b) {
-  if (b < 1024) return `${Math.floor(b)}B`;
-  if (b < 1048576) return `${(b / 1024).toFixed(1)}K`;
-  if (b < 1073741824) return `${(b / 1048576).toFixed(1)}M`;
-  return `${(b / 1073741824).toFixed(2)}G`;
+  if (b < 1024) return `${Math.floor(b)} B`;
+  if (b < 1048576) return `${(b / 1024).toFixed(1)} KB`;
+  if (b < 1073741824) return `${(b / 1048576).toFixed(1)} MB`;
+  return `${(b / 1073741824).toFixed(2)} GB`;
 }
 
-// Connect/Disconnect
-connectBtn.addEventListener('click', async () => {
-  if (currentStatus === 'Connected') {
+// =============================================================================
+// Main Action
+// =============================================================================
+
+mainBtn.addEventListener('click', async () => {
+  hideError();
+
+  if (currentState === 'connected') {
     await disconnect();
-  } else if (currentStatus === 'Disconnected' || currentStatus === 'Error') {
-    await connect();
+  } else if (currentState === 'disconnected' || currentState === 'error') {
+    await connectFlow();
   }
 });
 
-async function connect() {
-  const server = cfgServer.value.trim();
-  const username = cfgUsername.value.trim();
-  const password = cfgPassword.value;
+async function connectFlow() {
+  const server = serverInput.value.trim();
+  const user = userInput.value.trim() || 'root';
+  const port = portInput.value.trim() || '22';
+  const pass = passInput.value;
 
+  // Validate
   if (!server) {
-    showError('target required');
-    settingsView.classList.remove('hidden');
-    mainView.classList.add('hidden');
+    showError('Please enter a server address');
+    serverInput.focus();
     return;
   }
 
-  showError('');
-  updateUI('Connecting');
-
   try {
-    await invoke('connect', {
-      server,
-      port: cfgPort.value.trim() || '443',
-      username,
-      password,
-      mode: cfgMode.value,
-    });
-    updateUI('Connected');
-    cfgPassword.value = '';
+    clearLog();
+
+    // If server already deployed, skip SSH check and connect directly
+    if (serverDeployed) {
+      addLog(`Server ${server} already configured`, 'success');
+      addLog('Connecting to VPN...', 'info');
+      updateUI('connecting');
+      await connectVpn(server);
+      addLog('VPN connected!', 'success');
+      return;
+    }
+
+    // First time setup - need SSH credentials
+    if (!pass) {
+      showError('First time setup requires SSH password');
+      passInput.focus();
+      return;
+    }
+
+    updateUI('deploying', { message: 'Checking server status...' });
+    updateProgress(10, 'Checking server status...');
+    addLog(`Connecting to ${server}...`, 'info');
+
+    const vps = {
+      host: server,
+      ssh_port: parseInt(port, 10),
+      ssh_user: user,
+      ssh_password: pass,
+      ssh_key_path: null,
+      deployed: false
+    };
+
+    const status = await invoke('check_vps_status', { vps });
+    addLog(`Server status: ${status.deployed ? 'deployed' : 'not deployed'}, ${status.running ? 'running' : 'stopped'}`, 'info');
+
+    if (!status.deployed) {
+      // Need to deploy
+      addLog('Server not deployed, starting installation...', 'warn');
+      await deployServer(vps);
+    } else if (!status.running) {
+      // Deployed but not running - start it
+      addLog('Starting VPN server...', 'info');
+      updateProgress(80, 'Starting VPN server...');
+      await invoke('start_vps_server', { vps });
+      addLog('VPN server started', 'success');
+    } else {
+      addLog('VPN server is ready', 'success');
+    }
+
+    serverDeployed = true;
+
+    // Save server to the list
+    const vpsConfig = {
+      host: server,
+      ssh_port: parseInt(port, 10),
+      ssh_user: user,
+      ssh_password: null, // Don't save password
+      ssh_key_path: null,
+      deployed: true
+    };
+
+    if (selectedServerIndex !== null) {
+      // Update existing server
+      await invoke('update_server', {
+        index: selectedServerIndex,
+        name: server,
+        vps: vpsConfig
+      });
+    } else {
+      // Add new server
+      selectedServerIndex = await invoke('add_server', {
+        name: server,
+        vps: vpsConfig
+      });
+    }
+
+    // Reload server list
+    await loadServers();
+    addLog('Server configuration saved', 'info');
+
+    // Clear password from input after successful setup
+    passInput.value = '';
+
+    // Now connect
+    addLog('Establishing VPN tunnel...', 'info');
+    await connectVpn(server);
+    addLog('VPN connected!', 'success');
+
   } catch (e) {
-    updateUI('Disconnected', e);
+    addLog(`Error: ${e.toString()}`, 'error');
+    updateUI('error', { message: e.toString() });
+    showError(e.toString());
   }
+}
+
+async function deployServer(vps) {
+  updateProgress(20, 'Connecting to server...');
+  addLog(`Testing SSH connection to ${vps.host}:${vps.ssh_port}...`, 'info');
+
+  // Test connection first
+  try {
+    await invoke('test_vps_connection', { vps });
+    addLog('SSH connection successful', 'success');
+  } catch (e) {
+    addLog(`SSH failed: ${e}`, 'error');
+    throw new Error(`Cannot connect to ${vps.host}: ${e}`);
+  }
+
+  updateProgress(30, 'Installing VPN server...');
+  addLog('Deploying VPN server (this may take a few minutes)...', 'info');
+
+  // Deploy
+  await invoke('deploy_server', { vps });
+
+  updateProgress(90, 'Deployment complete!');
+  addLog('Deployment complete!', 'success');
+}
+
+async function connectVpn(server) {
+  updateUI('connecting');
+
+  const vpnPort = cfgVpnPort.value.trim() || '4433';
+
+  await invoke('connect', {
+    server,
+    port: vpnPort,
+    username: '',
+    password: '',
+    mode: cfgMode.value || 'masque'
+  });
+
+  // Clear password after successful connection
+  passInput.value = '';
+
+  updateUI('connected');
 }
 
 async function disconnect() {
-  updateUI('Disconnecting');
+  updateUI('connecting');
+  statusLabel.textContent = 'Disconnecting...';
+
   try {
     await invoke('disconnect');
-    updateUI('Disconnected');
+    updateUI('disconnected');
   } catch (e) {
-    updateUI('Connected', e);
+    updateUI('connected');
+    showError(e.toString());
   }
 }
 
-// Periodic state check
+// =============================================================================
+// Progress Events
+// =============================================================================
+
+listen('deploy_progress', (event) => {
+  const { percent, message, error } = event.payload;
+  updateProgress(percent, message);
+  addLog(message, error ? 'error' : 'info');
+  if (error) {
+    updateUI('error', { message: error });
+    showError(error);
+  }
+});
+
+// VPN connection progress
+listen('vpn_progress', (event) => {
+  const { message, status } = event.payload;
+  const type = status === 'error' ? 'error' : status === 'success' ? 'success' : 'info';
+  addLog(message, type);
+});
+
+// Diagnostic results - показываем детальную информацию о проблемах
+listen('diagnostic_result', (event) => {
+  const result = event.payload;
+  console.log('Diagnostic result:', result);
+
+  // Логируем каждую проверку
+  for (const check of result.checks) {
+    let icon = '✓';
+    let type = 'success';
+
+    if (check.status === 'Failed') {
+      icon = '✗';
+      type = 'error';
+    } else if (check.status === 'Warning') {
+      icon = '⚠';
+      type = 'warn';
+    }
+
+    addLog(`${icon} [${check.name}] ${check.message}`, type);
+
+    // Показываем детали для ошибок
+    if (check.details && check.status === 'Failed') {
+      const lines = check.details.split('\n');
+      for (const line of lines) {
+        if (line.trim()) {
+          addLog(`   ${line}`, 'info');
+        }
+      }
+    }
+  }
+
+  // Показываем итоговое сообщение
+  if (result.status === 'Failed') {
+    addLog(`── Diagnosis: ${result.summary}`, 'error');
+    if (result.action) {
+      addLog(`── Action: ${result.action}`, 'warn');
+    }
+  }
+});
+
+// Comprehensive diagnostic results - flagship level
+listen('comprehensive_diagnostic_result', (event) => {
+  const result = event.payload;
+  console.log('Comprehensive diagnostic result:', result);
+
+  addLog('═══════════════════════════════════════════', 'info');
+  addLog(`FLAGSHIP DIAGNOSTICS COMPLETE (${result.total_duration_ms}ms)`, 'info');
+  addLog('═══════════════════════════════════════════', 'info');
+
+  // Overall status
+  const statusIcon = result.overall_status === 'Passed' ? '✓' :
+                     result.overall_status === 'Warning' ? '⚠' : '✗';
+  const statusType = result.overall_status === 'Passed' ? 'success' :
+                     result.overall_status === 'Warning' ? 'warn' : 'error';
+  addLog(`${statusIcon} Overall: ${result.overall_message}`, statusType);
+
+  // Connection quality
+  if (result.connection_quality) {
+    const q = result.connection_quality;
+    addLog(`📊 Quality: ${q.quality_label} (Score: ${q.quality_score}/100)`, 'info');
+    addLog(`   RTT: ${q.rtt_ms.toFixed(1)}ms, Jitter: ${q.rtt_jitter_ms.toFixed(1)}ms, Loss: ${q.packet_loss_percent.toFixed(1)}%`, 'info');
+  }
+
+  // QUIC diagnostic
+  if (result.quic_diagnostic) {
+    const qd = result.quic_diagnostic;
+    if (qd.initial_handshake.completed) {
+      addLog(`🔐 QUIC: Initial handshake OK (${qd.initial_handshake.duration_ms}ms)`, 'success');
+      if (qd.quic_version) {
+        addLog(`   QUIC version: ${qd.quic_version}`, 'info');
+      }
+    } else if (qd.initial_handshake.error) {
+      addLog(`🔐 QUIC: ${qd.initial_handshake.error}`, 'error');
+    }
+  }
+
+  // Local certificate
+  if (result.local_certificate) {
+    const cert = result.local_certificate;
+    if (cert.exists && cert.valid) {
+      const expiryMsg = cert.days_until_expiry ?
+        ` (expires in ${cert.days_until_expiry} days)` : '';
+      if (cert.warning) {
+        addLog(`📜 Certificate: Valid${expiryMsg} ⚠ ${cert.warning}`, 'warn');
+      } else {
+        addLog(`📜 Certificate: Valid${expiryMsg}`, 'success');
+      }
+    } else if (cert.error) {
+      addLog(`📜 Certificate: ${cert.error}`, 'error');
+    }
+  }
+
+  // Server diagnostics (if available)
+  if (result.server_diagnostic) {
+    const sd = result.server_diagnostic;
+    addLog('───── Remote Server Status ─────', 'info');
+    addLog(`   VPN Server: ${sd.vpn_server_running ? 'Running' : 'Not Running'}`, sd.vpn_server_running ? 'success' : 'error');
+    if (sd.vpn_listening_port) {
+      addLog(`   Listening on port: ${sd.vpn_listening_port}`, 'info');
+    }
+    addLog(`   Firewall: ${sd.firewall_open ? 'Open' : 'May be blocking'}`, sd.firewall_open ? 'success' : 'warn');
+    if (sd.system_resources.load_average) {
+      addLog(`   Load: ${sd.system_resources.load_average}`, 'info');
+    }
+    if (sd.uptime) {
+      addLog(`   Uptime: ${sd.uptime}`, 'info');
+    }
+    if (sd.errors.length > 0) {
+      for (const err of sd.errors) {
+        addLog(`   Error: ${err}`, 'error');
+      }
+    }
+  }
+
+  // Available fixes
+  if (result.available_fixes && result.available_fixes.length > 0) {
+    addLog('───── Available Auto-Fixes ─────', 'warn');
+    for (const fix of result.available_fixes) {
+      addLog(`   🔧 ${fix.name}: ${fix.description}`, 'info');
+      if (fix.safe) {
+        addLog(`      Command: ${fix.command}`, 'info');
+      }
+    }
+  }
+
+  addLog('═══════════════════════════════════════════', 'info');
+});
+
+// Connection quality measurement result
+listen('connection_quality_result', (event) => {
+  const q = event.payload;
+  addLog(`📊 Connection Quality: ${q.quality_label}`, 'info');
+  addLog(`   Score: ${q.quality_score}/100, RTT: ${q.rtt_ms.toFixed(1)}ms`, 'info');
+});
+
+// =============================================================================
+// Settings
+// =============================================================================
+
+settingsBtn.addEventListener('click', () => {
+  mainView.classList.add('hidden');
+  settingsView.classList.remove('hidden');
+  // Hide header controls on settings page
+  serverDropdown.classList.add('hidden');
+  settingsBtn.classList.add('hidden');
+  loadSettings();
+});
+
+backBtn.addEventListener('click', () => {
+  saveSettings();
+  settingsView.classList.add('hidden');
+  mainView.classList.remove('hidden');
+  // Restore header controls
+  updateHeaderVisibility();
+});
+
+async function loadSettings() {
+  try {
+    const cfg = await invoke('get_config');
+    cfgKillswitch.checked = cfg.killswitch || false;
+    cfgAutoconnect.checked = cfg.autoconnect || false;
+    cfgInsecure.checked = cfg.insecure || false;
+    cfgVpnPort.value = cfg.port || '443';
+    cfgMode.value = cfg.mode || 'masque';
+  } catch (e) {
+    console.error('Failed to load settings:', e);
+  }
+}
+
+async function saveSettings() {
+  try {
+    await invoke('save_config', {
+      config: {
+        server: serverInput.value.trim(),
+        port: cfgVpnPort.value.trim() || '443',
+        username: '',
+        mode: cfgMode.value,
+        doh_endpoint: '/dns-query',
+        autoconnect: cfgAutoconnect.checked,
+        killswitch: cfgKillswitch.checked,
+        insecure: cfgInsecure.checked
+      }
+    });
+  } catch (e) {
+    console.error('Failed to save settings:', e);
+  }
+}
+
+// Reinstall server
+reinstallBtn.addEventListener('click', async () => {
+  if (!confirm('This will reinstall the VPN server. Continue?')) return;
+
+  const server = serverInput.value.trim();
+  const pass = passInput.value;
+
+  if (!server || !pass) {
+    showError('Enter server address and password first');
+    settingsView.classList.add('hidden');
+    mainView.classList.remove('hidden');
+    return;
+  }
+
+  settingsView.classList.add('hidden');
+  mainView.classList.remove('hidden');
+
+  serverDeployed = false;
+  await connectFlow();
+});
+
+// Uninstall server
+uninstallBtn.addEventListener('click', async () => {
+  if (!confirm('Remove VPN server from VPS? This cannot be undone.')) return;
+
+  const server = serverInput.value.trim();
+  const user = userInput.value.trim() || 'root';
+  const port = portInput.value.trim() || '22';
+  const pass = passInput.value;
+
+  if (!server || !pass) {
+    showError('Enter server address and password first');
+    return;
+  }
+
+  try {
+    await invoke('uninstall_server', {
+      vps: {
+        host: server,
+        ssh_port: parseInt(port, 10),
+        ssh_user: user,
+        ssh_password: pass,
+        ssh_key_path: null,
+        deployed: false
+      }
+    });
+    serverDeployed = false;
+    settingsView.classList.add('hidden');
+    mainView.classList.remove('hidden');
+    updateUI('disconnected');
+  } catch (e) {
+    showError(e.toString());
+  }
+});
+
+// =============================================================================
+// Error handling
+// =============================================================================
+
+errorClose.addEventListener('click', hideError);
+
+// Log toggle button - expands stats panel to show logs, hides globe
+logToggleBtn.addEventListener('click', () => {
+  const isExpanded = statsCard.classList.toggle('expanded');
+  logToggleBtn.classList.toggle('active');
+
+  // Hide/show globe when logs are expanded/collapsed
+  if (isExpanded) {
+    globeCard.classList.add('hide-globe');
+  } else {
+    globeCard.classList.remove('hide-globe');
+    // Resize globe after it becomes visible
+    if (globe) {
+      setTimeout(() => globe.resize(), 50);
+    }
+  }
+});
+
+// =============================================================================
+// Server List Management
+// =============================================================================
+
+async function loadServers() {
+  try {
+    servers = await invoke('get_servers');
+    selectedServerIndex = await invoke('get_selected_server');
+    updateServerSelect();
+  } catch (e) {
+    console.error('Failed to load servers:', e);
+    servers = [];
+  }
+}
+
+function updateServerSelect() {
+  // Clear existing options except the first one for both selects
+  while (serverSelect.options.length > 1) {
+    serverSelect.remove(1);
+  }
+  while (headerServerSelect.options.length > 1) {
+    headerServerSelect.remove(1);
+  }
+
+  // Add servers to both selects
+  servers.forEach((server, index) => {
+    const option1 = document.createElement('option');
+    option1.value = index.toString();
+    option1.textContent = server.name || server.host;
+    serverSelect.appendChild(option1);
+
+    const option2 = document.createElement('option');
+    option2.value = index.toString();
+    option2.textContent = server.name || server.host;
+    headerServerSelect.appendChild(option2);
+  });
+
+  // Update custom dropdown
+  updateCustomDropdown();
+
+  // Select the appropriate option
+  if (selectedServerIndex !== null && selectedServerIndex < servers.length) {
+    serverSelect.value = selectedServerIndex.toString();
+    headerServerSelect.value = selectedServerIndex.toString();
+    selectServer(selectedServerIndex);
+  } else if (servers.length > 0) {
+    serverSelect.value = '0';
+    headerServerSelect.value = '0';
+    selectServer(0);
+  } else {
+    serverSelect.value = 'new';
+    headerServerSelect.value = 'new';
+    showNewServerForm();
+  }
+}
+
+function selectServer(index) {
+  selectedServerIndex = index;
+  const server = servers[index];
+  if (server) {
+    serverInput.value = server.host || '';
+    userInput.value = server.ssh_user || 'root';
+    portInput.value = server.ssh_port || '22';
+    passInput.value = '';
+    serverDeployed = server.deployed || false;
+
+    // Hide setup card entirely when server is selected
+    setupCard.classList.add('hidden');
+
+    // Show globe when server is selected
+    globeCard.classList.remove('hide-globe');
+
+    // Resize globe after it becomes visible (needs a small delay for CSS transition)
+    if (globe) {
+      setTimeout(() => globe.resize(), 50);
+    }
+
+    // Show stats card (with zeroed values when disconnected)
+    statsCard.classList.remove('hidden');
+  }
+}
+
+function showNewServerForm() {
+  selectedServerIndex = null;
+  serverInput.value = '';
+  userInput.value = '';
+  portInput.value = '';
+  passInput.value = '';
+  serverDeployed = false;
+
+  // Show setup card with form
+  setupCard.classList.remove('hidden');
+  setupTitle.textContent = 'New Server';
+  newServerForm.classList.remove('hidden');
+  deleteServerBtn.classList.add('hidden');
+  document.getElementById('ssh-fields').classList.remove('hidden');
+
+  // Hide globe and stats when adding new server
+  globeCard.classList.add('hide-globe');
+  statsCard.classList.add('hidden');
+}
+
+// =============================================================================
+// Custom Dropdown Functions
+// =============================================================================
+
+function updateHeaderVisibility() {
+  // Hide dropdown and settings button if no servers configured
+  if (servers.length === 0) {
+    serverDropdown.classList.add('hidden');
+    settingsBtn.classList.add('hidden');
+  } else {
+    serverDropdown.classList.remove('hidden');
+    settingsBtn.classList.remove('hidden');
+  }
+}
+
+function updateCustomDropdown() {
+  // Update header visibility based on server count
+  updateHeaderVisibility();
+
+  // Clear dropdown menu except the "Add server" item
+  dropdownMenu.innerHTML = '';
+
+  // Add existing servers first
+  servers.forEach((server, index) => {
+    const item = document.createElement('div');
+    item.className = 'dropdown-item';
+    item.dataset.value = index.toString();
+    if (selectedServerIndex === index) {
+      item.classList.add('selected');
+    }
+    item.innerHTML = `
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
+        <line x1="8" y1="21" x2="16" y2="21"></line>
+        <line x1="12" y1="17" x2="12" y2="21"></line>
+      </svg>
+      <span>${server.name || server.host}</span>
+      <div class="server-status${server.deployed ? ' online' : ''}"></div>
+    `;
+    item.addEventListener('click', () => handleDropdownSelect(index.toString()));
+    dropdownMenu.appendChild(item);
+  });
+
+  // Add "Add server" item at the end
+  const addItem = document.createElement('div');
+  addItem.className = 'dropdown-item add-new';
+  addItem.dataset.value = 'new';
+  addItem.innerHTML = `
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <line x1="12" y1="5" x2="12" y2="19"></line>
+      <line x1="5" y1="12" x2="19" y2="12"></line>
+    </svg>
+    <span>Add server</span>
+  `;
+  addItem.addEventListener('click', () => handleDropdownSelect('new'));
+  dropdownMenu.appendChild(addItem);
+
+  // Update displayed value
+  updateDropdownValue();
+}
+
+function updateDropdownValue() {
+  if (selectedServerIndex !== null && servers[selectedServerIndex]) {
+    dropdownValue.textContent = servers[selectedServerIndex].name || servers[selectedServerIndex].host;
+  } else {
+    dropdownValue.textContent = '+ Add server';
+  }
+}
+
+function handleDropdownSelect(value) {
+  serverDropdown.classList.remove('open');
+  handleServerSelectChange(value);
+}
+
+// Toggle dropdown open/close
+dropdownTrigger.addEventListener('click', (e) => {
+  e.stopPropagation();
+  serverDropdown.classList.toggle('open');
+});
+
+// Close dropdown when clicking outside
+document.addEventListener('click', (e) => {
+  if (!serverDropdown.contains(e.target)) {
+    serverDropdown.classList.remove('open');
+  }
+});
+
+// Close dropdown on escape key
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    serverDropdown.classList.remove('open');
+  }
+});
+
+// Server select change handler (shared logic)
+async function handleServerSelectChange(value) {
+  if (value === 'new') {
+    showNewServerForm();
+    await invoke('set_selected_server', { index: null });
+  } else {
+    const index = parseInt(value, 10);
+    selectServer(index);
+    await invoke('set_selected_server', { index });
+  }
+  // Sync all selects
+  serverSelect.value = value;
+  headerServerSelect.value = value;
+  updateDropdownValue();
+
+  // Update selected state in dropdown
+  dropdownMenu.querySelectorAll('.dropdown-item').forEach(item => {
+    item.classList.toggle('selected', item.dataset.value === value);
+  });
+
+  updateUI('disconnected');
+}
+
+serverSelect.addEventListener('change', async () => {
+  await handleServerSelectChange(serverSelect.value);
+});
+
+headerServerSelect.addEventListener('change', async () => {
+  await handleServerSelectChange(headerServerSelect.value);
+});
+
+// Delete server button
+deleteServerBtn.addEventListener('click', async () => {
+  if (selectedServerIndex === null) return;
+
+  const server = servers[selectedServerIndex];
+  if (!confirm(`Delete server "${server.name || server.host}"?`)) return;
+
+  try {
+    await invoke('remove_server', { index: selectedServerIndex });
+    await loadServers();
+    updateUI('disconnected');
+  } catch (e) {
+    showError(e.toString());
+  }
+});
+
+// =============================================================================
+// State sync
+// =============================================================================
+
 let stateCheckInterval = null;
 
 async function checkState() {
   try {
     const state = await invoke('get_state');
-    // Only update if status changed
-    if (state.status !== currentStatus) {
-      updateUI(state.status, state.error);
+
+    // Sync state from backend
+    if (state.status === 'Connected' && currentState !== 'connected') {
+      updateUI('connected');
+    } else if (state.status === 'Disconnected' && currentState === 'connected') {
+      updateUI('disconnected');
+    } else if (state.status === 'Error' && currentState !== 'error') {
+      updateUI('error', { message: state.error });
     }
   } catch (e) {
     console.error('State check failed:', e);
   }
 }
 
-function startStateCheck() {
-  if (stateCheckInterval) return;
-  stateCheckInterval = setInterval(checkState, 2000);
-}
-
-function stopStateCheck() {
-  if (stateCheckInterval) {
-    clearInterval(stateCheckInterval);
-    stateCheckInterval = null;
-  }
-}
-
+// =============================================================================
 // Init
+// =============================================================================
+
 async function init() {
-  await loadConfig();
+  // Add ripple effect to main button
+  initRippleEffect();
+
+  // Load saved config FIRST (this determines if globe will be visible)
   try {
+    // Load server list - this will show/hide globe-card based on servers
+    await loadServers();
+
+    // NOW initialize Canvas Particle Globe (after hide-globe class is potentially removed)
+    initGlobe();
+
+    // Check current state
     const state = await invoke('get_state');
-    updateUI(state.status, state.error);
-    // Start periodic state check
-    startStateCheck();
+    if (state.status === 'Connected') {
+      updateUI('connected');
+    } else {
+      updateUI('disconnected');
+    }
+
+    // Start state sync
+    stateCheckInterval = setInterval(checkState, 3000);
+
   } catch (e) {
     console.error('Init failed:', e);
+    // Still init globe for new server setup
+    initGlobe();
+    updateUI('disconnected');
   }
+}
+
+function initGlobe() {
+  if (!globeContainer || !window.ParticleGlobe || globe) return;
+
+  try {
+    globe = new window.ParticleGlobe(globeContainer);
+    console.log('Canvas particle globe initialized');
+
+    // Use ResizeObserver to handle container size changes
+    const resizeObserver = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        if (entry.contentRect.width > 50 && entry.contentRect.height > 50) {
+          globe.resize();
+        }
+      }
+    });
+    resizeObserver.observe(globeContainer);
+
+    // Also resize when globe-card becomes visible (hide-globe class removed)
+    const mutationObserver = new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        if (mutation.type === 'attributes' && mutation.attributeName === 'class') {
+          const hasHideClass = globeCard.classList.contains('hide-globe');
+          if (!hasHideClass) {
+            // Globe became visible - resize after CSS transition completes
+            setTimeout(() => globe.resize(), 450);
+          }
+        }
+      }
+    });
+    mutationObserver.observe(globeCard, { attributes: true });
+
+  } catch (e) {
+    console.warn('Failed to initialize particle globe:', e);
+  }
+}
+
+function initRippleEffect() {
+  mainBtn.addEventListener('click', function(e) {
+    const rect = this.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+
+    const ripple = document.createElement('span');
+    ripple.className = 'ripple';
+    ripple.style.left = `${x}px`;
+    ripple.style.top = `${y}px`;
+
+    this.appendChild(ripple);
+
+    setTimeout(() => ripple.remove(), 600);
+  });
 }
 
 document.addEventListener('DOMContentLoaded', init);
-
-// ============================================================================
-// VPS Deployment Section
-// ============================================================================
-
-// VPS Elements
-const vpsHost = document.getElementById('vps-host');
-const vpsSshPort = document.getElementById('vps-ssh-port');
-const vpsSshUser = document.getElementById('vps-ssh-user');
-const vpsSshPass = document.getElementById('vps-ssh-pass');
-const vpsStatusDot = document.getElementById('vps-status-dot');
-const vpsStatusText = document.getElementById('vps-status-text');
-const deployProgress = document.getElementById('deploy-progress');
-const progressFill = document.getElementById('progress-fill');
-const progressText = document.getElementById('progress-text');
-const vpsTestBtn = document.getElementById('vps-test-btn');
-const vpsDeployBtn = document.getElementById('vps-deploy-btn');
-const vpsStatusBtn = document.getElementById('vps-status-btn');
-const vpsUninstallBtn = document.getElementById('vps-uninstall-btn');
-
-// Get VPS config object from form
-function getVpsConfig() {
-  return {
-    host: vpsHost.value.trim(),
-    ssh_port: parseInt(vpsSshPort.value.trim() || '22', 10),
-    ssh_user: vpsSshUser.value.trim() || 'root',
-    ssh_password: vpsSshPass.value || null,
-    ssh_key_path: null,
-    deployed: false
-  };
-}
-
-// Load VPS config from backend
-async function loadVpsConfig() {
-  try {
-    const cfg = await invoke('get_vps_config');
-    vpsHost.value = cfg.host || '';
-    vpsSshPort.value = cfg.ssh_port || '22';
-    vpsSshUser.value = cfg.ssh_user || 'root';
-    // Don't load password for security
-    if (cfg.deployed) {
-      setVpsStatus('deployed', 'deployed');
-    }
-  } catch (e) {
-    console.error('VPS config load failed:', e);
-  }
-}
-
-// Set VPS status display
-function setVpsStatus(state, text) {
-  vpsStatusDot.classList.remove('health-ok', 'health-bad', 'health-unknown');
-  switch (state) {
-    case 'deployed':
-    case 'running':
-      vpsStatusDot.classList.add('health-ok');
-      break;
-    case 'error':
-    case 'stopped':
-      vpsStatusDot.classList.add('health-bad');
-      break;
-    default:
-      vpsStatusDot.classList.add('health-unknown');
-  }
-  vpsStatusText.textContent = text;
-}
-
-// Show/hide progress
-function showProgress(show) {
-  if (show) {
-    deployProgress.classList.remove('hidden');
-  } else {
-    deployProgress.classList.add('hidden');
-  }
-}
-
-// Update progress bar
-function updateProgress(percent, message) {
-  progressFill.style.width = `${percent}%`;
-  progressText.textContent = message;
-}
-
-// Disable all VPS buttons
-function disableVpsButtons(disable) {
-  vpsTestBtn.disabled = disable;
-  vpsDeployBtn.disabled = disable;
-  vpsStatusBtn.disabled = disable;
-  vpsUninstallBtn.disabled = disable;
-}
-
-// Test SSH connection
-vpsTestBtn.addEventListener('click', async () => {
-  const vps = getVpsConfig();
-  if (!vps.host) {
-    setVpsStatus('error', 'host required');
-    return;
-  }
-  if (!vps.ssh_password) {
-    setVpsStatus('error', 'password required');
-    return;
-  }
-
-  setVpsStatus('unknown', 'testing...');
-  disableVpsButtons(true);
-
-  try {
-    await invoke('test_vps_connection', { vps });
-    setVpsStatus('running', 'SSH OK');
-  } catch (e) {
-    setVpsStatus('error', e.toString().substring(0, 30));
-  } finally {
-    disableVpsButtons(false);
-  }
-});
-
-// Deploy server
-vpsDeployBtn.addEventListener('click', async () => {
-  const vps = getVpsConfig();
-  if (!vps.host || !vps.ssh_password) {
-    setVpsStatus('error', 'host & password required');
-    return;
-  }
-
-  setVpsStatus('unknown', 'deploying...');
-  showProgress(true);
-  updateProgress(0, 'Starting deployment...');
-  disableVpsButtons(true);
-
-  try {
-    await invoke('deploy_server', { vps });
-    setVpsStatus('deployed', 'deployed & running');
-    updateProgress(100, 'Complete!');
-    // Auto-fill server field
-    cfgServer.value = vps.host;
-    // Clear password after successful deploy
-    vpsSshPass.value = '';
-  } catch (e) {
-    setVpsStatus('error', e.toString().substring(0, 40));
-    updateProgress(0, 'Failed: ' + e.toString().substring(0, 50));
-  } finally {
-    disableVpsButtons(false);
-    setTimeout(() => showProgress(false), 3000);
-  }
-});
-
-// Check server status
-vpsStatusBtn.addEventListener('click', async () => {
-  const vps = getVpsConfig();
-  if (!vps.host) {
-    setVpsStatus('error', 'host required');
-    return;
-  }
-  if (!vps.ssh_password) {
-    setVpsStatus('error', 'password required');
-    return;
-  }
-
-  setVpsStatus('unknown', 'checking...');
-  disableVpsButtons(true);
-
-  try {
-    const status = await invoke('check_vps_status', { vps });
-    if (status.running) {
-      setVpsStatus('running', 'running' + (status.version ? ` (${status.version})` : ''));
-    } else if (status.deployed) {
-      setVpsStatus('stopped', 'deployed but stopped');
-    } else {
-      setVpsStatus('unknown', 'not deployed');
-    }
-  } catch (e) {
-    setVpsStatus('error', e.toString().substring(0, 30));
-  } finally {
-    disableVpsButtons(false);
-  }
-});
-
-// Uninstall server
-vpsUninstallBtn.addEventListener('click', async () => {
-  const vps = getVpsConfig();
-  if (!vps.host || !vps.ssh_password) {
-    setVpsStatus('error', 'host & password required');
-    return;
-  }
-
-  if (!confirm('Remove VPN server from VPS? This cannot be undone.')) {
-    return;
-  }
-
-  setVpsStatus('unknown', 'uninstalling...');
-  disableVpsButtons(true);
-
-  try {
-    await invoke('uninstall_server', { vps });
-    setVpsStatus('unknown', 'not deployed');
-  } catch (e) {
-    setVpsStatus('error', e.toString().substring(0, 30));
-  } finally {
-    disableVpsButtons(false);
-  }
-});
-
-// Listen for deploy progress events from backend
-listen('deploy_progress', (event) => {
-  const progress = event.payload;
-  updateProgress(progress.percent, progress.message);
-  if (progress.error) {
-    setVpsStatus('error', progress.error.substring(0, 40));
-  }
-});
-
-// Load VPS config on settings open
-const originalSettingsClick = settingsBtn.onclick;
-settingsBtn.addEventListener('click', () => {
-  loadVpsConfig();
-});
-
-// Also save VPS config when saving main config
-const originalSaveClick = saveBtn.onclick;
-saveBtn.removeEventListener('click', originalSaveClick);
-saveBtn.addEventListener('click', async () => {
-  try {
-    // Save main config
-    await invoke('save_config', {
-      config: {
-        server: cfgServer.value.trim(),
-        port: cfgPort.value.trim(),
-        username: cfgUsername.value.trim(),
-        mode: cfgMode.value,
-        doh_endpoint: cfgDoh.value.trim(),
-        autoconnect: cfgAutoconnect.checked,
-        killswitch: cfgKillswitch.checked,
-        insecure: cfgInsecure.checked,
-      }
-    });
-
-    // Save VPS config if host is provided
-    const vpsConfig = getVpsConfig();
-    if (vpsConfig.host) {
-      await invoke('save_vps_config', { vps: vpsConfig });
-    }
-
-    showError('');
-    settingsView.classList.add('hidden');
-    mainView.classList.remove('hidden');
-    probeServer();
-  } catch (e) {
-    showError(e);
-  }
-});

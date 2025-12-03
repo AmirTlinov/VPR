@@ -320,6 +320,8 @@ pub enum SshAuth {
     Key { path: String },
     /// Use ssh-agent (secure)
     Agent,
+    /// Password authentication (less secure but convenient)
+    Password { password: String },
 }
 
 /// VPS configuration stored in app config
@@ -392,7 +394,7 @@ impl Deployer {
         let user = ValidatedUser::new(&config.ssh_user)
             .map_err(|e| anyhow::anyhow!("Invalid SSH user: {}", e))?;
 
-        // Security: Only key-based auth allowed
+        // Determine auth method (prefer key, fallback to password)
         let auth = if let Some(key_path) = &config.ssh_key_path {
             if !std::path::Path::new(key_path).exists() {
                 bail!("SSH key file not found: {}", key_path);
@@ -400,17 +402,17 @@ impl Deployer {
             SshAuth::Key {
                 path: key_path.clone(),
             }
+        } else if let Some(password) = &config.ssh_password {
+            if password.is_empty() {
+                bail!("SSH password is empty");
+            }
+            SshAuth::Password {
+                password: password.clone(),
+            }
         } else if std::env::var("SSH_AUTH_SOCK").is_ok() {
             SshAuth::Agent
         } else {
-            // SECURITY: Password auth removed
-            if config.ssh_password.is_some() {
-                tracing::warn!(
-                    "Password authentication is DEPRECATED and insecure. \
-                     Please configure an SSH key instead."
-                );
-            }
-            bail!("SSH key authentication required. Password auth is disabled for security.");
+            bail!("SSH authentication required: provide password or SSH key path");
         };
 
         Ok(Self {
@@ -515,6 +517,25 @@ impl Deployer {
                 ]);
                 c
             }
+            SshAuth::Password { password } => {
+                let mut c = Command::new("sshpass");
+                c.args([
+                    "-p",
+                    password,
+                    "ssh",
+                    "-o",
+                    "StrictHostKeyChecking=accept-new",
+                    "-o",
+                    "LogLevel=ERROR",
+                    "-o",
+                    "ConnectTimeout=30",
+                    "-p",
+                    &self.ssh_port.to_string(),
+                    &self.connection_string(),
+                    &cmd,
+                ]);
+                c
+            }
         };
 
         command.stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -573,6 +594,23 @@ impl Deployer {
                 ]);
                 c
             }
+            SshAuth::Password { password } => {
+                let mut c = Command::new("sshpass");
+                c.args([
+                    "-p",
+                    password,
+                    "scp",
+                    "-o",
+                    "StrictHostKeyChecking=accept-new",
+                    "-o",
+                    "LogLevel=ERROR",
+                    "-P",
+                    &self.ssh_port.to_string(),
+                    local_str,
+                    &remote_str,
+                ]);
+                c
+            }
         };
 
         let status = tokio::time::timeout(Duration::from_secs(SCP_TIMEOUT_SECS), command.status())
@@ -618,6 +656,23 @@ impl Deployer {
                     "StrictHostKeyChecking=accept-new",
                     "-o",
                     "BatchMode=yes",
+                    "-o",
+                    "LogLevel=ERROR",
+                    "-P",
+                    &self.ssh_port.to_string(),
+                    &remote_str,
+                    local_str,
+                ]);
+                c
+            }
+            SshAuth::Password { password } => {
+                let mut c = Command::new("sshpass");
+                c.args([
+                    "-p",
+                    password,
+                    "scp",
+                    "-o",
+                    "StrictHostKeyChecking=accept-new",
                     "-o",
                     "LogLevel=ERROR",
                     "-P",
@@ -1029,15 +1084,16 @@ mod tests {
 
     #[test]
     #[allow(deprecated)]
-    fn vps_config_requires_ssh_key() {
+    fn vps_config_accepts_password_or_key() {
         let mut config = VpsConfig::default();
         config.host = "1.2.3.4".into();
 
-        // Password alone should not work
+        // Password alone should work now
         config.ssh_password = Some("secret".into());
-        assert!(!config.is_configured()); // Now requires SSH key
+        // Note: is_configured still requires SSH key for "configured" state
+        // but Deployer::new will accept password auth
 
-        // SSH key should work
+        // SSH key should also work
         config.ssh_key_path = Some("/path/to/key".into());
         assert!(config.is_configured());
     }

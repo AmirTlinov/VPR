@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Canvas Test</title>
+  <style>
+    body { background: #111; color: #fff; font-family: sans-serif; padding: 20px; }
+    canvas { border: 1px solid #333; margin: 10px; }
+    .result { padding: 10px; margin: 5px 0; border-radius: 4px; }
+    .ok { background: #1a4a1a; }
+    .fail { background: #4a1a1a; }
+  </style>
+</head>
+<body>
+  <h2>Canvas/WebGL Diagnostics</h2>
+
+  <div id="results"></div>
+
+  <h3>Canvas 2D Test:</h3>
+  <canvas id="canvas2d" width="200" height="200"></canvas>
+
+  <h3>WebGL Test:</h3>
+  <canvas id="webgl" width="200" height="200"></canvas>
+
+  <script>
+    const results = document.getElementById('results');
+
+    function log(msg, ok) {
+      const div = document.createElement('div');
+      div.className = 'result ' + (ok ? 'ok' : 'fail');
+      div.textContent = (ok ? '✓ ' : '✗ ') + msg;
+      results.appendChild(div);
+    }
+
+    // Test Canvas 2D
+    try {
+      const canvas = document.getElementById('canvas2d');
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        log('Canvas 2D: Supported', true);
+
+        // Draw animated particles
+        const particles = [];
+        for (let i = 0; i < 100; i++) {
+          particles.push({
+            x: Math.random() * 200,
+            y: Math.random() * 200,
+            vx: (Math.random() - 0.5) * 2,
+            vy: (Math.random() - 0.5) * 2,
+            r: Math.random() * 3 + 1
+          });
+        }
+
+        function animate2d() {
+          ctx.fillStyle = 'rgba(17,17,17,0.2)';
+          ctx.fillRect(0, 0, 200, 200);
+
+          ctx.fillStyle = '#4a9';
+          particles.forEach(p => {
+            p.x += p.vx;
+            p.y += p.vy;
+            if (p.x < 0 || p.x > 200) p.vx *= -1;
+            if (p.y < 0 || p.y > 200) p.vy *= -1;
+
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+            ctx.fill();
+          });
+
+          requestAnimationFrame(animate2d);
+        }
+        animate2d();
+        log('Canvas 2D Animation: Working', true);
+      } else {
+        log('Canvas 2D: Context is null', false);
+      }
+    } catch (e) {
+      log('Canvas 2D: ' + e.message, false);
+    }
+
+    // Test WebGL
+    try {
+      const canvas = document.getElementById('webgl');
+      const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+      if (gl) {
+        log('WebGL: Supported', true);
+        log('WebGL Vendor: ' + gl.getParameter(gl.VENDOR), true);
+        log('WebGL Renderer: ' + gl.getParameter(gl.RENDERER), true);
+
+        // Simple WebGL animation
+        function animateGL() {
+          const t = Date.now() * 0.001;
+          gl.clearColor(0.1, 0.1 + Math.sin(t) * 0.05, 0.15, 1);
+          gl.clear(gl.COLOR_BUFFER_BIT);
+          requestAnimationFrame(animateGL);
+        }
+        animateGL();
+        log('WebGL Animation: Working', true);
+      } else {
+        log('WebGL: Not available (context is null)', false);
+      }
+    } catch (e) {
+      log('WebGL: ' + e.message, false);
+    }
+
+    // Test WebGL2
+    try {
+      const canvas = document.createElement('canvas');
+      const gl2 = canvas.getContext('webgl2');
+      log('WebGL2: ' + (gl2 ? 'Supported' : 'Not available'), !!gl2);
+    } catch (e) {
+      log('WebGL2: ' + e.message, false);
+    }
+  </script>
+</body>
+</html>
