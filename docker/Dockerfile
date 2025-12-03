@@ -15,7 +15,7 @@
 # ============================================================================
 # Stage 1: Chef base with cargo-chef installed
 # ============================================================================
-FROM rust:1.87-alpine AS chef
+FROM rust:1.91-alpine AS chef
 
 RUN apk add --no-cache musl-dev && \
     cargo install cargo-chef --locked
