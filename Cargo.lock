@@ -3349,7 +3349,7 @@ dependencies = [
  "ipnetwork",
  "libc",
  "md5",
- "nix 0.30.1",
+ "nix",
  "pem",
  "predicates",
  "proptest",
@@ -3576,18 +3576,6 @@ name = "new_debug_unreachable"
 version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "650eef8c711430f1a879fdd01d4745a7deea475becfb90269c06775983bbf086"
-
-[[package]]
-name = "nix"
-version = "0.29.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "71e2746dc3a24dd78b3cfcb7be93368c6de9963d30f43a6a73998a9cf4b17b46"
-dependencies = [
- "bitflags 2.10.0",
- "cfg-if",
- "cfg_aliases",
- "libc",
-]
 
 [[package]]
 name = "nix"
@@ -6615,13 +6603,13 @@ dependencies = [
 
 [[package]]
 name = "tokio-tun"
-version = "0.12.1"
+version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9bf48df2abbfd12d0b8495dcf960b125109493d85f2c787b44a2729a8022bc4b"
+checksum = "ef6cadea27ba297ef9124370e49af79913b9b979bffd6511f65702eefbce12fe"
 dependencies = [
  "libc",
- "nix 0.29.0",
- "thiserror 1.0.69",
+ "nix",
+ "thiserror 2.0.17",
  "tokio",
 ]
 
@@ -7211,7 +7199,7 @@ dependencies = [
  "directories",
  "libc",
  "masque-core",
- "nix 0.30.1",
+ "nix",
  "ratatui",
  "serde",
  "serde_json",
