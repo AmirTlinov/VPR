@@ -72,7 +72,7 @@ RUN strip target/release/vpn-server target/release/vpn-client
 # ============================================================================
 # Stage 4: VPN Server runtime
 # ============================================================================
-FROM alpine:3.22 AS server
+FROM alpine:3.23 AS server
 
 LABEL org.opencontainers.image.title="VPR VPN Server"
 LABEL org.opencontainers.image.description="Post-quantum secure VPN server with MASQUE protocol"
@@ -133,7 +133,7 @@ CMD ["vpn-server", \
 # ============================================================================
 # Stage 5: VPN Client runtime
 # ============================================================================
-FROM alpine:3.22 AS client
+FROM alpine:3.23 AS client
 
 LABEL org.opencontainers.image.title="VPR VPN Client"
 LABEL org.opencontainers.image.description="Post-quantum secure VPN client with MASQUE protocol"
@@ -172,7 +172,7 @@ CMD ["vpn-client"]
 # ============================================================================
 # Stage 6: Test runner
 # ============================================================================
-FROM alpine:3.22 AS test-runner
+FROM alpine:3.23 AS test-runner
 
 LABEL org.opencontainers.image.title="VPR Integration Test Runner"
 
